@@ -10,21 +10,22 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
 MAX_MATCHES = 20
 MAX_TOP_MATCHES = 15
-TOP_TOURNAMENTS = {
-    "FIFA World Cup",
-    "FIFA Club World Cup",
-    "UEFA Champions League",
-    "UEFA Europa League",
-    "UEFA Nations League",
-    "Premier League",
-    "La Liga",
-    "Serie A",
-    "Bundesliga",
-    "Ligue 1",
-    "Eredivisie",
-    "Turkish Super Lig",
-    "Kazakhstan Premier League",
-}
+TOP_LEAGUE_IDS = [
+    2,
+    3,
+    848,
+    39,
+    140,
+    78,
+    135,
+    61,
+    88,
+    94,
+    203,
+    389,
+    1,
+    15,
+]
 
 
 logging.basicConfig(
@@ -96,10 +97,19 @@ def get_matches_next_24_hours(api_key: str) -> list[dict]:
 
 def get_top_matches_next_24_hours(api_key: str) -> list[dict]:
     matches = get_matches_next_24_hours(api_key)
+
+    for match in matches[:20]:
+        league = match.get("league", {})
+        logger.info(
+            "Fixture league: id=%s, name=%s",
+            league.get("id"),
+            league.get("name"),
+        )
+
     top_matches = [
         match
         for match in matches
-        if match.get("league", {}).get("name") in TOP_TOURNAMENTS
+        if match.get("league", {}).get("id") in TOP_LEAGUE_IDS
     ][:MAX_TOP_MATCHES]
 
     return sorted(
