@@ -96,7 +96,62 @@ def get_matches_next_24_hours(api_key: str) -> list[dict]:
 
 
 def get_top_matches_next_24_hours(api_key: str) -> list[dict]:
-    matches = get_matches_next_24_hours(api_key)
+    now = datetime.now(timezone.utc)
+    first_window_end = now + timedelta(hours=24)
+    second_window_end = now + timedelta(hours=48)
+
+    top_matches = get_top_matches_between(api_key, now, first_window_end)
+
+    if len(top_matches) < 5:
+        second_window_matches = get_top_matches_between(
+            api_key,
+            first_window_end,
+            second_window_end,
+        )
+        existing_fixture_ids = {
+            match.get("fixture", {}).get("id")
+            for match in top_matches
+        }
+        for match in second_window_matches:
+            fixture_id = match.get("fixture", {}).get("id")
+            if fixture_id not in existing_fixture_ids:
+                top_matches.append(match)
+                existing_fixture_ids.add(fixture_id)
+            if len(top_matches) >= MAX_TOP_MATCHES:
+                break
+
+    return sorted(
+        top_matches,
+        key=lambda item: item["fixture"]["timestamp"],
+    )[:MAX_TOP_MATCHES]
+
+
+def get_top_matches_between(
+    api_key: str,
+    start_time: datetime,
+    end_time: datetime,
+) -> list[dict]:
+    fixtures = []
+    for date_value in (start_time, end_time):
+        fixtures.extend(fetch_fixtures_for_date(api_key, date_value))
+
+    matches_by_id = {}
+    for match in fixtures:
+        fixture = match.get("fixture", {})
+        fixture_id = fixture.get("id")
+        timestamp = fixture.get("timestamp")
+
+        if fixture_id is None or timestamp is None:
+            continue
+
+        kickoff = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        if start_time <= kickoff <= end_time:
+            matches_by_id[fixture_id] = match
+
+    matches = sorted(
+        matches_by_id.values(),
+        key=lambda item: item["fixture"]["timestamp"],
+    )
 
     for match in matches[:20]:
         league = match.get("league", {})
@@ -106,16 +161,11 @@ def get_top_matches_next_24_hours(api_key: str) -> list[dict]:
             league.get("name"),
         )
 
-    top_matches = [
+    return [
         match
         for match in matches
         if match.get("league", {}).get("id") in TOP_LEAGUE_IDS
-    ][:MAX_TOP_MATCHES]
-
-    return sorted(
-        top_matches,
-        key=lambda item: item["fixture"]["timestamp"],
-    )
+    ]
 
 
 def format_match(item: dict) -> str:
@@ -162,9 +212,8 @@ def format_top_match(item: dict) -> str:
 
     return (
         f"⚽ {home_team} - {away_team}\n"
-        f"🏆 Турнир: {tournament}\n"
-        f"🌍 Страна: {country}\n"
-        f"🕒 Начало: {kickoff_text}"
+        f"🏆 {tournament} ({country})\n"
+        f"🕒 {kickoff_text}"
     )
 
 
@@ -205,10 +254,10 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if not matches:
-        await update.message.reply_text("Топ матчей не найдено. Используйте /today")
+        await update.message.reply_text("Топ матчей на ближайшие 48 часов не найдено.")
         return
 
-    message = "🔥 Топ матчи ближайших 24 часов\n\n"
+    message = "🔥 Топ матчи ближайших 48 часов\n\n"
     message += "\n\n".join(format_top_match(match) for match in matches)
     await update.message.reply_text(message)
 
