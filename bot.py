@@ -9,6 +9,22 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
 MAX_MATCHES = 20
+MAX_TOP_MATCHES = 15
+TOP_TOURNAMENTS = {
+    "FIFA World Cup",
+    "FIFA Club World Cup",
+    "UEFA Champions League",
+    "UEFA Europa League",
+    "UEFA Nations League",
+    "Premier League",
+    "La Liga",
+    "Serie A",
+    "Bundesliga",
+    "Ligue 1",
+    "Eredivisie",
+    "Turkish Super Lig",
+    "Kazakhstan Premier League",
+}
 
 
 logging.basicConfig(
@@ -78,6 +94,20 @@ def get_matches_next_24_hours(api_key: str) -> list[dict]:
     )[:MAX_MATCHES]
 
 
+def get_top_matches_next_24_hours(api_key: str) -> list[dict]:
+    matches = get_matches_next_24_hours(api_key)
+    top_matches = [
+        match
+        for match in matches
+        if match.get("league", {}).get("name") in TOP_TOURNAMENTS
+    ][:MAX_TOP_MATCHES]
+
+    return sorted(
+        top_matches,
+        key=lambda item: item["fixture"]["timestamp"],
+    )
+
+
 def format_match(item: dict) -> str:
     teams = item.get("teams", {})
     league = item.get("league", {})
@@ -98,6 +128,29 @@ def format_match(item: dict) -> str:
         f"{home_team} - {away_team}\n"
         f"Турнир: {tournament}\n"
         f"Начало: {kickoff_text}"
+    )
+
+
+def format_top_match(item: dict) -> str:
+    teams = item.get("teams", {})
+    league = item.get("league", {})
+    fixture = item.get("fixture", {})
+
+    home_team = teams.get("home", {}).get("name", "Неизвестная команда")
+    away_team = teams.get("away", {}).get("name", "Неизвестная команда")
+    tournament = league.get("name", "Неизвестный турнир")
+
+    almaty_tz = timezone(timedelta(hours=5))
+    kickoff = datetime.fromtimestamp(
+        fixture["timestamp"],
+        tz=timezone.utc
+    ).astimezone(almaty_tz)
+    kickoff_text = kickoff.strftime("%d.%m %H:%M")
+
+    return (
+        f"⚽ {home_team} - {away_team}\n"
+        f"🏆 {tournament}\n"
+        f"🕒 {kickoff_text}"
     )
 
 
@@ -123,6 +176,29 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(message)
 
 
+async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    api_key = context.application.bot_data["football_api_key"]
+
+    try:
+        matches = get_top_matches_next_24_hours(api_key)
+    except requests.RequestException:
+        logger.exception("Failed to request fixtures from API-Football")
+        await update.message.reply_text("Не удалось получить матчи. Попробуй позже.")
+        return
+    except Exception:
+        logger.exception("Failed to process top fixtures from API-Football")
+        await update.message.reply_text("Не удалось обработать список топ матчей.")
+        return
+
+    if not matches:
+        await update.message.reply_text("Топ матчей не найдено. Используйте /today")
+        return
+
+    message = "🔥 Топ матчи ближайших 24 часов\n\n"
+    message += "\n\n".join(format_top_match(match) for match in matches)
+    await update.message.reply_text(message)
+
+
 def main() -> None:
     telegram_token = get_required_env("TELEGRAM_BOT_TOKEN")
     football_api_key = get_required_env("FOOTBALL_API_KEY")
@@ -132,6 +208,7 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("today", today))
+    application.add_handler(CommandHandler("top", top))
 
     application.run_polling()
 
