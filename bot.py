@@ -126,6 +126,7 @@ def format_match(item: dict) -> str:
     home_team = teams.get("home", {}).get("name", "Неизвестная команда")
     away_team = teams.get("away", {}).get("name", "Неизвестная команда")
     tournament = league.get("name", "Неизвестный турнир")
+    country = league.get("country", "Неизвестная страна")
 
     almaty_tz = timezone(timedelta(hours=5))
     kickoff = datetime.fromtimestamp(
@@ -135,9 +136,10 @@ def format_match(item: dict) -> str:
     kickoff_text = kickoff.strftime("%d.%m %H:%M")
 
     return (
-        f"{home_team} - {away_team}\n"
-        f"Турнир: {tournament}\n"
-        f"Начало: {kickoff_text}"
+        f"⚽ {home_team} - {away_team}\n"
+        f"🏆 Турнир: {tournament}\n"
+        f"🌍 Страна: {country}\n"
+        f"🕒 Начало: {kickoff_text}"
     )
 
 
@@ -149,6 +151,7 @@ def format_top_match(item: dict) -> str:
     home_team = teams.get("home", {}).get("name", "Неизвестная команда")
     away_team = teams.get("away", {}).get("name", "Неизвестная команда")
     tournament = league.get("name", "Неизвестный турнир")
+    country = league.get("country", "Неизвестная страна")
 
     almaty_tz = timezone(timedelta(hours=5))
     kickoff = datetime.fromtimestamp(
@@ -159,8 +162,9 @@ def format_top_match(item: dict) -> str:
 
     return (
         f"⚽ {home_team} - {away_team}\n"
-        f"🏆 {tournament}\n"
-        f"🕒 {kickoff_text}"
+        f"🏆 Турнир: {tournament}\n"
+        f"🌍 Страна: {country}\n"
+        f"🕒 Начало: {kickoff_text}"
     )
 
 
