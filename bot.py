@@ -43,7 +43,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ["📅 Сегодня", "📆 Завтра"],
         ["🔥 Топ матчи"],
         ["⚽ Команда", "📊 Результаты"],
-        ["⭐ Моя команда"],
+        ["⭐ Моя команда", "📋 Профиль"],
     ]
 
     reply_markup = ReplyKeyboardMarkup(
@@ -463,6 +463,23 @@ async def button_handler(
             "Barcelona\n"
             "Kairat"
         )
+
+    elif text == "📋 Профиль":
+
+        favorite_team = context.user_data.get("favorite_team")
+
+        if not favorite_team:
+            await update.message.reply_text(
+                "Любимая команда не выбрана.\n\n"
+                "Нажмите ⭐ Моя команда"
+            )
+            return
+
+        await update.message.reply_text(
+            f"📋 Профиль\n\n"
+            f"⭐ Любимая команда: {favorite_team}"
+        )
+    
     elif text == "📊 Результаты":
         context.user_data["waiting_results"] = True
 
@@ -855,6 +872,13 @@ def main() -> None:
         )
     )
 
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("^📋 Профиль$"),
+            button_handler
+        )
+    )
+    
     application.add_handler(
         MessageHandler(
             filters.Regex("^📊 Результаты$"),
