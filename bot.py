@@ -192,14 +192,40 @@ def get_thesportsdb_next_football_matches(api_key: str) -> list[dict]:
     now = datetime.now(timezone.utc)
     events_by_id = {}
 
+    EXCLUDED_WORDS = [
+        "Women",
+        "Youth",
+        "U17",
+        "U18",
+        "U19",
+        "U20",
+        "U21",
+        "Reserve",
+        "Reserves",
+        "Regional",
+    ]
+
     for day_offset in range(3):
         date_value = now + timedelta(days=day_offset)
+
         for event in fetch_thesportsdb_events_for_date(api_key, date_value):
             event_time = parse_thesportsdb_event_time(event)
             event_id = event.get("idEvent")
+
             if event_time is None or event_time < now:
                 continue
-            events_by_id[event_id or f"{event.get('strEvent')}-{event_time}"] = event
+
+            league_name = event.get("strLeague") or ""
+
+            if any(
+                word.lower() in league_name.lower()
+                for word in EXCLUDED_WORDS
+            ):
+                continue
+
+            events_by_id[
+                event_id or f"{event.get('strEvent')}-{event_time}"
+            ] = event
 
     return sorted(
         events_by_id.values(),
@@ -307,6 +333,10 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Azerbaijan",
             "Kazakhstan",
             "Mexico",
+            "Brazil",
+            "Argentina",
+            "Japan",
+            "South Korea",
         }
 
         matches = [
