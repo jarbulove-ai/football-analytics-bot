@@ -182,19 +182,28 @@ def fetch_thesportsdb_events_for_date(api_key: str, date_value: datetime) -> lis
 def parse_thesportsdb_event_time(event: dict) -> datetime | None:
     timestamp = event.get("strTimestamp")
     if timestamp:
-        return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        return dt.astimezone(timezone.utc)
 
     date_value = event.get("dateEvent")
     time_value = event.get("strTime") or "00:00:00"
+
     if not date_value:
         return None
 
     if len(time_value) == 5:
         time_value = f"{time_value}:00"
 
-    return datetime.fromisoformat(f"{date_value}T{time_value}").replace(
-        tzinfo=timezone.utc
-    )
+    dt = datetime.fromisoformat(f"{date_value}T{time_value}")
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(timezone.utc)
 
 
 def get_thesportsdb_next_football_matches(api_key: str) -> list[dict]:
