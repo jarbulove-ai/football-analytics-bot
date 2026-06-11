@@ -568,7 +568,7 @@ async def team_search(
             )
             return
 
-        message = f"⚽ {teams[0]['strTeam']}\n\n"
+        f"⭐ Любимая команда: {teams[0]['strTeam']}\n\n"
 
         for event in events[:5]:
             message += format_thesportsdb_event(event)
