@@ -3,11 +3,18 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import requests
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -536,10 +543,18 @@ async def testdb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def main() -> None:
     telegram_token = get_required_env("TELEGRAM_BOT_TOKEN")
-    football_api_key = os.getenv("FOOTBALL_API_KEY", "")
+    #football_api_key = os.getenv("FOOTBALL_API_KEY", "")
 
     application = Application.builder().token(telegram_token).build()
-    application.bot_data["football_api_key"] = football_api_key
+    #application.bot_data["football_api_key"] = football_api_key
+
+    from telegram import BotCommand
+
+    application.bot.set_my_commands([
+        BotCommand("today", "Матчи сегодня"),
+        BotCommand("tomorrow", "Матчи завтра"),
+        BotCommand("top", "Топ матчи"),
+    ])
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("today", today))
