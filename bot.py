@@ -50,7 +50,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
     await update.message.reply_text(
-        "Добро пожаловать в MatchLab ⚽",
+        "⚽ MatchLab\n\n"
+        "📅 Сегодня — матчи на сегодня\n"
+        "📆 Завтра — матчи на завтра\n"
+        "🔥 Топ матчи — самые интересные игры\n",
         reply_markup=reply_markup
     )
 
@@ -276,7 +279,7 @@ def format_thesportsdb_event(event: dict) -> str:
         f"⚽ {home_team} - {away_team}\n"
         f"🏆 {tournament}\n"
         f"🌍 {country}\n"
-        f"🕒 {kickoff_text}"
+        f"🕒 {kickoff_text}\n"
     )
 
 
@@ -495,6 +498,18 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Super League": 75,
         "Superliga": 75,
         "Premier Liga": 70,
+        "Norwegian Eliteserien": 80,
+        "Allsvenskan": 80,
+        "Danish Superliga": 80,
+        "Swiss Super League": 80,
+        "Belgian Pro League": 85,
+        "Scottish Premiership": 80,
+        "Austrian Bundesliga": 80,
+        "MLS": 75,
+        "J1 League": 75,
+        "K League 1": 75,
+        "Brasileiro Serie A": 90,
+        "Argentine Primera Division": 85,
     }
 
     filtered = []
