@@ -319,11 +319,9 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("В ближайшие 24 часа матчей не найдено.")
         return
 
-    message = "
-
-".join(
-        format_thesportsdb_event(match)
-        for match in matches[:MAX_MATCHES]
+    message = "\n\n".join(
+    format_thesportsdb_event(match)
+    for match in matches[:MAX_MATCHES]
     )
     await update.message.reply_text(message)
 
