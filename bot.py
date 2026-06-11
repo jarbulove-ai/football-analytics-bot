@@ -3,8 +3,14 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import requests
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
 
 THESPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json"
@@ -26,8 +32,19 @@ def get_required_env(name: str) -> str:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    keyboard = [
+        ["📅 Сегодня", "📆 Завтра"],
+        ["🔥 Топ матчи"],
+    ]
+
+    reply_markup = ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True
+    )
+
     await update.message.reply_text(
-        "Привет! Используй /today для просмотра матчей ближайших 24 часов."
+        "Добро пожаловать в MatchLab ⚽",
+        reply_markup=reply_markup
     )
 
 
@@ -404,6 +421,22 @@ async def tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(message)
 
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+
+    text = update.message.text
+
+    if text == "📅 Сегодня":
+        await today(update, context)
+
+    elif text == "📆 Завтра":
+        await tomorrow(update, context)
+
+    elif text == "🔥 Топ матчи":
+        await top(update, context)
+
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api_key = os.getenv("THESPORTSDB_API_KEY")
 
@@ -513,6 +546,10 @@ def main() -> None:
     application.add_handler(CommandHandler("tomorrow", tomorrow))
     application.add_handler(CommandHandler("top", top))
     application.add_handler(CommandHandler("testdb", testdb))
+
+    application.add_handler(
+    MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler)
+    )
 
     application.run_polling(
     drop_pending_updates=True
