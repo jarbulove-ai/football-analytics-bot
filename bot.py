@@ -42,7 +42,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         ["📅 Сегодня", "📆 Завтра"],
         ["🔥 Топ матчи"],
-        ["⚽ Команда"],
+        ["⚽ Команда", "📊 Результаты"],
+        ["⭐ Моя команда"],
     ]
 
     reply_markup = ReplyKeyboardMarkup(
@@ -459,6 +460,19 @@ async def button_handler(
             "Barcelona\n"
             "Kairat"
         )
+    elif text == "📊 Результаты":
+        context.user_data["waiting_results"] = True
+
+        await update.message.reply_text(
+            "Введите название команды"
+        )
+
+    elif text == "⭐ Моя команда":
+        context.user_data["waiting_favorite_team"] = True
+
+    await update.message.reply_text(
+        "Введите название любимой команды"
+    )
 
 async def team_search(
     update: Update,
@@ -529,6 +543,93 @@ async def team_search(
             "Ошибка при поиске команды."
         )
         
+ async def team_results(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+
+    if not context.user_data.get("waiting_results"):
+        return
+
+    context.user_data["waiting_results"] = False
+
+    team_name = update.message.text
+    api_key = os.getenv("THESPORTSDB_API_KEY")
+
+    try:
+        response = requests.get(
+            f"{THESPORTSDB_BASE_URL}/{api_key}/searchteams.php",
+            params={"t": team_name},
+            timeout=20,
+        )
+
+        response.raise_for_status()
+
+        teams = response.json().get("teams")
+
+        if not teams:
+            await update.message.reply_text(
+                f"Команда '{team_name}' не найдена."
+            )
+            return
+
+        team_id = teams[0]["idTeam"]
+
+        response = requests.get(
+            f"{THESPORTSDB_BASE_URL}/{api_key}/eventslast.php",
+            params={"id": team_id},
+            timeout=20,
+        )
+
+        response.raise_for_status()
+
+        events = response.json().get("results") or []
+
+        if not events:
+            await update.message.reply_text(
+                "Последние матчи не найдены."
+            )
+            return
+
+        message = f"📊 {teams[0]['strTeam']}\n\n"
+
+        for event in events[:5]:
+            home = event.get("strHomeTeam", "")
+            away = event.get("strAwayTeam", "")
+            home_score = event.get("intHomeScore", "-")
+            away_score = event.get("intAwayScore", "-")
+
+            message += (
+                f"⚽ {home} {home_score}-{away_score} {away}\n"
+            )
+
+        await update.message.reply_text(message)
+
+    except Exception:
+        logger.exception("Team results failed")
+
+        await update.message.reply_text(
+            "Ошибка при получении результатов."
+        )   
+
+async def favorite_team(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+
+    if not context.user_data.get("waiting_favorite_team"):
+        return
+
+    context.user_data["waiting_favorite_team"] = False
+
+    team_name = update.message.text
+
+    context.user_data["favorite_team"] = team_name
+
+    await update.message.reply_text(
+        f"⭐ Любимая команда сохранена:\n{team_name}"
+    )
+
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api_key = os.getenv("THESPORTSDB_API_KEY")
 
@@ -711,6 +812,20 @@ def main() -> None:
         )
     )
 
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            team_results
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            favorite_team
+        )
+    )
+    
     application.run_polling(
     drop_pending_updates=True
     )
