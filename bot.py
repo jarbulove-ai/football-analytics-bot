@@ -498,49 +498,25 @@ async def team_search(
 
         team_id = teams[0]["idTeam"]
 
-        #################################################
-        team_name_found = teams[0]["strTeam"]
-
-        events = []
-
-        for day_offset in range(10):
-            date_value = datetime.now(timezone.utc) + timedelta(days=day_offset)
-
-            daily_events = fetch_thesportsdb_events_for_date(
-                api_key,
-                date_value,
-            )
-
-            for event in daily_events:
-                home = event.get("strHomeTeam", "")
-                away = event.get("strAwayTeam", "")
-
-                if (
-                    team_name_found.lower() == home.lower()
-                    or team_name_found.lower() == away.lower()
-                ):
-                    events.append(event)
-
-                if len(events) >= 5:
-                    break
-
-            if len(events) >= 5:
-                break
-
-        events.sort(
-            key=lambda event: (
-                parse_thesportsdb_event_time(event)
-                or datetime.max.replace(tzinfo=timezone.utc)
-            )
+        response = requests.get(
+            f"{THESPORTSDB_BASE_URL}/{api_key}/eventsnext.php",
+            params={"id": team_id},
+            timeout=20,
         )
+
+        logger.info("Events URL: %s", response.url)
+        logger.info("Events status: %s", response.status_code)
+
+        response.raise_for_status()
+
+        events = response.json().get("events") or []
 
         logger.info(
             "Found %s upcoming matches for %s",
             len(events),
-            team_name_found,
+            teams[0]["strTeam"],
         )
-        ##################################################
-        
+
         logger.info("Team: %s", team_name)
         logger.info("Events found: %s", len(events))
 
