@@ -466,20 +466,8 @@ async def button_handler(
         )
 
     elif text == "📋 Профиль":
-
-        favorite_team = context.user_data.get("favorite_team")
-
-        if not favorite_team:
-            await update.message.reply_text(
-                "Любимая команда не выбрана.\n\n"
-                "Нажмите ⭐ Моя команда"
-            )
-            return
-
-        await update.message.reply_text(
-            f"📋 Профиль\n\n"
-            f"⭐ Любимая команда: {favorite_team}"
-        )
+        await show_profile(update, context)
+        return
     
     elif text == "📊 Результаты":
         context.user_data["waiting_results"] = True
@@ -503,10 +491,6 @@ async def button_handler(
             )
 
         context.user_data["waiting_favorite_team"] = True
-
-        await update.message.reply_text(
-            "Введите название любимой команды"
-        )
 
 async def team_search(
     update: Update,
@@ -681,8 +665,80 @@ async def favorite_team(
     await update.message.reply_text(
         f"⭐ Любимая команда сохранена:\n"
         f"{team_name}\n\n"
-        f"Теперь кнопка ⭐ Моя команда будет показывать её матчи."
+        f"Открывайте 📋 Профиль для просмотра матчей команды."
     )
+
+
+async def show_profile(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+
+    favorite_team = context.user_data.get("favorite_team")
+
+    if not favorite_team:
+        await update.message.reply_text(
+            "Любимая команда не выбрана.\n\nНажмите ⭐ Моя команда"
+        )
+        return
+
+    api_key = os.getenv("THESPORTSDB_API_KEY")
+
+    try:
+        response = requests.get(
+            f"{THESPORTSDB_BASE_URL}/{api_key}/searchteams.php",
+            params={"t": favorite_team},
+            timeout=20,
+        )
+
+        teams = response.json().get("teams")
+
+        if not teams:
+            await update.message.reply_text(
+                f"Команда '{favorite_team}' не найдена."
+            )
+            return
+
+        team_id = teams[0]["idTeam"]
+
+        next_events = requests.get(
+            f"{THESPORTSDB_BASE_URL}/{api_key}/eventsnext.php",
+            params={"id": team_id},
+            timeout=20,
+        ).json().get("events") or []
+
+        last_events = requests.get(
+            f"{THESPORTSDB_BASE_URL}/{api_key}/eventslast.php",
+            params={"id": team_id},
+            timeout=20,
+        ).json().get("results") or []
+
+        message = f"📋 Профиль\n\n⭐ Любимая команда: {favorite_team}\n\n"
+
+        if next_events:
+            message += "📅 Ближайшие матчи\n\n"
+            for event in next_events[:5]:
+                home = event.get("strHomeTeam", "")
+                away = event.get("strAwayTeam", "")
+                message += f"⚽ {home} - {away}\n"
+            message += "\n"
+
+        if last_events:
+            message += "📊 Последние результаты\n\n"
+            for event in last_events[:5]:
+                home = event.get("strHomeTeam", "")
+                away = event.get("strAwayTeam", "")
+                hs = event.get("intHomeScore", "-")
+                aw = event.get("intAwayScore", "-")
+                message += f"⚽ {home} {hs}-{aw} {away}\n"
+
+        await update.message.reply_text(message)
+
+    except Exception:
+        await update.message.reply_text(
+            "Не удалось загрузить профиль команды."
+        )
+
 
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api_key = os.getenv("THESPORTSDB_API_KEY")
