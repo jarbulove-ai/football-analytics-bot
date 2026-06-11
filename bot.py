@@ -497,7 +497,7 @@ async def team_search(
 
         events = []
 
-        for day_offset in range(90):
+        for day_offset in range(25):
             date_value = datetime.now(timezone.utc) + timedelta(days=day_offset)
 
             daily_events = fetch_thesportsdb_events_for_date(
