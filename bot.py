@@ -286,9 +286,9 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("TheSportsDB API key is not configured.")
         return
 
-        try:
-            matches = get_thesportsdb_next_football_matches(api_key)
-            ALLOWED_COUNTRIES = {
+    try:
+        matches = get_thesportsdb_next_football_matches(api_key)
+        ALLOWED_COUNTRIES = {
             "England",
             "Spain",
             "Germany",
@@ -307,7 +307,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Azerbaijan",
             "Kazakhstan",
             "Mexico",
-            }
+        }
 
         matches = [
             match
@@ -334,14 +334,19 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(message)
 
 
-async def top(update, context):
+async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api_key = os.getenv("THESPORTSDB_API_KEY")
 
     if not api_key:
         await update.message.reply_text("TheSportsDB API key is not configured.")
         return
 
-    matches = get_thesportsdb_next_football_matches(api_key)
+    try:
+        matches = get_thesportsdb_next_football_matches(api_key)
+    except Exception:
+        logger.exception("Failed to process top matches")
+        await update.message.reply_text("Не удалось обработать список топ матчей.")
+        return
 
     LEAGUE_RATINGS = {
         "FIFA World Cup": 100,
@@ -375,19 +380,16 @@ async def top(update, context):
 
     filtered.sort(key=lambda x: x[0], reverse=True)
 
-    if filtered:
-        final_matches = [m for _, m in filtered]
-    else:
-        final_matches = matches[:10]
+    final_matches = [m for _, m in filtered]
 
-    message = "🔥 Топ матчи
+    if not final_matches:
+        await update.message.reply_text("Топ матчей не найдено.")
+        return
 
-"
+    message = "🔥 Топ матчи\n\n"
 
     for match in final_matches[:10]:
-        message += format_thesportsdb_event(match) + "
-
-"
+        message += format_thesportsdb_event(match) + "\n\n"
 
     await update.message.reply_text(message)
 
