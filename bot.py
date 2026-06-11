@@ -363,6 +363,46 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     await update.message.reply_text(message)
 
+async def tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    api_key = os.getenv("THESPORTSDB_API_KEY")
+
+    if not api_key:
+        await update.message.reply_text("TheSportsDB API key is not configured.")
+        return
+
+    try:
+        matches = get_thesportsdb_next_football_matches(api_key)
+    except Exception:
+        logger.exception("Failed to process events from TheSportsDB")
+        await update.message.reply_text("Не удалось получить матчи.")
+        return
+
+    almaty_tz = timezone(timedelta(hours=5))
+    tomorrow_date = (
+        datetime.now(almaty_tz) + timedelta(days=1)
+    ).date()
+
+    tomorrow_matches = []
+
+    for match in matches:
+        event_time = parse_thesportsdb_event_time(match)
+
+        if not event_time:
+            continue
+
+        if event_time.astimezone(almaty_tz).date() == tomorrow_date:
+            tomorrow_matches.append(match)
+
+    if not tomorrow_matches:
+        await update.message.reply_text("На завтра матчей не найдено.")
+        return
+
+    message = "📆 Матчи на завтра\n\n"
+
+    for match in tomorrow_matches[:MAX_MATCHES]:
+        message += format_thesportsdb_event(match) + "\n\n"
+
+    await update.message.reply_text(message)
 
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api_key = os.getenv("THESPORTSDB_API_KEY")
@@ -463,6 +503,7 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("today", today))
+    application.add_handler(CommandHandler("tomorrow", tomorrow))
     application.add_handler(CommandHandler("top", top))
     application.add_handler(CommandHandler("testdb", testdb))
 
