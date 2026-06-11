@@ -480,9 +480,6 @@ async def team_search(
             timeout=20,
         )
 
-        logger.info("Request URL: %s", response.url)
-        logger.info("Status code: %s", response.status_code)
-        
         response.raise_for_status()
 
         teams = response.json().get("teams")
@@ -492,9 +489,6 @@ async def team_search(
                 f"Команда '{team_name}' не найдена."
             )
             return
-            
-        logger.info("Team found: %s", teams[0]["strTeam"])
-        logger.info("Team ID: %s", teams[0]["idTeam"])    
 
         team_id = teams[0]["idTeam"]
 
@@ -504,28 +498,15 @@ async def team_search(
             timeout=20,
         )
 
-        logger.info("Events URL: %s", response.url)
-        logger.info("Events status: %s", response.status_code)
-
         response.raise_for_status()
 
         events = response.json().get("events") or []
 
         logger.info(
-            "Found %s upcoming matches for %s",
-            len(events),
-            teams[0]["strTeam"],
+            "Events response: %s",
+            response.text[:1000]
         )
 
-        logger.info("Team: %s", team_name)
-        logger.info("Events found: %s", len(events))
-
-        for event in events:
-            logger.info(
-                "Event: %s",
-                event.get("strEvent")
-        )
-            
         logger.info("Events response: %s", response.text[:1000])
         
         if not events:
@@ -547,7 +528,7 @@ async def team_search(
         await update.message.reply_text(
             "Ошибка при поиске команды."
         )
-
+        
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api_key = os.getenv("THESPORTSDB_API_KEY")
 
