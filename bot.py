@@ -521,7 +521,10 @@ async def team_search(
                 ):
                     events.append(event)
 
-            if len(events) >= 10:
+                if len(events) >= 5:
+                    break
+
+            if len(events) >= 5:
                 break
 
         events.sort(
