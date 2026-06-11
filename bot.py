@@ -482,6 +482,12 @@ async def team_search(
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
 
+    if context.user_data.get("waiting_results"):
+        return
+
+    if context.user_data.get("waiting_favorite_team"):
+        return
+    
     if not context.user_data.get("waiting_team"):
         return
 
@@ -551,6 +557,9 @@ async def team_results(
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
 
+    if context.user_data.get("waiting_favorite_team"):
+        return
+    
     if not context.user_data.get("waiting_results"):
         return
 
@@ -826,21 +835,24 @@ def main() -> None:
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             team_search
-        )
+        ),
+        group=1
     )
 
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             team_results
-        )
+        ),
+        group=2
     )
 
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             favorite_team
-        )
+        ),
+        group=3
     )
     
     application.run_polling(
