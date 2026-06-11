@@ -55,8 +55,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "⚽ MatchLab\n\n"
         "📅 Сегодня — матчи на сегодня\n"
         "📆 Завтра — матчи на завтра\n"
-        "🔥 Топ матчи — самые интересные игры\n",
-        reply_markup=reply_markup
+        "🔥 Топ матчи — самые интересные игры\n"
+        "⚽ Команда — ближайшие матчи команды\n"
+        "📊 Результаты — последние результаты команды\n"
+        "⭐ Моя команда — сохранить любимую команду",
+        reply_markup=reply_markup,
     )
 
 
