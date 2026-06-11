@@ -7,27 +7,9 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 
-API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
 THESPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json"
 MAX_MATCHES = 20
 MAX_TOP_MATCHES = 15
-TOP_LEAGUE_IDS = [
-    2,
-    3,
-    848,
-    39,
-    140,
-    78,
-    135,
-    61,
-    88,
-    94,
-    203,
-    389,
-    1,
-    15,
-]
-
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -329,31 +311,57 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def top(update, context):
     api_key = os.getenv("THESPORTSDB_API_KEY")
 
+    if not api_key:
+        await update.message.reply_text("TheSportsDB API key is not configured.")
+        return
+
     matches = get_thesportsdb_next_football_matches(api_key)
 
-    TOP_KEYWORDS = [
-        "World Cup", "Champions League", "Europa League",
-        "Premier League", "La Liga", "Serie A", "Bundesliga",
-        "Ligue 1", "Eredivisie", "Swiss", "Norway",
-        "Norwegian", "Sweden", "Swedish", "Czech",
-        "Serbia", "Latvia", "Lithuania", "Azerbaijan",
-        "Kazakhstan"
-    ]
+    LEAGUE_RATINGS = {
+        "FIFA World Cup": 100,
+        "UEFA Champions League": 95,
+        "UEFA Europa League": 90,
+        "Premier League": 90,
+        "La Liga": 90,
+        "Serie A": 90,
+        "Bundesliga": 90,
+        "Ligue 1": 85,
+        "Eredivisie": 80,
+        "Swiss Super League": 75,
+        "Allsvenskan": 75,
+        "Eliteserien": 75,
+        "Czech Liga": 75,
+        "Serbian Super Liga": 70,
+        "A Lyga": 65,
+        "Virsliga": 65,
+        "Azerbaijan Premier League": 65,
+        "Kazakhstan Premier League": 65,
+    }
 
     filtered = []
+
     for match in matches:
-        league = (match.get("strLeague") or "").lower()
+        league_name = match.get("strLeague") or ""
+        rating = LEAGUE_RATINGS.get(league_name, 0)
 
-        if any(keyword.lower() in league for keyword in TOP_KEYWORDS):
-            filtered.append(match)
+        if rating > 0:
+            filtered.append((rating, match))
 
-    if not filtered:
-        filtered = matches[:10]
+    filtered.sort(key=lambda x: x[0], reverse=True)
 
-    message = "🔥 Топ матчи\n\n"
+    if filtered:
+        final_matches = [m for _, m in filtered]
+    else:
+        final_matches = matches[:10]
 
-    for match in filtered[:10]:
-        message += format_thesportsdb_event(match) + "\n\n"
+    message = "🔥 Топ матчи
+
+"
+
+    for match in final_matches[:10]:
+        message += format_thesportsdb_event(match) + "
+
+"
 
     await update.message.reply_text(message)
 
