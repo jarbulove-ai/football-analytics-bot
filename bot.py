@@ -525,7 +525,9 @@ async def team_search(
                 "Event: %s",
                 event.get("strEvent")
         )
-
+            
+        logger.info("Events response: %s", response.text[:1000])
+        
         if not events:
             await update.message.reply_text(
                 "Ближайшие матчи не найдены."
