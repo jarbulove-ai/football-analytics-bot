@@ -678,7 +678,8 @@ async def show_profile(
 
     if not favorite_team:
         await update.message.reply_text(
-            "Любимая команда не выбрана.\n\nНажмите ⭐ Моя команда"
+            "⭐ Любимая команда не выбрана.\n\n"
+            "Нажмите ⭐ Моя команда и введите название."
         )
         return
 
@@ -691,30 +692,46 @@ async def show_profile(
             timeout=20,
         )
 
+        response.raise_for_status()
+
         teams = response.json().get("teams")
 
         if not teams:
             await update.message.reply_text(
-                f"Команда '{favorite_team}' не найдена."
+                "Команда не найдена."
             )
             return
 
         team_id = teams[0]["idTeam"]
 
-        next_events = requests.get(
+        # будущие матчи
+        response = requests.get(
             f"{THESPORTSDB_BASE_URL}/{api_key}/eventsnext.php",
             params={"id": team_id},
             timeout=20,
-        ).json().get("events") or []
+        )
 
-        last_events = requests.get(
+        response.raise_for_status()
+
+        next_events = response.json().get("events") or []
+
+        # последние результаты
+        response = requests.get(
             f"{THESPORTSDB_BASE_URL}/{api_key}/eventslast.php",
             params={"id": team_id},
             timeout=20,
-        ).json().get("results") or []
+        )
 
-        message = f"📋 Профиль\n\n⭐ Любимая команда: {favorite_team}\n\n"
+        response.raise_for_status()
 
+        last_events = response.json().get("results") or []
+
+        message = (
+            "📋 Профиль\n\n"
+            f"⭐ Любимая команда: {favorite_team}\n\n"
+        )
+
+        # Ближайшие матчи
         if next_events:
             message += "📅 Ближайшие матчи\n\n"
 
@@ -722,26 +739,67 @@ async def show_profile(
                 message += format_thesportsdb_event(event)
                 message += "\n"
 
+        # Последние результаты
         if last_events:
-            message += "📊 Последние 5 матчей\n\n"
+            message += "\n📊 Последние 5 матчей\n\n"
+
+            wins = 0
+            draws = 0
+            losses = 0
+
+            form = []
 
             for event in last_events[:5]:
+
                 home = event.get("strHomeTeam", "")
                 away = event.get("strAwayTeam", "")
-                hs = event.get("intHomeScore", "-")
-                aw = event.get("intAwayScore", "-")
+
+                hs = int(event.get("intHomeScore") or 0)
+                aw = int(event.get("intAwayScore") or 0)
+
                 league = event.get("strLeague", "")
 
+                message += (
+                    f"⚽ {home} {hs}-{aw} {away}\n"
+                    f"🏆 {league}\n\n"
+                )
+
+                is_home = (
+                    home.lower() ==
+                    favorite_team.lower()
+                )
+
+                if hs == aw:
+                    draws += 1
+                    form.append("➖")
+
+                elif (
+                    (is_home and hs > aw)
+                    or
+                    (not is_home and aw > hs)
+                ):
+                    wins += 1
+                    form.append("✅")
+
+                else:
+                    losses += 1
+                    form.append("❌")
+
             message += (
-                f"⚽ {home} {hs}-{aw} {away}\n"
-                f"🏆 {league}\n\n"
+                "🔥 Форма команды\n\n"
+                f"{''.join(form)}\n\n"
+                f"🏆 Побед: {wins}\n"
+                f"🤝 Ничьих: {draws}\n"
+                f"😔 Поражений: {losses}"
             )
 
         await update.message.reply_text(message)
 
     except Exception:
+        logger.exception("Profile failed")
+
         await update.message.reply_text(
-            "Не удалось загрузить профиль команды."
+            "Ошибка при загрузке профиля."
         )
 
 
