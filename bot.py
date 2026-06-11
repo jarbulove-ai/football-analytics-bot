@@ -8,6 +8,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 
 API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
+THESPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json"
 MAX_MATCHES = 20
 MAX_TOP_MATCHES = 15
 TOP_LEAGUE_IDS = [
@@ -168,6 +169,76 @@ def get_top_matches_between(
     ]
 
 
+def fetch_thesportsdb_events_for_date(api_key: str, date_value: datetime) -> list[dict]:
+    response = requests.get(
+        f"{THESPORTSDB_BASE_URL}/{api_key}/eventsday.php",
+        params={"d": date_value.strftime("%Y-%m-%d"), "s": "Soccer"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    return response.json().get("events") or []
+
+
+def parse_thesportsdb_event_time(event: dict) -> datetime | None:
+    timestamp = event.get("strTimestamp")
+    if timestamp:
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+
+    date_value = event.get("dateEvent")
+    time_value = event.get("strTime") or "00:00:00"
+    if not date_value:
+        return None
+
+    if len(time_value) == 5:
+        time_value = f"{time_value}:00"
+
+    return datetime.fromisoformat(f"{date_value}T{time_value}").replace(
+        tzinfo=timezone.utc
+    )
+
+
+def get_thesportsdb_next_football_matches(api_key: str) -> list[dict]:
+    now = datetime.now(timezone.utc)
+    events_by_id = {}
+
+    for day_offset in range(3):
+        date_value = now + timedelta(days=day_offset)
+        for event in fetch_thesportsdb_events_for_date(api_key, date_value):
+            event_time = parse_thesportsdb_event_time(event)
+            event_id = event.get("idEvent")
+            if event_time is None or event_time < now:
+                continue
+            events_by_id[event_id or f"{event.get('strEvent')}-{event_time}"] = event
+
+    return sorted(
+        events_by_id.values(),
+        key=lambda event: parse_thesportsdb_event_time(event) or datetime.max.replace(
+            tzinfo=timezone.utc
+        ),
+    )[:10]
+
+
+def format_thesportsdb_event(event: dict) -> str:
+    home_team = event.get("strHomeTeam") or "Неизвестная команда"
+    away_team = event.get("strAwayTeam") or "Неизвестная команда"
+    tournament = event.get("strLeague") or "Неизвестный турнир"
+    country = event.get("strCountry") or "Неизвестная страна"
+
+    event_time = parse_thesportsdb_event_time(event)
+    if event_time is None:
+        kickoff_text = "Время неизвестно"
+    else:
+        almaty_tz = timezone(timedelta(hours=5))
+        kickoff_text = event_time.astimezone(almaty_tz).strftime("%d.%m %H:%M")
+
+    return (
+        f"⚽ {home_team} - {away_team}\n"
+        f"🏆 {tournament}\n"
+        f"🌍 {country}\n"
+        f"🕒 {kickoff_text}"
+    )
+
+
 def format_match(item: dict) -> str:
     teams = item.get("teams", {})
     league = item.get("league", {})
@@ -262,6 +333,36 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(message)
 
 
+async def testdb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    api_key = os.getenv("THESPORTSDB_API_KEY")
+    if not api_key:
+        logger.error("THESPORTSDB_API_KEY is not configured")
+        await update.message.reply_text("TheSportsDB API key is not configured.")
+        return
+
+    try:
+        matches = get_thesportsdb_next_football_matches(api_key)
+        logger.info(
+            "TheSportsDB returned %s matches",
+            len(matches),
+        )
+    except requests.RequestException:
+        logger.exception("Failed to request events from TheSportsDB")
+        await update.message.reply_text("Не удалось получить матчи из TheSportsDB.")
+        return
+    except Exception:
+        logger.exception("Failed to process events from TheSportsDB")
+        await update.message.reply_text("Не удалось обработать матчи из TheSportsDB.")
+        return
+
+    if not matches:
+        await update.message.reply_text("Матчи TheSportsDB не найдены.")
+        return
+
+    message = "\n\n".join(format_thesportsdb_event(match) for match in matches)
+    await update.message.reply_text(message)
+
+
 def main() -> None:
     telegram_token = get_required_env("TELEGRAM_BOT_TOKEN")
     football_api_key = get_required_env("FOOTBALL_API_KEY")
@@ -272,6 +373,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("today", today))
     application.add_handler(CommandHandler("top", top))
+    application.add_handler(CommandHandler("testdb", testdb))
 
     application.run_polling()
 
