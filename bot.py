@@ -473,9 +473,9 @@ async def button_handler(
     elif text == "⭐ Моя команда":
         context.user_data["waiting_favorite_team"] = True
 
-    await update.message.reply_text(
+        await update.message.reply_text(
         "Введите название любимой команды"
-    )
+        )
 
 async def team_search(
     update: Update,
@@ -804,6 +804,20 @@ def main() -> None:
     application.add_handler(
         MessageHandler(
             filters.Regex("^⚽ Команда$"),
+            button_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("^📊 Результаты$"),
+            button_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("^⭐ Моя команда$"),
             button_handler
         )
     )
