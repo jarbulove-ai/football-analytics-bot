@@ -543,7 +543,7 @@ async def team_search(
             "Ошибка при поиске команды."
         )
         
- async def team_results(
+async def team_results(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
