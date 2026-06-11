@@ -331,13 +331,28 @@ async def top(update, context):
 
     matches = get_thesportsdb_next_football_matches(api_key)
 
-    if not matches:
-        await update.message.reply_text("Топ матчей не найдено.")
-        return
+    TOP_KEYWORDS = [
+        "World Cup", "Champions League", "Europa League",
+        "Premier League", "La Liga", "Serie A", "Bundesliga",
+        "Ligue 1", "Eredivisie", "Swiss", "Norway",
+        "Norwegian", "Sweden", "Swedish", "Czech",
+        "Serbia", "Latvia", "Lithuania", "Azerbaijan",
+        "Kazakhstan"
+    ]
+
+    filtered = []
+    for match in matches:
+        league = (match.get("strLeague") or "").lower()
+
+        if any(keyword.lower() in league for keyword in TOP_KEYWORDS):
+            filtered.append(match)
+
+    if not filtered:
+        filtered = matches[:10]
 
     message = "🔥 Топ матчи\n\n"
 
-    for match in matches[:10]:
+    for match in filtered[:10]:
         message += format_thesportsdb_event(match) + "\n\n"
 
     await update.message.reply_text(message)
@@ -375,7 +390,7 @@ async def testdb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def main() -> None:
     telegram_token = get_required_env("TELEGRAM_BOT_TOKEN")
-    football_api_key = get_required_env("FOOTBALL_API_KEY")
+    football_api_key = os.getenv("FOOTBALL_API_KEY", "")
 
     application = Application.builder().token(telegram_token).build()
     application.bot_data["football_api_key"] = football_api_key
