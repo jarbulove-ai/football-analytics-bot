@@ -384,7 +384,9 @@ def main() -> None:
     application.add_handler(CommandHandler("top", top))
     application.add_handler(CommandHandler("testdb", testdb))
 
-    application.run_polling()
+    application.run_polling(
+    drop_pending_updates=True
+    )
 
 
 if __name__ == "__main__":
