@@ -474,13 +474,16 @@ async def button_handler(
         context.user_data["waiting_favorite_team"] = True
 
         await update.message.reply_text(
-        "Введите название любимой команды"
+            "Введите название любимой команды"
         )
 
 async def team_search(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
+
+    if update.message.text == "⚽ Команда":
+        return
 
     if context.user_data.get("waiting_results"):
         return
@@ -557,6 +560,9 @@ async def team_results(
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
 
+    if update.message.text == "📊 Результаты":
+        return
+
     if context.user_data.get("waiting_favorite_team"):
         return
     
@@ -628,6 +634,9 @@ async def favorite_team(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
+
+    if update.message.text == "⭐ Моя команда":
+        return
 
     if not context.user_data.get("waiting_favorite_team"):
         return
