@@ -298,16 +298,20 @@ def format_top_match(item: dict) -> str:
 
 
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    api_key = context.application.bot_data["football_api_key"]
+    api_key = os.getenv("THESPORTSDB_API_KEY")
+
+    if not api_key:
+        await update.message.reply_text("TheSportsDB API key is not configured.")
+        return
 
     try:
-        matches = get_matches_next_24_hours(api_key)
+        matches = get_thesportsdb_next_football_matches(api_key)
     except requests.RequestException:
-        logger.exception("Failed to request fixtures from API-Football")
+        logger.exception("Failed to request events from TheSportsDB")
         await update.message.reply_text("Не удалось получить матчи. Попробуй позже.")
         return
     except Exception:
-        logger.exception("Failed to process fixtures from API-Football")
+        logger.exception("Failed to process events from TheSportsDB")
         await update.message.reply_text("Не удалось обработать список матчей.")
         return
 
@@ -315,7 +319,12 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("В ближайшие 24 часа матчей не найдено.")
         return
 
-    message = "\n\n".join(format_match(match) for match in matches)
+    message = "
+
+".join(
+        format_thesportsdb_event(match)
+        for match in matches[:MAX_MATCHES]
+    )
     await update.message.reply_text(message)
 
 
