@@ -471,11 +471,19 @@ async def button_handler(
         )
 
     elif text == "⭐ Моя команда":
-        context.user_data["waiting_favorite_team"] = True
 
-        await update.message.reply_text(
-            "Введите название любимой команды"
-        )
+        favorite_team = context.user_data.get("favorite_team")
+
+        if favorite_team:
+            await update.message.reply_text(
+                f"⭐ Любимая команда:\n{favorite_team}"
+            )
+        else:
+            context.user_data["waiting_favorite_team"] = True
+
+            await update.message.reply_text(
+                "Введите название любимой команды"
+            )
 
 async def team_search(
     update: Update,
@@ -649,6 +657,7 @@ async def favorite_team(
 
     await update.message.reply_text(
         f"⭐ Любимая команда сохранена:\n{team_name}"
+        f"Теперь кнопка ⭐ Моя команда будет показывать её матчи."
     )
 
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
