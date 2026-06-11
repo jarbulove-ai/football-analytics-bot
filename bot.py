@@ -480,6 +480,9 @@ async def team_search(
             timeout=20,
         )
 
+        logger.info("Request URL: %s", response.url)
+        logger.info("Status code: %s", response.status_code)
+        
         response.raise_for_status()
 
         teams = response.json().get("teams")
@@ -489,6 +492,9 @@ async def team_search(
                 f"Команда '{team_name}' не найдена."
             )
             return
+            
+        logger.info("Team found: %s", teams[0]["strTeam"])
+        logger.info("Team ID: %s", teams[0]["idTeam"])    
 
         team_id = teams[0]["idTeam"]
 
