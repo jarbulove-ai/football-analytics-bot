@@ -656,7 +656,8 @@ async def favorite_team(
     context.user_data["favorite_team"] = team_name
 
     await update.message.reply_text(
-        f"⭐ Любимая команда сохранена:\n{team_name}"
+        f"⭐ Любимая команда сохранена:\n"
+        f"{team_name}\n\n"
         f"Теперь кнопка ⭐ Моя команда будет показывать её матчи."
     )
 
