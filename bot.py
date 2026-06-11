@@ -501,6 +501,15 @@ async def team_search(
         response.raise_for_status()
 
         events = response.json().get("events") or []
+        
+        logger.info("Team: %s", team_name)
+        logger.info("Events found: %s", len(events))
+
+        for event in events:
+            logger.info(
+                "Event: %s",
+                event.get("strEvent")
+        )
 
         if not events:
             await update.message.reply_text(
