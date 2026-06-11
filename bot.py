@@ -437,6 +437,13 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Virsliga": 65,
         "Azerbaijan Premier League": 65,
         "Kazakhstan Premier League": 65,
+        "CONCACAF Gold Cup": 90,
+        "Copa America": 95,
+        "Brazil Serie A": 85,
+        "Argentine Primera Division": 80,
+        "MLS": 75,
+        "J1 League": 70,
+        "K League 1": 70,
     }
 
     filtered = []
