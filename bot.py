@@ -58,7 +58,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🔥 Топ матчи — самые интересные игры\n"
         "⚽ Команда — ближайшие матчи команды\n"
         "📊 Результаты — последние результаты команды\n"
-        "⭐ Моя команда — сохранить любимую команду",
+        "⭐ Моя команда — выбрать или изменить любимую команду\n"
+        "📋 Профиль — информация по любимой команде",
         reply_markup=reply_markup,
     )
 
@@ -492,28 +493,14 @@ async def button_handler(
         favorite_team = context.user_data.get("favorite_team")
 
         if favorite_team:
-
-            context.user_data["waiting_team"] = True
-
-            class FakeMessage:
-                def __init__(self, original_message, text):
-                    self.text = text
-                    self.reply_text = original_message.reply_text
-
-            class FakeUpdate:
-                def __init__(self, original_update, text):
-                    self.message = FakeMessage(
-                        original_update.message,
-                        text
-                    )
-
-            fake_update = FakeUpdate(
-                update,
-                favorite_team
+            await update.message.reply_text(
+                f"⭐ Текущая команда: {favorite_team}\n\n"
+                f"Введите новую любимую команду:"
             )
-
-            await team_search(fake_update, context)
-            return
+        else:
+            await update.message.reply_text(
+                "Введите название любимой команды:"
+            )
 
         context.user_data["waiting_favorite_team"] = True
 
