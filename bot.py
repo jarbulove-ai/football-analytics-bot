@@ -288,6 +288,32 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         matches = get_thesportsdb_next_football_matches(api_key)
+        ALLOWED_COUNTRIES = {
+        "England",
+        "Spain",
+        "Germany",
+        "Italy",
+        "France",
+        "Netherlands",
+        "Portugal",
+        "Turkey",
+        "Switzerland",
+        "Norway",
+        "Sweden",
+        "Czech Republic",
+        "Serbia",
+        "Latvia",
+        "Lithuania",
+        "Azerbaijan",
+        "Kazakhstan",
+        "Mexico",
+    }
+
+    matches = [
+        match
+        for match in matches
+        if (match.get("strCountry") or "") in ALLOWED_COUNTRIES
+    ]
     except requests.RequestException:
         logger.exception("Failed to request events from TheSportsDB")
         await update.message.reply_text("Не удалось получить матчи. Попробуй позже.")
