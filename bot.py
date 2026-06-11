@@ -42,6 +42,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         ["📅 Сегодня", "📆 Завтра"],
         ["🔥 Топ матчи"],
+        ["⚽ Команда"],
     ]
 
     reply_markup = ReplyKeyboardMarkup(
@@ -447,6 +448,80 @@ async def button_handler(
     elif text == "🔥 Топ матчи":
         await top(update, context)
 
+    elif text == "⚽ Команда":
+        context.user_data["waiting_team"] = True
+
+        await update.message.reply_text(
+            "⚽ Введите название команды\n\n"
+            "Например:\n"
+            "Liverpool\n"
+            "Real Madrid\n"
+            "Barcelona\n"
+            "Kairat"
+        )
+
+async def team_search(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+
+    if not context.user_data.get("waiting_team"):
+        return
+
+    team_name = update.message.text
+    api_key = os.getenv("THESPORTSDB_API_KEY")
+
+    context.user_data["waiting_team"] = False
+
+    try:
+        response = requests.get(
+            f"{THESPORTSDB_BASE_URL}/{api_key}/searchteams.php",
+            params={"t": team_name},
+            timeout=20,
+        )
+
+        response.raise_for_status()
+
+        teams = response.json().get("teams")
+
+        if not teams:
+            await update.message.reply_text(
+                f"Команда '{team_name}' не найдена."
+            )
+            return
+
+        team_id = teams[0]["idTeam"]
+
+        response = requests.get(
+            f"{THESPORTSDB_BASE_URL}/{api_key}/eventsnext.php",
+            params={"id": team_id},
+            timeout=20,
+        )
+
+        response.raise_for_status()
+
+        events = response.json().get("events") or []
+
+        if not events:
+            await update.message.reply_text(
+                "Ближайшие матчи не найдены."
+            )
+            return
+
+        message = f"⚽ {teams[0]['strTeam']}\n\n"
+
+        for event in events[:5]:
+            message += format_thesportsdb_event(event)
+            message += "\n\n"
+
+        await update.message.reply_text(message)
+
+    except Exception:
+        logger.exception("Team search failed")
+        await update.message.reply_text(
+            "Ошибка при поиске команды."
+        )
+
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     api_key = os.getenv("THESPORTSDB_API_KEY")
 
@@ -595,7 +670,38 @@ def main() -> None:
     application.add_handler(CommandHandler("testdb", testdb))
 
     application.add_handler(
-    MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler)
+        MessageHandler(
+            filters.Regex("^📅 Сегодня$"),
+            button_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("^📆 Завтра$"),
+            button_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("^🔥 Топ матчи$"),
+            button_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("^⚽ Команда$"),
+            button_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            team_search
+        )
     )
 
     application.run_polling(
