@@ -717,20 +717,25 @@ async def show_profile(
 
         if next_events:
             message += "📅 Ближайшие матчи\n\n"
-            for event in next_events[:5]:
-                home = event.get("strHomeTeam", "")
-                away = event.get("strAwayTeam", "")
-                message += f"⚽ {home} - {away}\n"
-            message += "\n"
+
+            for event in next_events[:3]:
+                message += format_thesportsdb_event(event)
+                message += "\n"
 
         if last_events:
-            message += "📊 Последние результаты\n\n"
+            message += "📊 Последние 5 матчей\n\n"
+
             for event in last_events[:5]:
                 home = event.get("strHomeTeam", "")
                 away = event.get("strAwayTeam", "")
                 hs = event.get("intHomeScore", "-")
                 aw = event.get("intAwayScore", "-")
-                message += f"⚽ {home} {hs}-{aw} {away}\n"
+                league = event.get("strLeague", "")
+
+            message += (
+                f"⚽ {home} {hs}-{aw} {away}\n"
+                f"🏆 {league}\n\n"
+            )
 
         await update.message.reply_text(message)
 
