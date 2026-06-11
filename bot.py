@@ -484,13 +484,30 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "MLS": 75,
         "J1 League": 70,
         "K League 1": 70,
+        "World Cup": 100,
+        "Champions League": 95,
+        "Europa League": 90,
+        "Premier Division": 70,
+        "National League": 60,
+        "Eliteserien": 75,
+        "Allsvenskan": 75,
+        "Veikkausliiga": 70,
+        "Super League": 75,
+        "Superliga": 75,
+        "Premier Liga": 70,
     }
 
     filtered = []
 
     for match in matches:
         league_name = match.get("strLeague") or ""
-        rating = LEAGUE_RATINGS.get(league_name, 0)
+        logger.info("League: %s", league_name)
+        rating = 0
+
+        for league_key, league_rating in LEAGUE_RATINGS.items():
+            if league_key.lower() in league_name.lower():
+                rating = league_rating
+                break
 
         if rating > 0:
             filtered.append((rating, match))
