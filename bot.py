@@ -520,11 +520,18 @@ def build_api_football_profile_message(team_name: str) -> str | None:
     completed_matches_count = 0
     both_teams_scored_count = 0
     over_25_count = 0
+    home_wins = 0
+    home_draws = 0
+    home_losses = 0
+    away_wins = 0
+    away_draws = 0
+    away_losses = 0
 
     for fixture in last_fixtures[:5]:
         teams = fixture.get("teams", {})
         goals = fixture.get("goals", {})
         home_id = teams.get("home", {}).get("id")
+        away_id = teams.get("away", {}).get("id")
         home_goals = goals.get("home")
         away_goals = goals.get("away")
 
@@ -534,6 +541,21 @@ def build_api_football_profile_message(team_name: str) -> str | None:
         if home_id == team_id:
             team_goals = home_goals
             opponent_goals = away_goals
+            if team_goals > opponent_goals:
+                home_wins += 1
+            elif team_goals == opponent_goals:
+                home_draws += 1
+            else:
+                home_losses += 1
+        elif away_id == team_id:
+            team_goals = away_goals
+            opponent_goals = home_goals
+            if team_goals > opponent_goals:
+                away_wins += 1
+            elif team_goals == opponent_goals:
+                away_draws += 1
+            else:
+                away_losses += 1
         else:
             team_goals = away_goals
             opponent_goals = home_goals
@@ -593,7 +615,10 @@ def build_api_football_profile_message(team_name: str) -> str | None:
         f"🥅 {average_goals_against:.1f}\n\n"
         "🎯 Тренды последних 5 матчей\n\n"
         f"⚽ ОЗ прошло: {both_teams_scored_count}/5\n"
-        f"🔥 ТБ 2.5 прошло: {over_25_count}/5"
+        f"🔥 ТБ 2.5 прошло: {over_25_count}/5\n\n"
+        f"🏠 Дома: {home_wins}В / {home_draws}Н / {home_losses}П\n"
+        f"✈️ В гостях: {away_wins}В / {away_draws}Н / {away_losses}П\n\n"
+        "В — выигрыш, Н — ничья, П — поражение"
     )
 
     return message
