@@ -569,6 +569,7 @@ def get_api_football_matches_between(
     start_almaty: datetime,
     end_almaty: datetime,
     only_top: bool = False,
+    allowed_only: bool = False,
 ) -> list[dict]:
     fixtures_by_id = {}
 
@@ -609,6 +610,9 @@ def get_api_football_matches_between(
                 continue
 
             if is_excluded_league_or_match(fixture_item):
+                continue
+
+            if allowed_only and not is_top_or_allowed_match(fixture_item):
                 continue
 
             if only_top and not is_top_or_allowed_match(fixture_item):
@@ -1112,6 +1116,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             today_start,
             today_end,
             only_top=False,
+            allowed_only=True,
         )
         if not api_matches:
             await update.message.reply_text("📅 Матчи на сегодня не найдены.")
@@ -1202,6 +1207,7 @@ async def tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             tomorrow_start,
             tomorrow_end,
             only_top=False,
+            allowed_only=True,
         )
         if not api_matches:
             await update.message.reply_text("📆 Матчи на завтра не найдены.")
@@ -1712,6 +1718,7 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             now_almaty,
             window_end,
             only_top=True,
+            allowed_only=True,
         )
         if not api_matches:
             await update.message.reply_text(
