@@ -517,6 +517,7 @@ def build_api_football_profile_message(team_name: str) -> str | None:
     )
     goals_for = 0
     goals_against = 0
+    total_goals_sum = 0
     completed_matches_count = 0
     both_teams_scored_count = 0
     over_25_count = 0
@@ -562,6 +563,7 @@ def build_api_football_profile_message(team_name: str) -> str | None:
 
         goals_for += team_goals
         goals_against += opponent_goals
+        total_goals_sum += home_goals + away_goals
         completed_matches_count += 1
 
         if home_goals > 0 and away_goals > 0:
@@ -573,9 +575,11 @@ def build_api_football_profile_message(team_name: str) -> str | None:
     if completed_matches_count:
         average_goals_for = goals_for / completed_matches_count
         average_goals_against = goals_against / completed_matches_count
+        average_total_goals = total_goals_sum / completed_matches_count
     else:
         average_goals_for = 0
         average_goals_against = 0
+        average_total_goals = 0
 
     message = (
         "📋 Профиль\n\n"
@@ -612,7 +616,8 @@ def build_api_football_profile_message(team_name: str) -> str | None:
         f"🥅 Пропущено: {goals_against}\n\n"
         "📊 Среднее за матч:\n"
         f"⚽ {average_goals_for:.1f}\n"
-        f"🥅 {average_goals_against:.1f}\n\n"
+        f"🥅 {average_goals_against:.1f}\n"
+        f"⚽ Средний тотал: {average_total_goals:.1f}\n\n"
         "🎯 Тренды последних 5 матчей\n\n"
         f"⚽ ОЗ прошло: {both_teams_scored_count}/5\n"
         f"🔥 ТБ 2.5 прошло: {over_25_count}/5\n\n"
