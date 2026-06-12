@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -40,6 +41,62 @@ TOP_LEAGUE_IDS = [
     1,
     15,
 ]
+STANDINGS_LEAGUES = {
+    "🇬🇧 АПЛ": {
+        "id": 39,
+        "season": 2025,
+        "name": "Premier League",
+        "country": "England",
+    },
+    "🇪🇸 Ла Лига": {
+        "id": 140,
+        "season": 2025,
+        "name": "La Liga",
+        "country": "Spain",
+    },
+    "🇮🇹 Серия А": {
+        "id": 135,
+        "season": 2025,
+        "name": "Serie A",
+        "country": "Italy",
+    },
+    "🇩🇪 Бундеслига": {
+        "id": 78,
+        "season": 2025,
+        "name": "Bundesliga",
+        "country": "Germany",
+    },
+    "🇫🇷 Лига 1": {
+        "id": 61,
+        "season": 2025,
+        "name": "Ligue 1",
+        "country": "France",
+    },
+    "🇵🇹 Португалия": {
+        "id": 94,
+        "season": 2025,
+        "name": "Primeira Liga",
+        "country": "Portugal",
+    },
+    "🇳🇱 Эредивизи": {
+        "id": 88,
+        "season": 2025,
+        "name": "Eredivisie",
+        "country": "Netherlands",
+    },
+    "🇹🇷 Турция": {
+        "id": 203,
+        "season": 2025,
+        "name": "Süper Lig",
+        "country": "Turkey",
+    },
+    "🇰🇿 Казахстан": {
+        "id": 389,
+        "season": 2026,
+        "name": "Premier League",
+        "country": "Kazakhstan",
+    },
+}
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -61,6 +118,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ["🔥 Топ матчи"],
         ["⚽ Команда", "📊 Результаты"],
         ["⭐ Моя команда", "📋 Профиль"],
+        ["🏆 Таблица"],
     ]
 
     reply_markup = ReplyKeyboardMarkup(
@@ -76,7 +134,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "⚽ Команда — ближайшие матчи команды\n"
         "📊 Результаты — последние результаты команды\n"
         "⭐ Моя команда — выбрать или изменить любимую команду\n"
-        "📋 Профиль — информация по любимой команде",
+        "📋 Профиль — информация по любимой команде\n"
+        "🏆 Таблица — турнирные таблицы лиг",
         reply_markup=reply_markup,
     )
 
@@ -629,6 +688,57 @@ def build_api_football_profile_message(team_name: str) -> str | None:
     return message
 
 
+def build_api_football_standings_message(
+    league_id: int,
+    season: int,
+    league_name: str,
+    country: str,
+) -> str:
+    response = request_api_football(
+        "/standings",
+        {
+            "league": league_id,
+            "season": season,
+        },
+    )
+
+    if not response:
+        return (
+            "🏆 Таблица\n\n"
+            f"{league_name}\n"
+            f"🌍 {country}\n\n"
+            "Таблица не найдена."
+        )
+
+    standings_groups = response[0].get("league", {}).get("standings", [])
+    standings = standings_groups[0] if standings_groups else []
+
+    if not standings:
+        return (
+            "🏆 Таблица\n\n"
+            f"{league_name}\n"
+            f"🌍 {country}\n\n"
+            "Таблица не найдена."
+        )
+
+    lines = [
+        "🏆 Таблица",
+        "",
+        league_name,
+        f"🌍 {country}",
+        "",
+    ]
+
+    for row in standings[:20]:
+        rank = row.get("rank", "-")
+        team_name = row.get("team", {}).get("name", "Неизвестная команда")
+        points = row.get("points", 0)
+        played = row.get("all", {}).get("played", 0)
+        lines.append(f"{rank}. {team_name} — {points} очк / {played} игр")
+
+    return "\n".join(lines)
+
+
 def format_match(item: dict) -> str:
     teams = item.get("teams", {})
     league = item.get("league", {})
@@ -795,6 +905,39 @@ async def button_handler(
 
     elif text == "🔥 Топ матчи":
         await top(update, context)
+
+    elif text == "🏆 Таблица":
+        league_buttons = list(STANDINGS_LEAGUES.keys())
+        keyboard = [
+            league_buttons[index:index + 2]
+            for index in range(0, len(league_buttons), 2)
+        ]
+        keyboard.append(["⬅️ Назад"])
+
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+        await update.message.reply_text(
+            "🏆 Выберите лигу:",
+            reply_markup=reply_markup,
+        )
+
+    elif text in STANDINGS_LEAGUES:
+        league = STANDINGS_LEAGUES[text]
+
+        try:
+            message = build_api_football_standings_message(
+                league["id"],
+                league["season"],
+                league["name"],
+                league["country"],
+            )
+            await update.message.reply_text(message)
+        except Exception:
+            logger.exception("Failed to get standings")
+            await update.message.reply_text("🏆 Таблица временно недоступна")
+
+    elif text == "⬅️ Назад":
+        await start(update, context)
 
     elif text == "⚽ Команда":
         context.user_data["waiting_team"] = True
@@ -1383,6 +1526,32 @@ def main() -> None:
     application.add_handler(
         MessageHandler(
             filters.Regex("^⭐ Моя команда$"),
+            button_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("^🏆 Таблица$"),
+            button_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("^⬅️ Назад$"),
+            button_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(
+                "^(" + "|".join(
+                    re.escape(key)
+                    for key in STANDINGS_LEAGUES.keys()
+                ) + ")$"
+            ),
             button_handler
         )
     )
