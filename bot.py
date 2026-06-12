@@ -705,6 +705,9 @@ async def button_handler(
 ) -> None:
 
     text = update.message.text
+    context.user_data["waiting_team"] = False
+    context.user_data["waiting_results"] = False
+    context.user_data["waiting_favorite_team"] = False
 
     if text == "📅 Сегодня":
         await today(update, context)
