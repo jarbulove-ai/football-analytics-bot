@@ -1354,6 +1354,36 @@ async def button_handler(
 
         context.user_data["waiting_favorite_team"] = True
 
+
+def build_team_not_found_retry_message() -> str:
+    return (
+        "Команда не найдена 😕\n"
+        "Попробуйте ввести название ещё раз.\n\n"
+        "Например:\n"
+        "Liverpool\n"
+        "Arsenal\n"
+        "Barcelona"
+    )
+
+
+def search_thesportsdb_team(team_name: str) -> dict | None:
+    api_key = os.getenv("THESPORTSDB_API_KEY")
+
+    response = requests.get(
+        f"{THESPORTSDB_BASE_URL}/{api_key}/searchteams.php",
+        params={"t": team_name},
+        timeout=20,
+    )
+
+    response.raise_for_status()
+
+    teams = response.json().get("teams")
+    if not teams:
+        return None
+
+    return teams[0]
+
+
 async def team_search(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -1374,12 +1404,11 @@ async def team_search(
     team_name = update.message.text
     api_key = os.getenv("THESPORTSDB_API_KEY")
 
-    context.user_data["waiting_team"] = False
-
     try:
         message = build_api_football_team_message(team_name)
         if message:
             await update.message.reply_text(message)
+            context.user_data["waiting_team"] = False
             return
 
         logger.info(
@@ -1392,23 +1421,14 @@ async def team_search(
         )
 
     try:
-        response = requests.get(
-            f"{THESPORTSDB_BASE_URL}/{api_key}/searchteams.php",
-            params={"t": team_name},
-            timeout=20,
-        )
+        team = search_thesportsdb_team(team_name)
 
-        response.raise_for_status()
-
-        teams = response.json().get("teams")
-
-        if not teams:
-            await update.message.reply_text(
-                f"Команда '{team_name}' не найдена."
-            )
+        if not team:
+            context.user_data["waiting_team"] = True
+            await update.message.reply_text(build_team_not_found_retry_message())
             return
 
-        team_id = teams[0]["idTeam"]
+        team_id = team["idTeam"]
 
         response = requests.get(
             f"{THESPORTSDB_BASE_URL}/{api_key}/eventsnext.php",
@@ -1431,15 +1451,17 @@ async def team_search(
             await update.message.reply_text(
                 "Ближайшие матчи не найдены."
             )
+            context.user_data["waiting_team"] = False
             return
 
-        message = f"⚽ {teams[0]['strTeam']}\n\n"
+        message = f"⚽ {team['strTeam']}\n\n"
 
         for event in events[:5]:
             message += format_thesportsdb_event(event)
             message += "\n\n"
 
         await update.message.reply_text(message)
+        context.user_data["waiting_team"] = False
 
     except Exception:
         logger.exception("Team search failed")
@@ -1461,8 +1483,6 @@ async def team_results(
     if not context.user_data.get("waiting_results"):
         return
 
-    context.user_data["waiting_results"] = False
-
     team_name = update.message.text
     api_key = os.getenv("THESPORTSDB_API_KEY")
 
@@ -1470,6 +1490,7 @@ async def team_results(
         message = build_api_football_results_message(team_name)
         if message:
             await update.message.reply_text(message)
+            context.user_data["waiting_results"] = False
             return
 
         logger.info(
@@ -1482,23 +1503,14 @@ async def team_results(
         )
 
     try:
-        response = requests.get(
-            f"{THESPORTSDB_BASE_URL}/{api_key}/searchteams.php",
-            params={"t": team_name},
-            timeout=20,
-        )
+        team = search_thesportsdb_team(team_name)
 
-        response.raise_for_status()
-
-        teams = response.json().get("teams")
-
-        if not teams:
-            await update.message.reply_text(
-                f"Команда '{team_name}' не найдена."
-            )
+        if not team:
+            context.user_data["waiting_results"] = True
+            await update.message.reply_text(build_team_not_found_retry_message())
             return
 
-        team_id = teams[0]["idTeam"]
+        team_id = team["idTeam"]
 
         response = requests.get(
             f"{THESPORTSDB_BASE_URL}/{api_key}/eventslast.php",
@@ -1514,9 +1526,10 @@ async def team_results(
             await update.message.reply_text(
                 "Последние матчи не найдены."
             )
+            context.user_data["waiting_results"] = False
             return
 
-        message = f"📊 {teams[0]['strTeam']}\n\n"
+        message = f"📊 {team['strTeam']}\n\n"
 
         for event in events[:5]:
             home = event.get("strHomeTeam", "")
@@ -1529,6 +1542,7 @@ async def team_results(
             )
 
         await update.message.reply_text(message)
+        context.user_data["waiting_results"] = False
 
     except Exception:
         logger.exception("Team results failed")
@@ -1548,15 +1562,41 @@ async def favorite_team(
     if not context.user_data.get("waiting_favorite_team"):
         return
 
-    context.user_data["waiting_favorite_team"] = False
-
     team_name = update.message.text
 
-    context.user_data["favorite_team"] = team_name
+    try:
+        team = search_api_football_team(team_name)
+        favorite_team_name = team["name"] if team else None
+    except Exception:
+        logger.exception(
+            "API-Football favorite team search failed, using TheSportsDB fallback"
+        )
+        favorite_team_name = None
+
+    if favorite_team_name is None:
+        try:
+            team = search_thesportsdb_team(team_name)
+            favorite_team_name = team["strTeam"] if team else None
+        except Exception:
+            logger.exception("Favorite team search failed")
+
+    if favorite_team_name is None:
+        context.user_data["waiting_favorite_team"] = True
+        await update.message.reply_text(build_team_not_found_retry_message())
+        return
+
+    try:
+        context.user_data["favorite_team"] = favorite_team_name
+        context.user_data["waiting_favorite_team"] = False
+    except Exception:
+        logger.exception("Failed to save favorite team")
+        context.user_data["waiting_favorite_team"] = True
+        await update.message.reply_text(build_team_not_found_retry_message())
+        return
 
     await update.message.reply_text(
         f"⭐ Любимая команда сохранена:\n"
-        f"{team_name}\n\n"
+        f"{favorite_team_name}\n\n"
         f"Открывайте 📋 Профиль для просмотра матчей команды."
     )
 
