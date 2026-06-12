@@ -494,6 +494,77 @@ def request_api_football(endpoint: str, params: dict) -> list[dict]:
     return payload.get("response", [])
 
 
+def is_top_or_allowed_match(fixture_item: dict) -> bool:
+    league = fixture_item.get("league", {})
+    league_id = league.get("id")
+    league_name = (league.get("name") or "").lower()
+
+    return (
+        league_id in TOP_LEAGUE_IDS
+        or "world cup" in league_name
+        or "uefa champions league" in league_name
+        or "uefa europa league" in league_name
+        or "uefa conference league" in league_name
+    )
+
+
+def is_excluded_league_or_match(fixture_item: dict) -> bool:
+    if is_top_or_allowed_match(fixture_item):
+        return False
+
+    league = fixture_item.get("league", {})
+    teams = fixture_item.get("teams", {})
+    home_team = teams.get("home", {})
+    away_team = teams.get("away", {})
+
+    text = " ".join(
+        [
+            league.get("name") or "",
+            league.get("country") or "",
+            home_team.get("name") or "",
+            away_team.get("name") or "",
+        ]
+    ).lower()
+
+    excluded_terms = [
+        "women",
+        "w league",
+        "female",
+        "youth",
+        "u17",
+        "u18",
+        "u19",
+        "u20",
+        "u21",
+        "u23",
+        "reserve",
+        "reserves",
+        "b team",
+        "regional",
+        "amateur",
+        "primera c",
+        "primera b metropolitana",
+        "serie b",
+        "serie c",
+        "serie d",
+        "league two",
+        "usl w",
+        "usl league two",
+        "paraibano u20",
+        "mineiro - 2",
+        "paulista série b",
+        "catarinense - 2",
+        "carioca - 2",
+        "goiano - 2",
+        "pernambucano - 2",
+    ]
+
+    if any(term in text for term in excluded_terms):
+        return True
+
+    return re.search(r"(?<![a-z0-9])ii(?![a-z0-9])", text) is not None
+
+
 def get_api_football_matches_between(
     start_almaty: datetime,
     end_almaty: datetime,
@@ -537,15 +608,10 @@ def get_api_football_matches_between(
             if not included:
                 continue
 
-            league = fixture_item.get("league", {})
-            league_id = league.get("id")
-            league_name = league.get("name") or ""
+            if is_excluded_league_or_match(fixture_item):
+                continue
 
-            if only_top and not (
-                league_id in TOP_LEAGUE_IDS
-                or league_id == 1
-                or "world cup" in league_name.lower()
-            ):
+            if only_top and not is_top_or_allowed_match(fixture_item):
                 continue
 
             fixtures_by_id[fixture_id] = fixture_item
@@ -1036,11 +1102,7 @@ def format_top_match(item: dict) -> str:
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         now_almaty = datetime.now(ALMATY_TZ)
-        today_start = datetime.combine(
-            now_almaty.date(),
-            datetime.min.time(),
-            tzinfo=ALMATY_TZ,
-        )
+        today_start = now_almaty
         today_end = datetime.combine(
             now_almaty.date(),
             datetime.max.time(),
@@ -1052,7 +1114,8 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             only_top=False,
         )
         if not api_matches:
-            raise RuntimeError("API-Football returned no today matches")
+            await update.message.reply_text("📅 Матчи на сегодня не найдены.")
+            return
 
         message = "📅 Матчи на сегодня\n\n"
         message += "\n\n".join(
@@ -1141,7 +1204,8 @@ async def tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             only_top=False,
         )
         if not api_matches:
-            raise RuntimeError("API-Football returned no tomorrow matches")
+            await update.message.reply_text("📆 Матчи на завтра не найдены.")
+            return
 
         message = "📆 Матчи на завтра\n\n"
         message += "\n\n".join(
@@ -1650,7 +1714,10 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             only_top=True,
         )
         if not api_matches:
-            raise RuntimeError("API-Football returned no top matches")
+            await update.message.reply_text(
+                "🔥 Топ матчи на ближайшие 72 часа не найдены."
+            )
+            return
 
         message = "🔥 Топ матчи\n\n"
         message += "\n\n".join(
