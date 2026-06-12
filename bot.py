@@ -728,6 +728,10 @@ def build_api_football_standings_message(
         f"🌍 {country}",
         "",
     ]
+    table_lines = []
+    table_lines.append(
+        f"{'#':<3}{'Команда':<18}{'Очки':>5}{'Игры':>6}{'+/-':>6}  {'Форма'}"
+    )
 
     for row in standings[:20]:
         rank = row.get("rank", "-")
@@ -754,15 +758,30 @@ def build_api_football_standings_message(
         else:
             form_text = "нет формы"
 
-        lines.append(
-            f"{rank}. {team_name} — "
-            f"{points} очк / {played} игр / {goals_diff_text} / {form_text}"
+        short_team_name = team_name
+        if len(short_team_name) > 17:
+            short_team_name = short_team_name[:16] + "…"
+
+        table_lines.append(
+            f"{rank:<3}"
+            f"{short_team_name:<18}"
+            f"{points:>5}"
+            f"{played:>6}"
+            f"{goals_diff_text:>6}  "
+            f"{form_text}"
         )
+
+    lines.append("```")
+    lines.extend(table_lines)
+    lines.append("```")
 
     lines.extend(
         [
             "",
-            "📌 Формат: место — очки / игры / разница / форма",
+            "📌 Формат:",
+            "Очки — количество очков",
+            "Игры — сыгранные матчи",
+            "+/- — разница голов",
             "✅ — победа, ➖ — ничья, ❌ — поражение",
         ]
     )
@@ -962,7 +981,7 @@ async def button_handler(
                 league["name"],
                 league["country"],
             )
-            await update.message.reply_text(message)
+            await update.message.reply_text(message, parse_mode="Markdown")
         except Exception:
             logger.exception("Failed to get standings")
             await update.message.reply_text("🏆 Таблица временно недоступна")
