@@ -518,6 +518,8 @@ def build_api_football_profile_message(team_name: str) -> str | None:
     goals_for = 0
     goals_against = 0
     completed_matches_count = 0
+    both_teams_scored_count = 0
+    over_25_count = 0
 
     for fixture in last_fixtures[:5]:
         teams = fixture.get("teams", {})
@@ -539,6 +541,12 @@ def build_api_football_profile_message(team_name: str) -> str | None:
         goals_for += team_goals
         goals_against += opponent_goals
         completed_matches_count += 1
+
+        if home_goals > 0 and away_goals > 0:
+            both_teams_scored_count += 1
+
+        if (home_goals + away_goals) >= 3:
+            over_25_count += 1
 
     if completed_matches_count:
         average_goals_for = goals_for / completed_matches_count
@@ -582,7 +590,10 @@ def build_api_football_profile_message(team_name: str) -> str | None:
         f"🥅 Пропущено: {goals_against}\n\n"
         "📊 Среднее за матч:\n"
         f"⚽ {average_goals_for:.1f}\n"
-        f"🥅 {average_goals_against:.1f}"
+        f"🥅 {average_goals_against:.1f}\n\n"
+        "🎯 Тренды последних 5 матчей\n\n"
+        f"⚽ ОЗ прошло: {both_teams_scored_count}/5\n"
+        f"🔥 ТБ 2.5 прошло: {over_25_count}/5"
     )
 
     return message
