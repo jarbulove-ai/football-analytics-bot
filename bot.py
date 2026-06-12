@@ -20,9 +20,26 @@ from telegram.ext import (
 )
 
 
+API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
 THESPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json"
 MAX_MATCHES = 20
 MAX_TOP_MATCHES = 15
+TOP_LEAGUE_IDS = [
+    2,
+    3,
+    848,
+    39,
+    140,
+    78,
+    135,
+    61,
+    88,
+    94,
+    203,
+    389,
+    1,
+    15,
+]
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -289,6 +306,251 @@ def format_thesportsdb_event(event: dict) -> str:
     )
 
 
+def request_api_football(endpoint: str, params: dict) -> list[dict]:
+    api_key = os.getenv("FOOTBALL_API_KEY")
+    if not api_key:
+        raise RuntimeError("FOOTBALL_API_KEY is not configured")
+
+    response = requests.get(
+        f"{API_FOOTBALL_BASE_URL}{endpoint}",
+        headers={"x-apisports-key": api_key},
+        params=params,
+        timeout=20,
+    )
+    response.raise_for_status()
+
+    payload = response.json()
+    errors = payload.get("errors")
+    if errors:
+        raise RuntimeError(f"API-Football error: {errors}")
+
+    return payload.get("response", [])
+
+
+def search_api_football_team(team_name: str) -> dict | None:
+    results = request_api_football("/teams", {"search": team_name})
+    if not results:
+        return None
+
+    normalized_name = team_name.strip().lower()
+    selected = None
+
+    for item in results:
+        team = item.get("team", {})
+        if team.get("name", "").strip().lower() == normalized_name:
+            selected = item
+            break
+
+    if selected is None:
+        selected = results[0]
+
+    team = selected.get("team")
+    if not team:
+        return None
+
+    logger.info(
+        "API-Football selected team: id=%s, name=%s, country=%s",
+        team.get("id"),
+        team.get("name"),
+        team.get("country"),
+    )
+
+    return team
+
+
+def get_api_football_next_fixtures(team_id: int) -> list[dict]:
+    return request_api_football(
+        "/fixtures",
+        {
+            "team": team_id,
+            "next": 5,
+            "timezone": "UTC",
+        },
+    )
+
+
+def get_api_football_finished_fixtures(team_id: int) -> list[dict]:
+    fixtures = request_api_football(
+        "/fixtures",
+        {
+            "team": team_id,
+            "last": 20,
+            "timezone": "UTC",
+        },
+    )
+
+    finished_statuses = {"FT", "AET", "PEN"}
+    finished = [
+        fixture
+        for fixture in fixtures
+        if fixture.get("fixture", {}).get("status", {}).get("short")
+        in finished_statuses
+    ]
+
+    return sorted(
+        finished,
+        key=lambda item: item.get("fixture", {}).get("timestamp") or 0,
+        reverse=True,
+    )[:5]
+
+
+def format_api_football_fixture(
+    item: dict,
+    include_score: bool = False,
+) -> str:
+    teams = item.get("teams", {})
+    league = item.get("league", {})
+    fixture = item.get("fixture", {})
+    goals = item.get("goals", {})
+
+    home_team = teams.get("home", {}).get("name", "Неизвестная команда")
+    away_team = teams.get("away", {}).get("name", "Неизвестная команда")
+    tournament = league.get("name", "Неизвестный турнир")
+    country = league.get("country", "Неизвестная страна")
+
+    if (
+        include_score
+        and goals.get("home") is not None
+        and goals.get("away") is not None
+    ):
+        teams_text = (
+            f"{home_team} {goals.get('home')}-{goals.get('away')} {away_team}"
+        )
+    else:
+        teams_text = f"{home_team} - {away_team}"
+
+    timestamp = fixture.get("timestamp")
+    if timestamp is None:
+        kickoff_text = "Время неизвестно"
+    else:
+        almaty_tz = timezone(timedelta(hours=5))
+        kickoff_text = datetime.fromtimestamp(
+            timestamp,
+            tz=timezone.utc,
+        ).astimezone(almaty_tz).strftime("%d.%m %H:%M")
+
+    return (
+        f"⚽ {teams_text}\n"
+        f"🏆 {tournament}\n"
+        f"🌍 {country}\n"
+        f"🕒 {kickoff_text}"
+    )
+
+
+def calculate_api_football_form(
+    fixtures: list[dict],
+    team_id: int,
+) -> tuple[int, int, int, list[str]]:
+    wins = 0
+    draws = 0
+    losses = 0
+    form = []
+
+    for item in fixtures[:5]:
+        teams = item.get("teams", {})
+        goals = item.get("goals", {})
+        home_id = teams.get("home", {}).get("id")
+        home_goals = goals.get("home")
+        away_goals = goals.get("away")
+
+        if home_goals is None or away_goals is None:
+            continue
+
+        is_home = home_id == team_id
+        team_goals = home_goals if is_home else away_goals
+        opponent_goals = away_goals if is_home else home_goals
+
+        if team_goals > opponent_goals:
+            wins += 1
+            form.append("✅")
+        elif team_goals == opponent_goals:
+            draws += 1
+            form.append("➖")
+        else:
+            losses += 1
+            form.append("❌")
+
+    return wins, draws, losses, form
+
+
+def build_api_football_team_message(team_name: str) -> str | None:
+    team = search_api_football_team(team_name)
+    if not team:
+        return None
+
+    fixtures = get_api_football_next_fixtures(team["id"])
+    if not fixtures:
+        return f"⚽ {team['name']}\n\nБлижайшие матчи не найдены."
+
+    return f"⚽ {team['name']}\n\n" + "\n\n".join(
+        format_api_football_fixture(fixture)
+        for fixture in fixtures[:5]
+    )
+
+
+def build_api_football_results_message(team_name: str) -> str | None:
+    team = search_api_football_team(team_name)
+    if not team:
+        return None
+
+    fixtures = get_api_football_finished_fixtures(team["id"])
+    if not fixtures:
+        return f"📊 {team['name']}\n\nПоследние матчи не найдены."
+
+    return f"📊 {team['name']}\n\n" + "\n\n".join(
+        format_api_football_fixture(fixture, include_score=True)
+        for fixture in fixtures[:5]
+    )
+
+
+def build_api_football_profile_message(team_name: str) -> str | None:
+    team = search_api_football_team(team_name)
+    if not team:
+        return None
+
+    team_id = team["id"]
+    next_fixtures = get_api_football_next_fixtures(team_id)
+    last_fixtures = get_api_football_finished_fixtures(team_id)
+    wins, draws, losses, form = calculate_api_football_form(
+        last_fixtures,
+        team_id,
+    )
+
+    message = (
+        "📋 Профиль\n\n"
+        f"⭐ Любимая команда: {team['name']}\n\n"
+        "📅 Ближайшие 5 матчей\n\n"
+    )
+
+    if next_fixtures:
+        message += "\n\n".join(
+            format_api_football_fixture(fixture)
+            for fixture in next_fixtures[:5]
+        )
+    else:
+        message += "Ближайшие матчи не найдены."
+
+    message += "\n\n📊 Последние 5 матчей\n\n"
+
+    if last_fixtures:
+        message += "\n\n".join(
+            format_api_football_fixture(fixture, include_score=True)
+            for fixture in last_fixtures[:5]
+        )
+    else:
+        message += "Последние матчи не найдены."
+
+    message += (
+        "\n\n🔥 Форма команды\n\n"
+        f"{''.join(form) or 'Нет данных'}\n\n"
+        f"🏆 Побед: {wins}\n"
+        f"🤝 Ничьих: {draws}\n"
+        f"😔 Поражений: {losses}"
+    )
+
+    return message
+
+
 def format_match(item: dict) -> str:
     teams = item.get("teams", {})
     league = item.get("league", {})
@@ -515,6 +777,21 @@ async def team_search(
     context.user_data["waiting_team"] = False
 
     try:
+        message = build_api_football_team_message(team_name)
+        if message:
+            await update.message.reply_text(message)
+            return
+
+        logger.info(
+            "API-Football team '%s' not found, using TheSportsDB fallback",
+            team_name,
+        )
+    except Exception:
+        logger.exception(
+            "API-Football team search failed, using TheSportsDB fallback"
+        )
+
+    try:
         response = requests.get(
             f"{THESPORTSDB_BASE_URL}/{api_key}/searchteams.php",
             params={"t": team_name},
@@ -588,6 +865,21 @@ async def team_results(
 
     team_name = update.message.text
     api_key = os.getenv("THESPORTSDB_API_KEY")
+
+    try:
+        message = build_api_football_results_message(team_name)
+        if message:
+            await update.message.reply_text(message)
+            return
+
+        logger.info(
+            "API-Football team '%s' not found, using TheSportsDB fallback",
+            team_name,
+        )
+    except Exception:
+        logger.exception(
+            "API-Football team results failed, using TheSportsDB fallback"
+        )
 
     try:
         response = requests.get(
@@ -684,6 +976,21 @@ async def show_profile(
         return
 
     api_key = os.getenv("THESPORTSDB_API_KEY")
+
+    try:
+        message = build_api_football_profile_message(favorite_team)
+        if message:
+            await update.message.reply_text(message)
+            return
+
+        logger.info(
+            "API-Football team '%s' not found, using TheSportsDB fallback",
+            favorite_team,
+        )
+    except Exception:
+        logger.exception(
+            "API-Football profile failed, using TheSportsDB fallback"
+        )
 
     try:
         response = requests.get(
