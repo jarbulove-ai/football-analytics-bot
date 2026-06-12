@@ -1320,6 +1320,84 @@ async def button_handler(
 ) -> None:
 
     text = update.message.text
+    if context.user_data.get("team_select_mode"):
+        mode = context.user_data["team_select_mode"]
+
+        if text == "⬅️ Назад":
+            context.user_data["team_select_mode"] = None
+            context.user_data["team_selected_league"] = None
+            context.user_data["waiting_team"] = False
+            context.user_data["waiting_results"] = False
+            context.user_data["waiting_favorite_team"] = False
+            await start(update, context)
+            return
+
+        if text == FAVORITE_BACK_TO_LEAGUES_BUTTON:
+            await show_team_select_leagues(update, context, mode)
+            return
+
+        if text == FAVORITE_MANUAL_INPUT_BUTTON:
+            context.user_data["waiting_team"] = mode == "matches"
+            context.user_data["waiting_results"] = mode == "results"
+            context.user_data["waiting_favorite_team"] = False
+            context.user_data["team_select_mode"] = None
+            context.user_data["team_selected_league"] = None
+
+            await update.message.reply_text(
+                "Введите название команды:\n"
+                "Например: Liverpool",
+                reply_markup=build_main_menu_markup(),
+            )
+            return
+
+        if text in FAVORITE_TEAM_LEAGUES:
+            context.user_data["team_select_mode"] = mode
+            context.user_data["team_selected_league"] = text
+            context.user_data["waiting_team"] = False
+            context.user_data["waiting_results"] = False
+            context.user_data["waiting_favorite_team"] = False
+
+            keyboard = [
+                [team]
+                for team in FAVORITE_TEAM_LEAGUES[text]
+            ]
+            keyboard.append([FAVORITE_BACK_TO_LEAGUES_BUTTON])
+
+            await update.message.reply_text(
+                "Выберите команду:",
+                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+            )
+            return
+
+        selected_league = context.user_data.get("team_selected_league")
+        if (
+            selected_league in FAVORITE_TEAM_LEAGUES
+            and text in FAVORITE_TEAM_LEAGUES[selected_league]
+        ):
+            if mode == "matches":
+                message = build_api_football_team_message(text)
+            elif mode == "results":
+                message = build_api_football_results_message(text)
+            else:
+                message = None
+
+            if not message:
+                await update.message.reply_text(
+                    "Команда не найдена 😕 Попробуйте ввести название вручную."
+                )
+                return
+
+            context.user_data["team_select_mode"] = None
+            context.user_data["team_selected_league"] = None
+            context.user_data["waiting_team"] = False
+            context.user_data["waiting_results"] = False
+
+            await update.message.reply_text(
+                message,
+                reply_markup=build_main_menu_markup(),
+            )
+            return
+
     if (
         context.user_data.get("favorite_select_mode")
         or context.user_data.get("favorite_selected_league")
@@ -1396,12 +1474,26 @@ async def button_handler(
         FAVORITE_CHANGE_TEAM_BUTTON,
     }
 
-    if text not in menu_buttons and text not in STANDINGS_LEAGUES:
+    favorite_team_buttons = set(FAVORITE_TEAM_LEAGUES.keys())
+    for teams in FAVORITE_TEAM_LEAGUES.values():
+        favorite_team_buttons.update(teams)
+    favorite_team_buttons.add(FAVORITE_MANUAL_INPUT_BUTTON)
+    favorite_team_buttons.add(FAVORITE_BACK_TO_LEAGUES_BUTTON)
+    favorite_team_buttons.add(FAVORITE_OPEN_PROFILE_BUTTON)
+    favorite_team_buttons.add(FAVORITE_CHANGE_TEAM_BUTTON)
+
+    if (
+        text not in menu_buttons
+        and text not in STANDINGS_LEAGUES
+        and text not in favorite_team_buttons
+    ):
         return
 
     context.user_data["waiting_team"] = False
     context.user_data["waiting_results"] = False
     context.user_data["waiting_favorite_team"] = False
+    context.user_data["team_select_mode"] = None
+    context.user_data["team_selected_league"] = None
     context.user_data["favorite_select_mode"] = False
     context.user_data["favorite_selected_league"] = None
 
@@ -1448,16 +1540,7 @@ async def button_handler(
         await start(update, context)
 
     elif text == "⚽ Команда":
-        context.user_data["waiting_team"] = True
-
-        await update.message.reply_text(
-            "⚽ Введите название команды\n\n"
-            "Например:\n"
-            "Liverpool\n"
-            "Real Madrid\n"
-            "Barcelona\n"
-            "Kairat"
-        )
+        await show_team_select_leagues(update, context, "matches")
 
     elif text == "📋 Профиль":
         await show_profile(update, context)
@@ -1472,11 +1555,7 @@ async def button_handler(
         return
     
     elif text == "📊 Результаты":
-        context.user_data["waiting_results"] = True
-
-        await update.message.reply_text(
-            "Введите название команды"
-        )
+        await show_team_select_leagues(update, context, "results")
 
     elif text == "⭐ Моя команда":
         if context.user_data.get("favorite_team"):
@@ -1521,6 +1600,8 @@ async def show_favorite_team_actions(
     context.user_data["waiting_favorite_team"] = False
     context.user_data["favorite_select_mode"] = False
     context.user_data["favorite_selected_league"] = None
+    context.user_data["team_select_mode"] = None
+    context.user_data["team_selected_league"] = None
 
     favorite_team = context.user_data.get("favorite_team")
 
@@ -1548,6 +1629,35 @@ async def show_favorite_team_leagues(
     context.user_data["waiting_favorite_team"] = False
     context.user_data["favorite_select_mode"] = True
     context.user_data["favorite_selected_league"] = None
+    context.user_data["team_select_mode"] = None
+    context.user_data["team_selected_league"] = None
+
+    keyboard = [
+        [league]
+        for league in FAVORITE_TEAM_LEAGUES
+    ]
+    keyboard.append([FAVORITE_MANUAL_INPUT_BUTTON])
+    keyboard.append(["⬅️ Назад"])
+
+    await update.message.reply_text(
+        "Выберите лигу или введите команду вручную:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard,
+            resize_keyboard=True,
+        ),
+    )
+
+
+async def show_team_select_leagues(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    mode: str,
+) -> None:
+    context.user_data["team_select_mode"] = mode
+    context.user_data["team_selected_league"] = None
+    context.user_data["waiting_team"] = False
+    context.user_data["waiting_results"] = False
+    context.user_data["waiting_favorite_team"] = False
 
     keyboard = [
         [league]
