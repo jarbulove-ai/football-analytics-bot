@@ -494,6 +494,95 @@ def request_api_football(endpoint: str, params: dict) -> list[dict]:
     return payload.get("response", [])
 
 
+def get_api_football_matches_between(
+    start_almaty: datetime,
+    end_almaty: datetime,
+    only_top: bool = False,
+) -> list[dict]:
+    fixtures_by_id = {}
+
+    for date_value in get_dates_for_almaty_window(start_almaty, end_almaty):
+        fixtures = request_api_football(
+            "/fixtures",
+            {
+                "date": date_value.strftime("%Y-%m-%d"),
+                "timezone": "UTC",
+            },
+        )
+
+        for fixture_item in fixtures:
+            fixture = fixture_item.get("fixture", {})
+            fixture_id = fixture.get("id")
+            timestamp = fixture.get("timestamp")
+
+            if fixture_id is None or timestamp is None:
+                continue
+
+            kickoff_utc = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            kickoff_almaty = kickoff_utc.astimezone(ALMATY_TZ)
+            teams = fixture_item.get("teams", {})
+            home = teams.get("home", {}).get("name", "")
+            away = teams.get("away", {}).get("name", "")
+            included = start_almaty <= kickoff_almaty <= end_almaty
+
+            logger.debug(
+                "Match %s - %s | kickoff_utc=%s | kickoff_almaty=%s | included=%s",
+                home,
+                away,
+                kickoff_utc,
+                kickoff_almaty,
+                included,
+            )
+
+            if not included:
+                continue
+
+            league = fixture_item.get("league", {})
+            league_id = league.get("id")
+            league_name = league.get("name") or ""
+
+            if only_top and not (
+                league_id in TOP_LEAGUE_IDS
+                or league_id == 1
+                or "world cup" in league_name.lower()
+            ):
+                continue
+
+            fixtures_by_id[fixture_id] = fixture_item
+
+    return sorted(
+        fixtures_by_id.values(),
+        key=lambda item: item.get("fixture", {}).get("timestamp") or 0,
+    )
+
+
+def format_api_football_match_card(fixture_item: dict) -> str:
+    teams = fixture_item.get("teams", {})
+    league = fixture_item.get("league", {})
+    fixture = fixture_item.get("fixture", {})
+
+    home_team = teams.get("home", {}).get("name", "Неизвестная команда")
+    away_team = teams.get("away", {}).get("name", "Неизвестная команда")
+    tournament = league.get("name", "Неизвестный турнир")
+    country = league.get("country", "Неизвестная страна")
+
+    timestamp = fixture.get("timestamp")
+    if timestamp is None:
+        kickoff_text = "Время неизвестно"
+    else:
+        kickoff_text = datetime.fromtimestamp(
+            timestamp,
+            tz=timezone.utc,
+        ).astimezone(ALMATY_TZ).strftime("%d.%m %H:%M")
+
+    return (
+        f"⚽ {home_team} - {away_team}\n"
+        f"🏆 {tournament}\n"
+        f"🌍 {country}\n"
+        f"🕒 {kickoff_text}"
+    )
+
+
 def search_api_football_team(team_name: str) -> dict | None:
     results = request_api_football("/teams", {"search": team_name})
     if not results:
@@ -945,6 +1034,36 @@ def format_top_match(item: dict) -> str:
 
 
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        now_almaty = datetime.now(ALMATY_TZ)
+        today_start = datetime.combine(
+            now_almaty.date(),
+            datetime.min.time(),
+            tzinfo=ALMATY_TZ,
+        )
+        today_end = datetime.combine(
+            now_almaty.date(),
+            datetime.max.time(),
+            tzinfo=ALMATY_TZ,
+        )
+        api_matches = get_api_football_matches_between(
+            today_start,
+            today_end,
+            only_top=False,
+        )
+        if not api_matches:
+            raise RuntimeError("API-Football returned no today matches")
+
+        message = "📅 Матчи на сегодня\n\n"
+        message += "\n\n".join(
+            format_api_football_match_card(match)
+            for match in api_matches[:MAX_MATCHES]
+        )
+        await update.message.reply_text(message)
+        return
+    except Exception:
+        logger.exception("API-Football today matches failed, using TheSportsDB fallback")
+
     api_key = os.getenv("THESPORTSDB_API_KEY")
 
     if not api_key:
@@ -1003,6 +1122,37 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(message)
 
 async def tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        now_almaty = datetime.now(ALMATY_TZ)
+        tomorrow_date = (now_almaty + timedelta(days=1)).date()
+        tomorrow_start = datetime.combine(
+            tomorrow_date,
+            datetime.min.time(),
+            tzinfo=ALMATY_TZ,
+        )
+        tomorrow_end = datetime.combine(
+            tomorrow_date,
+            datetime.max.time(),
+            tzinfo=ALMATY_TZ,
+        )
+        api_matches = get_api_football_matches_between(
+            tomorrow_start,
+            tomorrow_end,
+            only_top=False,
+        )
+        if not api_matches:
+            raise RuntimeError("API-Football returned no tomorrow matches")
+
+        message = "📆 Матчи на завтра\n\n"
+        message += "\n\n".join(
+            format_api_football_match_card(match)
+            for match in api_matches[:MAX_MATCHES]
+        )
+        await update.message.reply_text(message)
+        return
+    except Exception:
+        logger.exception("API-Football tomorrow matches failed, using TheSportsDB fallback")
+
     api_key = os.getenv("THESPORTSDB_API_KEY")
 
     if not api_key:
@@ -1491,6 +1641,27 @@ async def show_profile(
 
 
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        now_almaty = datetime.now(ALMATY_TZ)
+        window_end = now_almaty + timedelta(hours=72)
+        api_matches = get_api_football_matches_between(
+            now_almaty,
+            window_end,
+            only_top=True,
+        )
+        if not api_matches:
+            raise RuntimeError("API-Football returned no top matches")
+
+        message = "🔥 Топ матчи\n\n"
+        message += "\n\n".join(
+            format_api_football_match_card(match)
+            for match in api_matches[:MAX_TOP_MATCHES]
+        )
+        await update.message.reply_text(message)
+        return
+    except Exception:
+        logger.exception("API-Football top matches failed, using TheSportsDB fallback")
+
     api_key = os.getenv("THESPORTSDB_API_KEY")
 
     if not api_key:
