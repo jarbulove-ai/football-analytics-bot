@@ -143,6 +143,8 @@ FAVORITE_TEAM_LEAGUES = {
 }
 FAVORITE_MANUAL_INPUT_BUTTON = "⌨️ Ввести вручную"
 FAVORITE_BACK_TO_LEAGUES_BUTTON = "⬅️ К лигам"
+FAVORITE_OPEN_PROFILE_BUTTON = "📋 Открыть профиль"
+FAVORITE_CHANGE_TEAM_BUTTON = "🔄 Сменить команду"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -1390,6 +1392,8 @@ async def button_handler(
         "📋 Профиль",
         "📊 Результаты",
         "⭐ Моя команда",
+        FAVORITE_OPEN_PROFILE_BUTTON,
+        FAVORITE_CHANGE_TEAM_BUTTON,
     }
 
     if text not in menu_buttons and text not in STANDINGS_LEAGUES:
@@ -1458,6 +1462,14 @@ async def button_handler(
     elif text == "📋 Профиль":
         await show_profile(update, context)
         return
+
+    elif text == FAVORITE_OPEN_PROFILE_BUTTON:
+        await show_profile(update, context)
+        return
+
+    elif text == FAVORITE_CHANGE_TEAM_BUTTON:
+        await show_favorite_team_leagues(update, context)
+        return
     
     elif text == "📊 Результаты":
         context.user_data["waiting_results"] = True
@@ -1467,7 +1479,10 @@ async def button_handler(
         )
 
     elif text == "⭐ Моя команда":
-        await show_favorite_team_leagues(update, context)
+        if context.user_data.get("favorite_team"):
+            await show_favorite_team_actions(update, context)
+        else:
+            await show_favorite_team_leagues(update, context)
 
 
 def build_team_not_found_retry_message() -> str:
@@ -1497,6 +1512,33 @@ def search_thesportsdb_team(team_name: str) -> dict | None:
         return None
 
     return teams[0]
+
+
+async def show_favorite_team_actions(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    context.user_data["waiting_favorite_team"] = False
+    context.user_data["favorite_select_mode"] = False
+    context.user_data["favorite_selected_league"] = None
+
+    favorite_team = context.user_data.get("favorite_team")
+
+    keyboard = [
+        [FAVORITE_OPEN_PROFILE_BUTTON],
+        [FAVORITE_CHANGE_TEAM_BUTTON],
+        ["⬅️ Назад"],
+    ]
+
+    await update.message.reply_text(
+        f"⭐ Текущая любимая команда:\n"
+        f"{favorite_team}\n\n"
+        f"Что хотите сделать?",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard,
+            resize_keyboard=True,
+        ),
+    )
 
 
 async def show_favorite_team_leagues(
@@ -2151,6 +2193,8 @@ def main() -> None:
     favorite_team_buttons = set(FAVORITE_TEAM_LEAGUES.keys())
     favorite_team_buttons.add(FAVORITE_MANUAL_INPUT_BUTTON)
     favorite_team_buttons.add(FAVORITE_BACK_TO_LEAGUES_BUTTON)
+    favorite_team_buttons.add(FAVORITE_OPEN_PROFILE_BUTTON)
+    favorite_team_buttons.add(FAVORITE_CHANGE_TEAM_BUTTON)
     for teams in FAVORITE_TEAM_LEAGUES.values():
         favorite_team_buttons.update(teams)
 
