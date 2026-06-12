@@ -515,6 +515,37 @@ def build_api_football_profile_message(team_name: str) -> str | None:
         last_fixtures,
         team_id,
     )
+    goals_for = 0
+    goals_against = 0
+    completed_matches_count = 0
+
+    for fixture in last_fixtures[:5]:
+        teams = fixture.get("teams", {})
+        goals = fixture.get("goals", {})
+        home_id = teams.get("home", {}).get("id")
+        home_goals = goals.get("home")
+        away_goals = goals.get("away")
+
+        if home_goals is None or away_goals is None:
+            continue
+
+        if home_id == team_id:
+            team_goals = home_goals
+            opponent_goals = away_goals
+        else:
+            team_goals = away_goals
+            opponent_goals = home_goals
+
+        goals_for += team_goals
+        goals_against += opponent_goals
+        completed_matches_count += 1
+
+    if completed_matches_count:
+        average_goals_for = goals_for / completed_matches_count
+        average_goals_against = goals_against / completed_matches_count
+    else:
+        average_goals_for = 0
+        average_goals_against = 0
 
     message = (
         "📋 Профиль\n\n"
@@ -545,7 +576,13 @@ def build_api_football_profile_message(team_name: str) -> str | None:
         f"{''.join(form) or 'Нет данных'}\n\n"
         f"🏆 Побед: {wins}\n"
         f"🤝 Ничьих: {draws}\n"
-        f"😔 Поражений: {losses}"
+        f"😔 Поражений: {losses}\n\n"
+        "📈 Статистика последних 5 матчей\n\n"
+        f"⚽ Забито: {goals_for}\n"
+        f"🥅 Пропущено: {goals_against}\n\n"
+        "📊 Среднее за матч:\n"
+        f"⚽ {average_goals_for:.1f}\n"
+        f"🥅 {average_goals_against:.1f}"
     )
 
     return message
