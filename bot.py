@@ -23,6 +23,7 @@ from telegram.ext import (
 
 API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
 THESPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json"
+ALMATY_TZ = timezone(timedelta(hours=5))
 MAX_MATCHES = 20
 MAX_TOP_MATCHES = 15
 TOP_LEAGUE_IDS = [
@@ -237,7 +238,22 @@ def get_top_matches_between(
             continue
 
         kickoff = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        if start_time <= kickoff <= end_time:
+        kickoff_almaty = kickoff.astimezone(ALMATY_TZ)
+        start_almaty = start_time.astimezone(ALMATY_TZ)
+        end_almaty = end_time.astimezone(ALMATY_TZ)
+        teams = match.get("teams", {})
+        home = teams.get("home", {}).get("name", "")
+        away = teams.get("away", {}).get("name", "")
+        included = start_almaty <= kickoff_almaty <= end_almaty
+        logger.debug(
+            "Match %s - %s | kickoff_utc=%s | kickoff_almaty=%s | included=%s",
+            home,
+            away,
+            kickoff,
+            kickoff_almaty,
+            included,
+        )
+        if included:
             matches_by_id[fixture_id] = match
 
     matches = sorted(
@@ -344,6 +360,99 @@ def get_thesportsdb_next_football_matches(api_key: str) -> list[dict]:
     )[:10]
 
 
+def get_dates_for_almaty_window(
+    start_almaty: datetime,
+    end_almaty: datetime,
+) -> list[datetime]:
+    dates = set()
+    start_utc = start_almaty.astimezone(timezone.utc)
+    end_utc = end_almaty.astimezone(timezone.utc)
+
+    current_date = start_almaty.date()
+    while current_date <= end_almaty.date():
+        dates.add(current_date)
+        current_date += timedelta(days=1)
+
+    current_date = start_utc.date()
+    while current_date <= end_utc.date():
+        dates.add(current_date)
+        current_date += timedelta(days=1)
+
+    return [
+        datetime.combine(date_value, datetime.min.time(), tzinfo=timezone.utc)
+        for date_value in sorted(dates)
+    ]
+
+
+def get_thesportsdb_football_matches_between(
+    api_key: str,
+    start_almaty: datetime,
+    end_almaty: datetime,
+    limit: int | None = None,
+) -> list[dict]:
+    events_by_id = {}
+
+    EXCLUDED_WORDS = [
+        "Women",
+        "Youth",
+        "U17",
+        "U18",
+        "U19",
+        "U20",
+        "U21",
+        "Reserve",
+        "Reserves",
+        "Regional",
+    ]
+
+    for date_value in get_dates_for_almaty_window(start_almaty, end_almaty):
+        for event in fetch_thesportsdb_events_for_date(api_key, date_value):
+            event_time = parse_thesportsdb_event_time(event)
+            if event_time is None:
+                continue
+
+            kickoff_almaty = event_time.astimezone(ALMATY_TZ)
+            home = event.get("strHomeTeam") or ""
+            away = event.get("strAwayTeam") or ""
+            included = start_almaty <= kickoff_almaty <= end_almaty
+
+            logger.debug(
+                "Match %s - %s | kickoff_utc=%s | kickoff_almaty=%s | included=%s",
+                home,
+                away,
+                event_time,
+                kickoff_almaty,
+                included,
+            )
+
+            if not included:
+                continue
+
+            league_name = event.get("strLeague") or ""
+            if any(
+                word.lower() in league_name.lower()
+                for word in EXCLUDED_WORDS
+            ):
+                continue
+
+            event_id = event.get("idEvent")
+            events_by_id[
+                event_id or f"{event.get('strEvent')}-{event_time}"
+            ] = event
+
+    matches = sorted(
+        events_by_id.values(),
+        key=lambda event: parse_thesportsdb_event_time(event) or datetime.max.replace(
+            tzinfo=timezone.utc
+        ),
+    )
+
+    if limit is not None:
+        return matches[:limit]
+
+    return matches
+
+
 def format_thesportsdb_event(event: dict) -> str:
     home_team = event.get("strHomeTeam") or "Неизвестная команда"
     away_team = event.get("strAwayTeam") or "Неизвестная команда"
@@ -354,8 +463,7 @@ def format_thesportsdb_event(event: dict) -> str:
     if event_time is None:
         kickoff_text = "Время неизвестно"
     else:
-        almaty_tz = timezone(timedelta(hours=5))
-        kickoff_text = event_time.astimezone(almaty_tz).strftime("%d.%m %H:%M")
+        kickoff_text = event_time.astimezone(ALMATY_TZ).strftime("%d.%m %H:%M")
 
     return (
         f"⚽ {home_team} - {away_team}\n"
@@ -799,11 +907,10 @@ def format_match(item: dict) -> str:
     tournament = league.get("name", "Неизвестный турнир")
     country = league.get("country", "Неизвестная страна")
 
-    almaty_tz = timezone(timedelta(hours=5))
     kickoff = datetime.fromtimestamp(
         fixture["timestamp"],
         tz=timezone.utc
-    ).astimezone(almaty_tz)
+    ).astimezone(ALMATY_TZ)
     kickoff_text = kickoff.strftime("%d.%m %H:%M")
 
     return (
@@ -824,11 +931,10 @@ def format_top_match(item: dict) -> str:
     tournament = league.get("name", "Неизвестный турнир")
     country = league.get("country", "Неизвестная страна")
 
-    almaty_tz = timezone(timedelta(hours=5))
     kickoff = datetime.fromtimestamp(
         fixture["timestamp"],
         tz=timezone.utc
-    ).astimezone(almaty_tz)
+    ).astimezone(ALMATY_TZ)
     kickoff_text = kickoff.strftime("%d.%m %H:%M")
 
     return (
@@ -904,27 +1010,27 @@ async def tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     try:
-        matches = get_thesportsdb_next_football_matches(api_key)
+        now_almaty = datetime.now(ALMATY_TZ)
+        tomorrow_date = (now_almaty + timedelta(days=1)).date()
+        tomorrow_start = datetime.combine(
+            tomorrow_date,
+            datetime.min.time(),
+            tzinfo=ALMATY_TZ,
+        )
+        tomorrow_end = datetime.combine(
+            tomorrow_date,
+            datetime.max.time(),
+            tzinfo=ALMATY_TZ,
+        )
+        tomorrow_matches = get_thesportsdb_football_matches_between(
+            api_key,
+            tomorrow_start,
+            tomorrow_end,
+        )
     except Exception:
         logger.exception("Failed to process events from TheSportsDB")
         await update.message.reply_text("Не удалось получить матчи.")
         return
-
-    almaty_tz = timezone(timedelta(hours=5))
-    tomorrow_date = (
-        datetime.now(almaty_tz) + timedelta(days=1)
-    ).date()
-
-    tomorrow_matches = []
-
-    for match in matches:
-        event_time = parse_thesportsdb_event_time(match)
-
-        if not event_time:
-            continue
-
-        if event_time.astimezone(almaty_tz).date() == tomorrow_date:
-            tomorrow_matches.append(match)
 
     if not tomorrow_matches:
         await update.message.reply_text("На завтра матчей не найдено.")
@@ -1392,7 +1498,13 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     try:
-        matches = get_thesportsdb_next_football_matches(api_key)
+        now_almaty = datetime.now(ALMATY_TZ)
+        window_end = now_almaty + timedelta(hours=72)
+        matches = get_thesportsdb_football_matches_between(
+            api_key,
+            now_almaty,
+            window_end,
+        )
     except Exception:
         logger.exception("Failed to process top matches")
         await update.message.reply_text("Не удалось обработать список топ матчей.")
