@@ -99,6 +99,51 @@ STANDINGS_LEAGUES = {
     },
 }
 
+FAVORITE_TEAM_LEAGUES = {
+    "🇬🇧 АПЛ": [
+        "Arsenal",
+        "Manchester City",
+        "Liverpool",
+        "Chelsea",
+        "Tottenham",
+        "Manchester United",
+    ],
+    "🇪🇸 Ла Лига": [
+        "Barcelona",
+        "Real Madrid",
+        "Atletico Madrid",
+        "Villarreal",
+        "Real Betis",
+        "Real Sociedad",
+    ],
+    "🇮🇹 Серия А": [
+        "Inter",
+        "AC Milan",
+        "Juventus",
+        "Napoli",
+        "Roma",
+        "Lazio",
+    ],
+    "🇩🇪 Бундеслига": [
+        "Bayern Munich",
+        "Borussia Dortmund",
+        "Bayer Leverkusen",
+        "RB Leipzig",
+        "Eintracht Frankfurt",
+        "Stuttgart",
+    ],
+    "🇫🇷 Лига 1": [
+        "Paris Saint Germain",
+        "Marseille",
+        "Monaco",
+        "Lyon",
+        "Lille",
+        "Nice",
+    ],
+}
+FAVORITE_MANUAL_INPUT_BUTTON = "⌨️ Ввести вручную"
+FAVORITE_BACK_TO_LEAGUES_BUTTON = "⬅️ К лигам"
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -113,7 +158,7 @@ def get_required_env(name: str) -> str:
     return value
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def build_main_menu_markup() -> ReplyKeyboardMarkup:
     keyboard = [
         ["📅 Сегодня", "📆 Завтра"],
         ["🔥 Топ матчи"],
@@ -122,10 +167,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ["🏆 Таблица"],
     ]
 
-    reply_markup = ReplyKeyboardMarkup(
+    return ReplyKeyboardMarkup(
         keyboard,
         resize_keyboard=True
     )
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    reply_markup = build_main_menu_markup()
 
     await update.message.reply_text(
         "⚽ MatchLab\n\n"
@@ -1269,9 +1318,88 @@ async def button_handler(
 ) -> None:
 
     text = update.message.text
+    if (
+        context.user_data.get("favorite_select_mode")
+        or context.user_data.get("favorite_selected_league")
+    ):
+        if text == "⬅️ Назад":
+            context.user_data["waiting_favorite_team"] = False
+            context.user_data["favorite_select_mode"] = False
+            context.user_data["favorite_selected_league"] = None
+            await start(update, context)
+            return
+
+        if text == FAVORITE_BACK_TO_LEAGUES_BUTTON:
+            await show_favorite_team_leagues(update, context)
+            return
+
+        if text == FAVORITE_MANUAL_INPUT_BUTTON:
+            context.user_data["waiting_favorite_team"] = True
+            context.user_data["favorite_select_mode"] = False
+            context.user_data["favorite_selected_league"] = None
+
+            await update.message.reply_text(
+                "Введите название любимой команды:\n"
+                "Например: Liverpool",
+                reply_markup=build_main_menu_markup(),
+            )
+            return
+
+        if text in FAVORITE_TEAM_LEAGUES:
+            context.user_data["favorite_select_mode"] = True
+            context.user_data["favorite_selected_league"] = text
+            context.user_data["waiting_favorite_team"] = False
+
+            keyboard = [
+                [team]
+                for team in FAVORITE_TEAM_LEAGUES[text]
+            ]
+            keyboard.append([FAVORITE_BACK_TO_LEAGUES_BUTTON])
+
+            await update.message.reply_text(
+                "Выберите команду:",
+                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+            )
+            return
+
+        selected_league = context.user_data.get("favorite_selected_league")
+        if (
+            selected_league in FAVORITE_TEAM_LEAGUES
+            and text in FAVORITE_TEAM_LEAGUES[selected_league]
+        ):
+            context.user_data["favorite_team"] = text
+            context.user_data["favorite_select_mode"] = False
+            context.user_data["waiting_favorite_team"] = False
+            context.user_data["favorite_selected_league"] = None
+
+            await update.message.reply_text(
+                f"⭐ Любимая команда сохранена:\n"
+                f"{text}\n\n"
+                f"Открывайте 📋 Профиль для просмотра матчей команды.",
+                reply_markup=build_main_menu_markup(),
+            )
+            return
+
+    menu_buttons = {
+        "📅 Сегодня",
+        "📆 Завтра",
+        "🔥 Топ матчи",
+        "🏆 Таблица",
+        "⬅️ Назад",
+        "⚽ Команда",
+        "📋 Профиль",
+        "📊 Результаты",
+        "⭐ Моя команда",
+    }
+
+    if text not in menu_buttons and text not in STANDINGS_LEAGUES:
+        return
+
     context.user_data["waiting_team"] = False
     context.user_data["waiting_results"] = False
     context.user_data["waiting_favorite_team"] = False
+    context.user_data["favorite_select_mode"] = False
+    context.user_data["favorite_selected_league"] = None
 
     if text == "📅 Сегодня":
         await today(update, context)
@@ -1339,20 +1467,7 @@ async def button_handler(
         )
 
     elif text == "⭐ Моя команда":
-
-        favorite_team = context.user_data.get("favorite_team")
-
-        if favorite_team:
-            await update.message.reply_text(
-                f"⭐ Текущая команда: {favorite_team}\n\n"
-                f"Введите новую любимую команду:"
-            )
-        else:
-            await update.message.reply_text(
-                "Введите название любимой команды:"
-            )
-
-        context.user_data["waiting_favorite_team"] = True
+        await show_favorite_team_leagues(update, context)
 
 
 def build_team_not_found_retry_message() -> str:
@@ -1382,6 +1497,30 @@ def search_thesportsdb_team(team_name: str) -> dict | None:
         return None
 
     return teams[0]
+
+
+async def show_favorite_team_leagues(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    context.user_data["waiting_favorite_team"] = False
+    context.user_data["favorite_select_mode"] = True
+    context.user_data["favorite_selected_league"] = None
+
+    keyboard = [
+        [league]
+        for league in FAVORITE_TEAM_LEAGUES
+    ]
+    keyboard.append([FAVORITE_MANUAL_INPUT_BUTTON])
+    keyboard.append(["⬅️ Назад"])
+
+    await update.message.reply_text(
+        "Выберите лигу или введите команду вручную:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard,
+            resize_keyboard=True,
+        ),
+    )
 
 
 async def team_search(
@@ -1559,6 +1698,9 @@ async def favorite_team(
     if update.message.text == "⭐ Моя команда":
         return
 
+    if update.message.text == FAVORITE_MANUAL_INPUT_BUTTON:
+        return
+
     if not context.user_data.get("waiting_favorite_team"):
         return
 
@@ -1588,6 +1730,8 @@ async def favorite_team(
     try:
         context.user_data["favorite_team"] = favorite_team_name
         context.user_data["waiting_favorite_team"] = False
+        context.user_data["favorite_select_mode"] = False
+        context.user_data["favorite_selected_league"] = None
     except Exception:
         logger.exception("Failed to save favorite team")
         context.user_data["waiting_favorite_team"] = True
@@ -1597,7 +1741,8 @@ async def favorite_team(
     await update.message.reply_text(
         f"⭐ Любимая команда сохранена:\n"
         f"{favorite_team_name}\n\n"
-        f"Открывайте 📋 Профиль для просмотра матчей команды."
+        f"Открывайте 📋 Профиль для просмотра матчей команды.",
+        reply_markup=build_main_menu_markup(),
     )
 
 
@@ -1997,6 +2142,24 @@ def main() -> None:
                 "^(" + "|".join(
                     re.escape(key)
                     for key in STANDINGS_LEAGUES.keys()
+                ) + ")$"
+            ),
+            button_handler
+        )
+    )
+
+    favorite_team_buttons = set(FAVORITE_TEAM_LEAGUES.keys())
+    favorite_team_buttons.add(FAVORITE_MANUAL_INPUT_BUTTON)
+    favorite_team_buttons.add(FAVORITE_BACK_TO_LEAGUES_BUTTON)
+    for teams in FAVORITE_TEAM_LEAGUES.values():
+        favorite_team_buttons.update(teams)
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(
+                "^(" + "|".join(
+                    re.escape(button)
+                    for button in favorite_team_buttons
                 ) + ")$"
             ),
             button_handler
