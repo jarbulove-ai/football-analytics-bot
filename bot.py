@@ -734,7 +734,38 @@ def build_api_football_standings_message(
         team_name = row.get("team", {}).get("name", "Неизвестная команда")
         points = row.get("points", 0)
         played = row.get("all", {}).get("played", 0)
-        lines.append(f"{rank}. {team_name} — {points} очк / {played} игр")
+        goals_diff = row.get("goalsDiff")
+        form = row.get("form")
+
+        if goals_diff is None:
+            goals_diff_text = "-"
+        elif goals_diff > 0:
+            goals_diff_text = f"+{goals_diff}"
+        else:
+            goals_diff_text = str(goals_diff)
+
+        if form:
+            form_text = (
+                form
+                .replace("W", "✅")
+                .replace("D", "➖")
+                .replace("L", "❌")
+            )
+        else:
+            form_text = "нет формы"
+
+        lines.append(
+            f"{rank}. {team_name} — "
+            f"{points} очк / {played} игр / {goals_diff_text} / {form_text}"
+        )
+
+    lines.extend(
+        [
+            "",
+            "📌 Формат: место — очки / игры / разница / форма",
+            "✅ — победа, ➖ — ничья, ❌ — поражение",
+        ]
+    )
 
     return "\n".join(lines)
 
