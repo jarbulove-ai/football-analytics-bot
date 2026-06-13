@@ -3,7 +3,9 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 
+import psycopg2
 import requests
+from psycopg2.extras import RealDictCursor
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
@@ -151,6 +153,127 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+
+def get_database_url() -> str | None:
+    return os.getenv("DATABASE_URL")
+
+
+def init_db() -> None:
+    database_url = get_database_url()
+    if not database_url:
+        logger.warning(
+            "DATABASE_URL is not configured; user settings will be in-memory only"
+        )
+        return
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    telegram_user_id BIGINT PRIMARY KEY,
+                    favorite_team TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+        connection.commit()
+    except Exception:
+        logger.exception("Failed to initialize database")
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def get_favorite_team_from_db(user_id: int) -> str | None:
+    database_url = get_database_url()
+    if not database_url:
+        return None
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT favorite_team
+                FROM user_settings
+                WHERE telegram_user_id = %s
+                """,
+                (user_id,),
+            )
+            row = cursor.fetchone()
+    except Exception:
+        logger.exception("Failed to get favorite team from database")
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+    if not row:
+        return None
+
+    return row["favorite_team"]
+
+
+def save_favorite_team_to_db(user_id: int, team_name: str) -> None:
+    database_url = get_database_url()
+    if not database_url:
+        logger.warning(
+            "DATABASE_URL is not configured; favorite team was not persisted"
+        )
+        return
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO user_settings (
+                    telegram_user_id,
+                    favorite_team,
+                    updated_at
+                )
+                VALUES (%s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (telegram_user_id)
+                DO UPDATE SET
+                    favorite_team = EXCLUDED.favorite_team,
+                    updated_at = CURRENT_TIMESTAMP;
+                """,
+                (user_id, team_name),
+            )
+        connection.commit()
+    except Exception:
+        logger.exception("Failed to save favorite team to database")
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def get_current_favorite_team(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> str | None:
+    favorite_team = context.user_data.get("favorite_team")
+    if favorite_team:
+        return favorite_team
+
+    if not update.effective_user:
+        return None
+
+    favorite_team = get_favorite_team_from_db(update.effective_user.id)
+    if favorite_team:
+        context.user_data["favorite_team"] = favorite_team
+        return favorite_team
+
+    return None
 
 
 def get_required_env(name: str) -> str:
@@ -1448,6 +1571,8 @@ async def button_handler(
             and text in FAVORITE_TEAM_LEAGUES[selected_league]
         ):
             context.user_data["favorite_team"] = text
+            if update.effective_user:
+                save_favorite_team_to_db(update.effective_user.id, text)
             context.user_data["favorite_select_mode"] = False
             context.user_data["waiting_favorite_team"] = False
             context.user_data["favorite_selected_league"] = None
@@ -1558,7 +1683,7 @@ async def button_handler(
         await show_team_select_leagues(update, context, "results")
 
     elif text == "⭐ Моя команда":
-        if context.user_data.get("favorite_team"):
+        if get_current_favorite_team(update, context):
             await show_favorite_team_actions(update, context)
         else:
             await show_favorite_team_leagues(update, context)
@@ -1603,7 +1728,7 @@ async def show_favorite_team_actions(
     context.user_data["team_select_mode"] = None
     context.user_data["team_selected_league"] = None
 
-    favorite_team = context.user_data.get("favorite_team")
+    favorite_team = get_current_favorite_team(update, context)
 
     keyboard = [
         [FAVORITE_OPEN_PROFILE_BUTTON],
@@ -1881,6 +2006,8 @@ async def favorite_team(
 
     try:
         context.user_data["favorite_team"] = favorite_team_name
+        if update.effective_user:
+            save_favorite_team_to_db(update.effective_user.id, favorite_team_name)
         context.user_data["waiting_favorite_team"] = False
         context.user_data["favorite_select_mode"] = False
         context.user_data["favorite_selected_league"] = None
@@ -1903,7 +2030,7 @@ async def show_profile(
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
 
-    favorite_team = context.user_data.get("favorite_team")
+    favorite_team = get_current_favorite_team(update, context)
 
     if not favorite_team:
         await update.message.reply_text(
@@ -2343,7 +2470,9 @@ def main() -> None:
         ),
         group=3
     )
-    
+
+    init_db()
+
     application.run_polling(
     drop_pending_updates=True
     )
