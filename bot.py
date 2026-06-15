@@ -981,12 +981,15 @@ def get_api_football_next_fixtures(team_id: int) -> list[dict]:
     )
 
 
-def get_api_football_finished_fixtures(team_id: int) -> list[dict]:
+def get_api_football_recent_finished_fixtures(
+    team_id: int,
+    limit: int = 20,
+) -> list[dict]:
     fixtures = request_api_football(
         "/fixtures",
         {
             "team": team_id,
-            "last": 20,
+            "last": limit,
             "timezone": "UTC",
         },
     )
@@ -1163,7 +1166,11 @@ def get_head_to_head_fixtures(home_team_id: int, away_team_id: int) -> list[dict
         finished,
         key=lambda item: item.get("fixture", {}).get("timestamp") or 0,
         reverse=True,
-    )[:5]
+    )
+
+
+def get_api_football_finished_fixtures(team_id: int) -> list[dict]:
+    return get_api_football_recent_finished_fixtures(team_id)[:5]
 
 
 def calculate_head_to_head_stats(fixtures: list[dict]) -> dict:
@@ -1200,7 +1207,421 @@ def calculate_head_to_head_stats(fixtures: list[dict]) -> dict:
     }
 
 
-def build_match_analysis_message(home_team_name: str, away_team_name: str) -> str:
+def get_fixture_prediction(fixture_id: int) -> dict | None:
+    try:
+        response = request_api_football("/predictions", {"fixture": fixture_id})
+    except Exception:
+        logger.exception("Failed to get fixture prediction")
+        return None
+
+    if not response:
+        return None
+
+    prediction_data = response[0]
+    if not isinstance(prediction_data, dict):
+        return None
+
+    predictions = prediction_data.get("predictions")
+    if not isinstance(predictions, dict):
+        return None
+
+    return prediction_data
+
+
+def build_prediction_block(prediction_data: dict | None) -> str:
+    if not prediction_data:
+        return ""
+
+    predictions = prediction_data.get("predictions") or {}
+    winner = predictions.get("winner") or {}
+    percent = predictions.get("percent") or {}
+    goals = predictions.get("goals") or {}
+    lines = ["🤖 Алгоритмический прогноз:"]
+
+    recommendation_parts = []
+    advice = predictions.get("advice")
+    winner_name = winner.get("name")
+    winner_comment = winner.get("comment")
+
+    if advice:
+        recommendation_parts.append(str(advice))
+    elif winner_name:
+        recommendation_parts.append(str(winner_name))
+
+    if winner_comment:
+        recommendation_parts.append(str(winner_comment))
+
+    if predictions.get("win_or_draw") is True:
+        recommendation_parts.append("победа или ничья")
+
+    if recommendation_parts:
+        lines.append(f"📌 Рекомендация: {'; '.join(recommendation_parts)}")
+
+    probability_parts = []
+    if percent.get("home"):
+        probability_parts.append(f"П1 {percent['home']}")
+    if percent.get("draw"):
+        probability_parts.append(f"X {percent['draw']}")
+    if percent.get("away"):
+        probability_parts.append(f"П2 {percent['away']}")
+    if probability_parts:
+        lines.append(f"📊 Вероятности: {' / '.join(probability_parts)}")
+
+    under_over = predictions.get("under_over")
+    if under_over:
+        lines.append(f"⚽ Тотал: {under_over}")
+
+    expected_goals_parts = []
+    if goals.get("home"):
+        expected_goals_parts.append(f"хозяева {goals['home']}")
+    if goals.get("away"):
+        expected_goals_parts.append(f"гости {goals['away']}")
+    if expected_goals_parts:
+        lines.append(f"🥅 Ожидаемые голы: {' / '.join(expected_goals_parts)}")
+
+    if len(lines) == 1:
+        return ""
+
+    return "\n".join(lines)
+
+
+def get_fixture_injuries(fixture_id: int) -> list[dict]:
+    try:
+        return request_api_football("/injuries", {"fixture": fixture_id})
+    except Exception:
+        logger.exception("Failed to get fixture injuries")
+        return []
+
+
+def build_injuries_block(
+    injuries: list[dict],
+    home_team_name: str,
+    away_team_name: str,
+) -> str:
+    if not injuries:
+        return ""
+
+    grouped = {
+        home_team_name: [],
+        away_team_name: [],
+    }
+    normalized_names = {
+        home_team_name.strip().lower(): home_team_name,
+        away_team_name.strip().lower(): away_team_name,
+    }
+
+    for item in injuries:
+        team_name = (item.get("team") or {}).get("name")
+        player = item.get("player") or {}
+        player_name = player.get("name")
+        if not team_name or not player_name:
+            continue
+
+        display_team_name = normalized_names.get(team_name.strip().lower())
+        if not display_team_name:
+            continue
+
+        position = player.get("position")
+        reason = player.get("reason")
+        line = f"• {player_name}"
+        if position:
+            line += f", {position}"
+        if reason:
+            line += f" — {reason}"
+        grouped[display_team_name].append(line)
+
+    lines = ["🚑 Потери:"]
+    has_injuries = False
+    for team_name in (home_team_name, away_team_name):
+        team_lines = grouped.get(team_name) or []
+        if not team_lines:
+            continue
+        has_injuries = True
+        lines.extend(["", f"{team_name}:"])
+        lines.extend(team_lines)
+
+    if not has_injuries:
+        return ""
+
+    return "\n".join(lines)
+
+
+def get_fixture_statistics(fixture_id: int) -> list[dict]:
+    try:
+        return request_api_football("/fixtures/statistics", {"fixture": fixture_id})
+    except Exception:
+        logger.warning(
+            "Failed to get fixture statistics for fixture_id=%s",
+            fixture_id,
+            exc_info=True,
+        )
+        return []
+
+
+def parse_stat_number(value) -> float | None:
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    text = text.replace("%", "").replace(",", ".")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def extract_stat_value(
+    team_statistics: list[dict],
+    stat_names: list[str],
+) -> float | None:
+    normalized_names = {name.lower() for name in stat_names}
+
+    for item in team_statistics:
+        stat_type = str(item.get("type") or "").strip().lower()
+        if stat_type not in normalized_names:
+            continue
+
+        value = parse_stat_number(item.get("value"))
+        if value is not None:
+            return value
+
+    return None
+
+
+def calculate_team_advanced_stats(fixtures: list[dict], team_id: int) -> dict:
+    sums = {
+        "corners": 0.0,
+        "yellow_cards": 0.0,
+        "red_cards": 0.0,
+        "shots_on_goal": 0.0,
+        "xg": 0.0,
+        "xga": 0.0,
+    }
+    counts = {key: 0 for key in sums}
+    matches_with_stats = 0
+
+    for fixture_item in fixtures[:5]:
+        fixture_id = fixture_item.get("fixture", {}).get("id")
+        if fixture_id is None:
+            continue
+
+        statistics = get_fixture_statistics(fixture_id)
+        if not statistics:
+            continue
+
+        team_entry = None
+        opponent_entry = None
+        for entry in statistics:
+            current_team_id = (entry.get("team") or {}).get("id")
+            if current_team_id == team_id:
+                team_entry = entry
+            else:
+                opponent_entry = entry
+
+        if not team_entry:
+            continue
+
+        team_stats = team_entry.get("statistics") or []
+        opponent_stats = (opponent_entry or {}).get("statistics") or []
+        extracted_values = {
+            "corners": extract_stat_value(team_stats, ["Corner Kicks"]),
+            "yellow_cards": extract_stat_value(team_stats, ["Yellow Cards"]),
+            "red_cards": extract_stat_value(team_stats, ["Red Cards"]),
+            "shots_on_goal": extract_stat_value(team_stats, ["Shots on Goal"]),
+            "xg": extract_stat_value(team_stats, ["Expected Goals", "xG"]),
+            "xga": extract_stat_value(opponent_stats, ["Expected Goals", "xG"]),
+        }
+
+        has_any_value = False
+        for key, value in extracted_values.items():
+            if value is None:
+                continue
+            sums[key] += value
+            counts[key] += 1
+            has_any_value = True
+
+        if has_any_value:
+            matches_with_stats += 1
+
+    return {
+        "matches_with_stats": matches_with_stats,
+        "avg_corners": (
+            sums["corners"] / counts["corners"]
+            if counts["corners"]
+            else None
+        ),
+        "avg_yellow_cards": (
+            sums["yellow_cards"] / counts["yellow_cards"]
+            if counts["yellow_cards"]
+            else None
+        ),
+        "avg_red_cards": (
+            sums["red_cards"] / counts["red_cards"]
+            if counts["red_cards"]
+            else None
+        ),
+        "avg_shots_on_goal": (
+            sums["shots_on_goal"] / counts["shots_on_goal"]
+            if counts["shots_on_goal"]
+            else None
+        ),
+        "avg_xg": sums["xg"] / counts["xg"] if counts["xg"] else None,
+        "avg_xga": sums["xga"] / counts["xga"] if counts["xga"] else None,
+    }
+
+
+def format_optional_average(value: float | None, digits: int = 1) -> str:
+    if value is None:
+        return "-"
+    return f"{value:.{digits}f}"
+
+
+def build_advanced_stats_block(
+    home_team_name: str,
+    away_team_name: str,
+    home_advanced_stats: dict,
+    away_advanced_stats: dict,
+) -> str:
+    rows = []
+
+    stat_rows = [
+        ("🚩 Угловые", "avg_corners", 1),
+        ("🟨 Жёлтые карточки", "avg_yellow_cards", 1),
+        ("🟥 Красные карточки", "avg_red_cards", 1),
+        ("🥅 Удары в створ", "avg_shots_on_goal", 1),
+    ]
+
+    for label, key, digits in stat_rows:
+        home_value = home_advanced_stats.get(key)
+        away_value = away_advanced_stats.get(key)
+        if home_value is None and away_value is None:
+            continue
+        rows.append(
+            f"{label}: {home_team_name} "
+            f"{format_optional_average(home_value, digits)} / "
+            f"{away_team_name} {format_optional_average(away_value, digits)}"
+        )
+
+    home_xg = home_advanced_stats.get("avg_xg")
+    home_xga = home_advanced_stats.get("avg_xga")
+    away_xg = away_advanced_stats.get("avg_xg")
+    away_xga = away_advanced_stats.get("avg_xga")
+    if any(value is not None for value in (home_xg, home_xga, away_xg, away_xga)):
+        rows.append(
+            f"📈 xG/xGA: {home_team_name} "
+            f"{format_optional_average(home_xg, 2)}/"
+            f"{format_optional_average(home_xga, 2)} / "
+            f"{away_team_name} {format_optional_average(away_xg, 2)}/"
+            f"{format_optional_average(away_xga, 2)}"
+        )
+
+    if not rows:
+        return ""
+
+    return "\n".join(["📎 Доп. статистика последних матчей:", *rows])
+
+
+def calculate_team_home_away_stats(
+    fixtures: list[dict],
+    team_id: int,
+    mode: str,
+) -> dict:
+    wins = 0
+    draws = 0
+    losses = 0
+    goals_for = 0
+    goals_against = 0
+    matches_count = 0
+
+    for item in fixtures:
+        teams = item.get("teams", {})
+        goals = item.get("goals", {})
+        home_id = teams.get("home", {}).get("id")
+        away_id = teams.get("away", {}).get("id")
+        home_goals = goals.get("home")
+        away_goals = goals.get("away")
+
+        if home_goals is None or away_goals is None:
+            continue
+
+        if mode == "home" and home_id == team_id:
+            team_goals = home_goals
+            opponent_goals = away_goals
+        elif mode == "away" and away_id == team_id:
+            team_goals = away_goals
+            opponent_goals = home_goals
+        else:
+            continue
+
+        if team_goals > opponent_goals:
+            wins += 1
+        elif team_goals == opponent_goals:
+            draws += 1
+        else:
+            losses += 1
+
+        goals_for += team_goals
+        goals_against += opponent_goals
+        matches_count += 1
+
+        if matches_count >= 5:
+            break
+
+    return {
+        "wins": wins,
+        "draws": draws,
+        "losses": losses,
+        "goals_for": goals_for,
+        "goals_against": goals_against,
+        "matches_count": matches_count,
+    }
+
+
+def build_home_away_block(
+    home_team_name: str,
+    away_team_name: str,
+    home_home_stats: dict,
+    away_away_stats: dict,
+) -> str:
+    lines = ["🏠/✈️ Дом/гость:"]
+
+    if home_home_stats.get("matches_count"):
+        lines.append(
+            f"{home_team_name} дома: "
+            f"{home_home_stats['wins']}В / "
+            f"{home_home_stats['draws']}Н / "
+            f"{home_home_stats['losses']}П, "
+            f"голы {home_home_stats['goals_for']}-"
+            f"{home_home_stats['goals_against']}"
+        )
+
+    if away_away_stats.get("matches_count"):
+        lines.append(
+            f"{away_team_name} в гостях: "
+            f"{away_away_stats['wins']}В / "
+            f"{away_away_stats['draws']}Н / "
+            f"{away_away_stats['losses']}П, "
+            f"голы {away_away_stats['goals_for']}-"
+            f"{away_away_stats['goals_against']}"
+        )
+
+    if len(lines) == 1:
+        return ""
+
+    return "\n".join(lines)
+
+
+def build_match_analysis_message(
+    home_team_name: str,
+    away_team_name: str,
+    fixture_id: int | None = None,
+) -> str:
     home_team_name = normalize_team_name(home_team_name)
     away_team_name = normalize_team_name(away_team_name)
     home_team = search_api_football_team(home_team_name)
@@ -1209,12 +1630,55 @@ def build_match_analysis_message(home_team_name: str, away_team_name: str) -> st
     if not home_team or not away_team:
         return "Команда не найдена 😕\nПопробуйте выбрать другой матч."
 
-    home_fixtures = get_api_football_finished_fixtures(home_team["id"])
-    away_fixtures = get_api_football_finished_fixtures(away_team["id"])
+    home_recent_fixtures = get_api_football_recent_finished_fixtures(home_team["id"])
+    away_recent_fixtures = get_api_football_recent_finished_fixtures(away_team["id"])
+    home_fixtures = home_recent_fixtures[:5]
+    away_fixtures = away_recent_fixtures[:5]
     home_stats = calculate_team_recent_stats(home_fixtures, home_team["id"])
     away_stats = calculate_team_recent_stats(away_fixtures, away_team["id"])
+    home_home_stats = calculate_team_home_away_stats(
+        home_recent_fixtures,
+        home_team["id"],
+        "home",
+    )
+    away_away_stats = calculate_team_home_away_stats(
+        away_recent_fixtures,
+        away_team["id"],
+        "away",
+    )
     h2h_fixtures = get_head_to_head_fixtures(home_team["id"], away_team["id"])
     h2h_stats = calculate_head_to_head_stats(h2h_fixtures)
+
+    prediction_block = ""
+    injuries_block = ""
+    if fixture_id is not None:
+        prediction_block = build_prediction_block(get_fixture_prediction(fixture_id))
+        injuries_block = build_injuries_block(
+            get_fixture_injuries(fixture_id),
+            home_team["name"],
+            away_team["name"],
+        )
+
+    home_advanced_stats = calculate_team_advanced_stats(
+        home_fixtures,
+        home_team["id"],
+    )
+    away_advanced_stats = calculate_team_advanced_stats(
+        away_fixtures,
+        away_team["id"],
+    )
+    advanced_stats_block = build_advanced_stats_block(
+        home_team["name"],
+        away_team["name"],
+        home_advanced_stats,
+        away_advanced_stats,
+    )
+    home_away_block = build_home_away_block(
+        home_team["name"],
+        away_team["name"],
+        home_home_stats,
+        away_away_stats,
+    )
 
     home_matches_count = home_stats["matches_count"]
     away_matches_count = away_stats["matches_count"]
@@ -1272,9 +1736,18 @@ def build_match_analysis_message(home_team_name: str, away_team_name: str) -> st
             f"{away_matches_count} / ТБ 2.5 {away_stats['over_25_count']}/"
             f"{away_matches_count}"
         ),
-        "",
-        "🤝 Очные встречи:",
     ]
+
+    for block in (
+        home_away_block,
+        prediction_block,
+        injuries_block,
+        advanced_stats_block,
+    ):
+        if block:
+            lines.extend(["", block])
+
+    lines.extend(["", "🤝 Очные встречи:"])
 
     if h2h_stats["match_lines"]:
         lines.extend(h2h_stats["match_lines"])
@@ -1291,7 +1764,12 @@ def build_match_analysis_message(home_team_name: str, away_team_name: str) -> st
     lines.extend(
         [
             "",
-            "⚠️ Это статистический обзор, а не гарантия результата.",
+            "🧩 Составы:",
+            "Обычно становятся доступны примерно за 30–60 минут до начала матча.",
+            "Если составов ещё нет — проверьте ближе к старту.",
+            "",
+            "⚠️ Анализ основан на статистике и алгоритмической оценке. "
+            "Это не гарантия результата.",
         ]
     )
 
@@ -1529,7 +2007,7 @@ def build_api_football_standings_message(
 
         short_team_name = team_name
         if len(short_team_name) > 17:
-            short_team_name = short_team_name[:16] + "…"
+            short_team_name = short_team_name[:17]
 
         table_lines.append(
             f"{rank:<3}"
@@ -2167,6 +2645,7 @@ async def match_number_analysis(
         message = build_match_analysis_message(
             selected_match["home"],
             selected_match["away"],
+            selected_match.get("fixture_id"),
         )
         message += (
             "\n\n"
