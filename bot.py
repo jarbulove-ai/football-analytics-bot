@@ -1571,7 +1571,13 @@ def build_advanced_stats_block(
     if not rows:
         return ""
 
-    return "\n".join(["📎 Средние показатели за последние матчи:", *rows])
+    return "\n".join(
+        [
+            "📎 Средние показатели:",
+            "расчёт по последним 5 матчам, где доступна статистика",
+            *rows,
+        ]
+    )
 
 
 def calculate_statistical_team_score(
@@ -1742,6 +1748,160 @@ def build_statistical_assessment_block(
     )
 
 
+def get_rate(count: int | float | None, total: int | float | None) -> float:
+    if not total:
+        return 0
+    return (count or 0) / total
+
+
+def append_unique_signal(signals: list[str], signal: str) -> None:
+    if signal not in signals:
+        signals.append(signal)
+
+
+def build_analytical_signals_block(
+    home_team_name: str,
+    away_team_name: str,
+    home_stats: dict,
+    away_stats: dict,
+    home_advanced_stats: dict | None = None,
+    away_advanced_stats: dict | None = None,
+    home_home_stats: dict | None = None,
+    away_away_stats: dict | None = None,
+    h2h_stats: dict | None = None,
+) -> str:
+    home_advanced_stats = home_advanced_stats or {}
+    away_advanced_stats = away_advanced_stats or {}
+    home_home_stats = home_home_stats or {}
+    away_away_stats = away_away_stats or {}
+    h2h_stats = h2h_stats or {}
+
+    home_score = calculate_statistical_team_score(
+        home_stats,
+        home_advanced_stats,
+        home_home_stats,
+    )
+    away_score = calculate_statistical_team_score(
+        away_stats,
+        away_advanced_stats,
+        away_away_stats,
+    )
+    score_diff = home_score - away_score
+    advantage_team_name = None
+    advantage_stats = None
+    if abs(score_diff) >= 2:
+        if score_diff > 0:
+            advantage_team_name = home_team_name
+            advantage_stats = home_stats
+        else:
+            advantage_team_name = away_team_name
+            advantage_stats = away_stats
+
+    home_matches = home_stats.get("matches_count") or 0
+    away_matches = away_stats.get("matches_count") or 0
+    total_matches = home_matches + away_matches
+    if total_matches == 0:
+        return (
+            "🧭 Аналитические сигналы:\n"
+            "Недостаточно данных для аккуратной оценки."
+        )
+
+    home_total = home_stats.get("avg_total_goals", 0)
+    away_total = away_stats.get("avg_total_goals", 0)
+    average_total = (home_total + away_total) / 2
+    home_over_rate = get_rate(home_stats.get("over_25_count"), home_matches)
+    away_over_rate = get_rate(away_stats.get("over_25_count"), away_matches)
+    combined_over_rate = (home_over_rate + away_over_rate) / 2
+    home_btts_rate = get_rate(
+        home_stats.get("both_teams_scored_count"),
+        home_matches,
+    )
+    away_btts_rate = get_rate(
+        away_stats.get("both_teams_scored_count"),
+        away_matches,
+    )
+    combined_btts_rate = (home_btts_rate + away_btts_rate) / 2
+
+    cautious_signals = []
+    medium_risk_signals = []
+    high_risk_signals = []
+
+    if average_total >= 2.0 or combined_over_rate >= 0.35:
+        append_unique_signal(cautious_signals, "ТБ 1.5 по матчу")
+
+    if advantage_team_name and abs(score_diff) >= 4:
+        append_unique_signal(cautious_signals, f"{advantage_team_name} не проиграет")
+
+    if (
+        advantage_team_name
+        and advantage_stats
+        and advantage_stats.get("avg_goals_for", 0) >= 1.2
+    ):
+        append_unique_signal(
+            cautious_signals,
+            f"{advantage_team_name} забьёт больше 0.5",
+        )
+
+    if advantage_team_name and abs(score_diff) >= 3:
+        append_unique_signal(
+            medium_risk_signals,
+            f"Преимущество {advantage_team_name} по статистике",
+        )
+
+    if average_total >= 2.8 or combined_over_rate >= 0.6:
+        append_unique_signal(medium_risk_signals, "ТБ 2.5 по матчу")
+    elif average_total < 2.3 and combined_over_rate < 0.45:
+        append_unique_signal(high_risk_signals, "ТБ 2.5 — рискованно")
+
+    if (
+        combined_btts_rate >= 0.45
+        or (
+            home_stats.get("avg_goals_for", 0) >= 1
+            and away_stats.get("avg_goals_for", 0) >= 1
+            and home_stats.get("avg_goals_against", 0) >= 0.8
+            and away_stats.get("avg_goals_against", 0) >= 0.8
+        )
+    ):
+        append_unique_signal(medium_risk_signals, "ОЗ — умеренно")
+    else:
+        append_unique_signal(high_risk_signals, "ОЗ — рискованно")
+
+    if advantage_team_name:
+        append_unique_signal(high_risk_signals, f"Победа {advantage_team_name}")
+
+    if total_matches < 4:
+        append_unique_signal(high_risk_signals, "Любые точные исходы — рискованно")
+
+    sections = [
+        ("🟢 Осторожно:", cautious_signals[:2]),
+        ("🟡 Средний риск:", medium_risk_signals[:2]),
+        ("🔴 Рискованно:", high_risk_signals[:2]),
+    ]
+    lines = ["🧭 Аналитические сигналы:"]
+    has_signals = False
+
+    for title, signals in sections:
+        if not signals:
+            continue
+        has_signals = True
+        lines.extend(["", title])
+        lines.extend(f"• {signal}" for signal in signals)
+
+    if not has_signals:
+        return ""
+
+    lines.extend(
+        [
+            "",
+            "🟢 Осторожно — более мягкий статистический сигнал",
+            "🟡 Средний риск — сигнал есть, но требует осторожности",
+            "🔴 Рискованно — слабый или нестабильный сигнал",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
 def calculate_team_home_away_stats(
     fixtures: list[dict],
     team_id: int,
@@ -1905,6 +2065,17 @@ def build_match_analysis_message(
         away_away_stats,
         h2h_stats,
     )
+    analytical_signals_block = build_analytical_signals_block(
+        home_team["name"],
+        away_team["name"],
+        home_stats,
+        away_stats,
+        home_advanced_stats,
+        away_advanced_stats,
+        home_home_stats,
+        away_away_stats,
+        h2h_stats,
+    )
 
     home_matches_count = home_stats["matches_count"]
     away_matches_count = away_stats["matches_count"]
@@ -1967,6 +2138,7 @@ def build_match_analysis_message(
     for block in (
         home_away_block,
         assessment_block,
+        analytical_signals_block,
         injuries_block,
         advanced_stats_block,
     ):
@@ -1995,7 +2167,7 @@ def build_match_analysis_message(
             "Если составов ещё нет — проверьте ближе к старту.",
             "",
             "⚠️ Анализ основан на статистике и алгоритмической оценке. "
-            "Это не гарантия результата.",
+            "Это не обещание результата.",
         ]
     )
 
