@@ -1242,6 +1242,18 @@ def build_prediction_block(prediction_data: dict | None) -> str:
     advice = predictions.get("advice")
     winner_name = winner.get("name")
     winner_comment = winner.get("comment")
+    unavailable_text = "no predictions available"
+
+    raw_recommendation_parts = [
+        str(value).strip()
+        for value in (advice, winner_name, winner_comment)
+        if value
+    ]
+    if any(
+        unavailable_text in value.lower()
+        for value in raw_recommendation_parts
+    ):
+        return ""
 
     if advice:
         recommendation_parts.append(str(advice))
@@ -1258,6 +1270,19 @@ def build_prediction_block(prediction_data: dict | None) -> str:
         lines.append(f"📌 Рекомендация: {'; '.join(recommendation_parts)}")
 
     probability_parts = []
+    percent_values = {
+        "home": parse_stat_number(percent.get("home")),
+        "draw": parse_stat_number(percent.get("draw")),
+        "away": parse_stat_number(percent.get("away")),
+    }
+    has_useful_recommendation = bool(recommendation_parts)
+    is_fake_even_split = all(
+        value is not None and round(value) == 33
+        for value in percent_values.values()
+    )
+    if is_fake_even_split and not has_useful_recommendation:
+        return ""
+
     if percent.get("home"):
         probability_parts.append(f"П1 {percent['home']}")
     if percent.get("draw"):
@@ -1279,7 +1304,7 @@ def build_prediction_block(prediction_data: dict | None) -> str:
     if expected_goals_parts:
         lines.append(f"🥅 Ожидаемые голы: {' / '.join(expected_goals_parts)}")
 
-    if len(lines) == 1:
+    if len(lines) == 1 or not has_useful_recommendation:
         return ""
 
     return "\n".join(lines)
@@ -1299,7 +1324,10 @@ def build_injuries_block(
     away_team_name: str,
 ) -> str:
     if not injuries:
-        return ""
+        return (
+            "🚑 Потери:\n"
+            "Данных по травмам/дисквалификациям для этого матча пока нет."
+        )
 
     grouped = {
         home_team_name: [],
@@ -1341,7 +1369,10 @@ def build_injuries_block(
         lines.extend(team_lines)
 
     if not has_injuries:
-        return ""
+        return (
+            "🚑 Потери:\n"
+            "Данных по травмам/дисквалификациям для этого матча пока нет."
+        )
 
     return "\n".join(lines)
 
@@ -1399,6 +1430,7 @@ def calculate_team_advanced_stats(fixtures: list[dict], team_id: int) -> dict:
         "corners": 0.0,
         "yellow_cards": 0.0,
         "red_cards": 0.0,
+        "total_shots": 0.0,
         "shots_on_goal": 0.0,
         "xg": 0.0,
         "xga": 0.0,
@@ -1433,6 +1465,15 @@ def calculate_team_advanced_stats(fixtures: list[dict], team_id: int) -> dict:
             "corners": extract_stat_value(team_stats, ["Corner Kicks"]),
             "yellow_cards": extract_stat_value(team_stats, ["Yellow Cards"]),
             "red_cards": extract_stat_value(team_stats, ["Red Cards"]),
+            "total_shots": extract_stat_value(
+                team_stats,
+                [
+                    "Total Shots",
+                    "Shots Total",
+                    "Shots total",
+                    "Total shots",
+                ],
+            ),
             "shots_on_goal": extract_stat_value(team_stats, ["Shots on Goal"]),
             "xg": extract_stat_value(team_stats, ["Expected Goals", "xG"]),
             "xga": extract_stat_value(opponent_stats, ["Expected Goals", "xG"]),
@@ -1466,6 +1507,11 @@ def calculate_team_advanced_stats(fixtures: list[dict], team_id: int) -> dict:
             if counts["red_cards"]
             else None
         ),
+        "avg_total_shots": (
+            sums["total_shots"] / counts["total_shots"]
+            if counts["total_shots"]
+            else None
+        ),
         "avg_shots_on_goal": (
             sums["shots_on_goal"] / counts["shots_on_goal"]
             if counts["shots_on_goal"]
@@ -1491,10 +1537,11 @@ def build_advanced_stats_block(
     rows = []
 
     stat_rows = [
-        ("🚩 Угловые", "avg_corners", 1),
-        ("🟨 Жёлтые карточки", "avg_yellow_cards", 1),
-        ("🟥 Красные карточки", "avg_red_cards", 1),
-        ("🥅 Удары в створ", "avg_shots_on_goal", 1),
+        ("🚩 Угловые за матч", "avg_corners", 1),
+        ("🟨 Жёлтые карточки за матч", "avg_yellow_cards", 1),
+        ("🟥 Красные карточки за матч", "avg_red_cards", 1),
+        ("🎯 Удары всего за матч", "avg_total_shots", 1),
+        ("🥅 Удары в створ за матч", "avg_shots_on_goal", 1),
     ]
 
     for label, key, digits in stat_rows:
@@ -1524,7 +1571,175 @@ def build_advanced_stats_block(
     if not rows:
         return ""
 
-    return "\n".join(["📎 Доп. статистика последних матчей:", *rows])
+    return "\n".join(["📎 Средние показатели за последние матчи:", *rows])
+
+
+def calculate_statistical_team_score(
+    recent_stats: dict,
+    advanced_stats: dict | None,
+    home_away_stats: dict | None,
+) -> float:
+    advanced_stats = advanced_stats or {}
+    home_away_stats = home_away_stats or {}
+
+    score = 0.0
+    score += recent_stats.get("wins", 0) * 2
+    score += recent_stats.get("draws", 0)
+    score -= recent_stats.get("losses", 0)
+    score += recent_stats.get("avg_goals_for", 0) * 0.8
+    score -= recent_stats.get("avg_goals_against", 0) * 0.6
+
+    avg_xg = advanced_stats.get("avg_xg")
+    if avg_xg is not None:
+        score += avg_xg * 0.8
+
+    avg_xga = advanced_stats.get("avg_xga")
+    if avg_xga is not None:
+        score -= avg_xga * 0.6
+
+    avg_shots_on_goal = advanced_stats.get("avg_shots_on_goal")
+    if avg_shots_on_goal is not None:
+        score += avg_shots_on_goal * 0.2
+
+    if home_away_stats.get("matches_count"):
+        score += home_away_stats.get("wins", 0) * 1.2
+        score += home_away_stats.get("draws", 0) * 0.5
+        score -= home_away_stats.get("losses", 0) * 0.8
+        score += home_away_stats.get("goals_for", 0) * 0.15
+        score -= home_away_stats.get("goals_against", 0) * 0.12
+
+    return score
+
+
+def build_statistical_assessment_block(
+    home_team_name: str,
+    away_team_name: str,
+    home_stats: dict,
+    away_stats: dict,
+    home_advanced_stats: dict | None = None,
+    away_advanced_stats: dict | None = None,
+    home_home_stats: dict | None = None,
+    away_away_stats: dict | None = None,
+    h2h_stats: dict | None = None,
+) -> str:
+    home_advanced_stats = home_advanced_stats or {}
+    away_advanced_stats = away_advanced_stats or {}
+    home_home_stats = home_home_stats or {}
+    away_away_stats = away_away_stats or {}
+    h2h_stats = h2h_stats or {}
+
+    home_score = calculate_statistical_team_score(
+        home_stats,
+        home_advanced_stats,
+        home_home_stats,
+    )
+    away_score = calculate_statistical_team_score(
+        away_stats,
+        away_advanced_stats,
+        away_away_stats,
+    )
+    score_diff = home_score - away_score
+
+    if abs(score_diff) < 2:
+        advantage_text = "примерно равные шансы"
+    elif abs(score_diff) < 5:
+        advantage_team = home_team_name if score_diff > 0 else away_team_name
+        advantage_text = f"небольшое преимущество {advantage_team}"
+    else:
+        advantage_team = home_team_name if score_diff > 0 else away_team_name
+        advantage_text = f"преимущество {advantage_team}"
+
+    home_total = home_stats.get("avg_total_goals", 0)
+    away_total = away_stats.get("avg_total_goals", 0)
+    average_total = (home_total + away_total) / 2
+    home_matches = home_stats.get("matches_count") or 0
+    away_matches = away_stats.get("matches_count") or 0
+    home_over_rate = (
+        home_stats.get("over_25_count", 0) / home_matches
+        if home_matches
+        else 0
+    )
+    away_over_rate = (
+        away_stats.get("over_25_count", 0) / away_matches
+        if away_matches
+        else 0
+    )
+    average_over_rate = (home_over_rate + away_over_rate) / 2
+
+    if average_total >= 2.8 or average_over_rate >= 0.6:
+        goals_text = "ближе к ТБ 2.5"
+    elif average_total >= 1.8:
+        goals_text = "ближе к ТБ 1.5"
+    else:
+        goals_text = "осторожнее с тоталом"
+
+    home_btts_rate = (
+        home_stats.get("both_teams_scored_count", 0) / home_matches
+        if home_matches
+        else 0
+    )
+    away_btts_rate = (
+        away_stats.get("both_teams_scored_count", 0) / away_matches
+        if away_matches
+        else 0
+    )
+    average_btts_rate = (home_btts_rate + away_btts_rate) / 2
+    if average_btts_rate >= 0.65:
+        btts_text = "вероятно"
+    elif average_btts_rate >= 0.35:
+        btts_text = "умеренно"
+    else:
+        btts_text = "осторожно"
+
+    reasons = []
+    if home_stats.get("wins", 0) != away_stats.get("wins", 0):
+        reasons.append("лучше форма")
+    if abs(
+        home_stats.get("avg_goals_for", 0)
+        - away_stats.get("avg_goals_for", 0)
+    ) >= 0.3:
+        reasons.append("выше средняя результативность")
+    if abs(
+        home_stats.get("avg_goals_against", 0)
+        - away_stats.get("avg_goals_against", 0)
+    ) >= 0.3:
+        reasons.append("меньше пропускает")
+
+    home_shots_on_goal = home_advanced_stats.get("avg_shots_on_goal")
+    away_shots_on_goal = away_advanced_stats.get("avg_shots_on_goal")
+    if (
+        home_shots_on_goal is not None
+        and away_shots_on_goal is not None
+        and abs(home_shots_on_goal - away_shots_on_goal) >= 1
+    ):
+        reasons.append("больше ударов в створ")
+
+    if (
+        home_home_stats.get("matches_count")
+        or away_away_stats.get("matches_count")
+    ):
+        reasons.append("учтена домашняя/гостевая форма")
+
+    home_xg = home_advanced_stats.get("avg_xg")
+    away_xg = away_advanced_stats.get("avg_xg")
+    if home_xg is not None and away_xg is not None and abs(home_xg - away_xg) >= 0.25:
+        reasons.append("выше xG")
+
+    if h2h_stats.get("h2h_matches_count"):
+        reasons.append("есть очные встречи")
+
+    if not reasons:
+        reasons.append("данных немного, оценка осторожная")
+
+    return "\n".join(
+        [
+            "🤖 Статистическая оценка:",
+            f"📌 По текущим данным: {advantage_text}",
+            f"⚽ По голам: {goals_text}",
+            f"🎯 ОЗ: {btts_text}",
+            f"💬 Основание: {', '.join(reasons[:3])}.",
+        ]
+    )
 
 
 def calculate_team_home_away_stats(
@@ -1679,6 +1894,17 @@ def build_match_analysis_message(
         home_home_stats,
         away_away_stats,
     )
+    assessment_block = prediction_block or build_statistical_assessment_block(
+        home_team["name"],
+        away_team["name"],
+        home_stats,
+        away_stats,
+        home_advanced_stats,
+        away_advanced_stats,
+        home_home_stats,
+        away_away_stats,
+        h2h_stats,
+    )
 
     home_matches_count = home_stats["matches_count"]
     away_matches_count = away_stats["matches_count"]
@@ -1740,7 +1966,7 @@ def build_match_analysis_message(
 
     for block in (
         home_away_block,
-        prediction_block,
+        assessment_block,
         injuries_block,
         advanced_stats_block,
     ):
