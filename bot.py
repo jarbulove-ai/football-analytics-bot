@@ -348,6 +348,13 @@ def build_main_menu_markup() -> ReplyKeyboardMarkup:
     )
 
 
+def build_match_analysis_back_markup() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [["⬅️ Назад"]],
+        resize_keyboard=True,
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_markup = build_main_menu_markup()
 
@@ -1764,6 +1771,15 @@ async def button_handler(
 ) -> None:
 
     text = update.message.text
+    if (
+        context.user_data.get("waiting_match_number_for_analysis")
+        and text == "⬅️ Назад"
+    ):
+        context.user_data["waiting_match_number_for_analysis"] = False
+        context.user_data["analysis_match_options"] = {}
+        await start(update, context)
+        return
+
     if context.user_data.get("team_select_mode"):
         mode = context.user_data["team_select_mode"]
 
@@ -2139,7 +2155,9 @@ async def match_number_analysis(
     if not text.isdigit() or text not in options:
         context.user_data["waiting_match_number_for_analysis"] = True
         await update.message.reply_text(
-            "Введите номер матча из списка. Например: 2"
+            "Введите номер матча из списка. Например: 2\n"
+            "или нажмите ⬅️ Назад",
+            reply_markup=build_match_analysis_back_markup(),
         )
         return
 
@@ -2150,16 +2168,18 @@ async def match_number_analysis(
             selected_match["home"],
             selected_match["away"],
         )
+        message += (
+            "\n\n"
+            "Введите другой номер из списка для анализа\n"
+            "или нажмите ⬅️ Назад"
+        )
     except Exception:
         logger.exception("Match analysis failed")
         message = "🧠 Анализ временно недоступен"
 
-    context.user_data["waiting_match_number_for_analysis"] = False
-    context.user_data["analysis_match_options"] = {}
-
     await update.message.reply_text(
         message,
-        reply_markup=build_main_menu_markup(),
+        reply_markup=build_match_analysis_back_markup(),
     )
 
 
