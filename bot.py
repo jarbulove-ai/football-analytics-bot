@@ -143,6 +143,48 @@ FAVORITE_TEAM_LEAGUES = {
         "Nice",
     ],
 }
+TEAM_ALIASES = {
+    "ливерпуль": "Liverpool",
+    "арсенал": "Arsenal",
+    "челси": "Chelsea",
+    "тоттенхэм": "Tottenham",
+    "тоттенхем": "Tottenham",
+    "ман сити": "Manchester City",
+    "мансити": "Manchester City",
+    "манчестер сити": "Manchester City",
+    "мс": "Manchester City",
+    "ман юнайтед": "Manchester United",
+    "манчестер юнайтед": "Manchester United",
+    "мю": "Manchester United",
+    "реал": "Real Madrid",
+    "реал мадрид": "Real Madrid",
+    "барса": "Barcelona",
+    "барселона": "Barcelona",
+    "атлетико": "Atletico Madrid",
+    "атлетико мадрид": "Atletico Madrid",
+    "интер": "Inter",
+    "милан": "AC Milan",
+    "ювентус": "Juventus",
+    "юве": "Juventus",
+    "наполи": "Napoli",
+    "рома": "Roma",
+    "лацио": "Lazio",
+    "бавария": "Bayern Munich",
+    "боруссия": "Borussia Dortmund",
+    "боруссия д": "Borussia Dortmund",
+    "боруссия дортмунд": "Borussia Dortmund",
+    "байер": "Bayer Leverkusen",
+    "байер леверкузен": "Bayer Leverkusen",
+    "лейпциг": "RB Leipzig",
+    "псж": "Paris Saint Germain",
+    "пари сен жермен": "Paris Saint Germain",
+    "марсель": "Marseille",
+    "монако": "Monaco",
+    "лион": "Lyon",
+    "лилль": "Lille",
+    "кайрат": "Kairat Almaty",
+    "астана": "FC Astana",
+}
 FAVORITE_MANUAL_INPUT_BUTTON = "⌨️ Ввести вручную"
 FAVORITE_BACK_TO_LEAGUES_BUTTON = "⬅️ К лигам"
 FAVORITE_OPEN_PROFILE_BUTTON = "📋 Открыть профиль"
@@ -153,6 +195,14 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+
+def normalize_team_name(team_name: str) -> str:
+    stripped_team_name = team_name.strip()
+    normalized_team_name = stripped_team_name.lower().replace("ё", "е")
+    normalized_team_name = re.sub(r"\s+", " ", normalized_team_name)
+
+    return TEAM_ALIASES.get(normalized_team_name, stripped_team_name)
 
 
 def get_database_url() -> str | None:
@@ -828,6 +878,7 @@ def format_api_football_match_card(fixture_item: dict) -> str:
 
 
 def search_api_football_team(team_name: str) -> dict | None:
+    team_name = normalize_team_name(team_name)
     results = request_api_football("/teams", {"search": team_name})
     if not results:
         return None
@@ -974,6 +1025,7 @@ def calculate_api_football_form(
 
 
 def build_api_football_team_message(team_name: str) -> str | None:
+    team_name = normalize_team_name(team_name)
     team = search_api_football_team(team_name)
     if not team:
         return None
@@ -989,6 +1041,7 @@ def build_api_football_team_message(team_name: str) -> str | None:
 
 
 def build_api_football_results_message(team_name: str) -> str | None:
+    team_name = normalize_team_name(team_name)
     team = search_api_football_team(team_name)
     if not team:
         return None
@@ -1004,6 +1057,7 @@ def build_api_football_results_message(team_name: str) -> str | None:
 
 
 def build_api_football_profile_message(team_name: str) -> str | None:
+    team_name = normalize_team_name(team_name)
     team = search_api_football_team(team_name)
     if not team:
         return None
@@ -1695,12 +1749,15 @@ def build_team_not_found_retry_message() -> str:
         "Попробуйте ввести название ещё раз.\n\n"
         "Например:\n"
         "Liverpool\n"
-        "Arsenal\n"
-        "Barcelona"
+        "Ливерпуль\n"
+        "Реал\n"
+        "Бавария\n"
+        "ПСЖ"
     )
 
 
 def search_thesportsdb_team(team_name: str) -> dict | None:
+    team_name = normalize_team_name(team_name)
     api_key = os.getenv("THESPORTSDB_API_KEY")
 
     response = requests.get(
@@ -1817,7 +1874,7 @@ async def team_search(
     if not context.user_data.get("waiting_team"):
         return
 
-    team_name = update.message.text
+    team_name = normalize_team_name(update.message.text)
     api_key = os.getenv("THESPORTSDB_API_KEY")
 
     try:
@@ -1899,7 +1956,7 @@ async def team_results(
     if not context.user_data.get("waiting_results"):
         return
 
-    team_name = update.message.text
+    team_name = normalize_team_name(update.message.text)
     api_key = os.getenv("THESPORTSDB_API_KEY")
 
     try:
@@ -1981,7 +2038,7 @@ async def favorite_team(
     if not context.user_data.get("waiting_favorite_team"):
         return
 
-    team_name = update.message.text
+    team_name = normalize_team_name(update.message.text)
 
     try:
         team = search_api_football_team(team_name)
