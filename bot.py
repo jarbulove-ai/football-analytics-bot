@@ -2260,10 +2260,48 @@ def sanitize_ai_analysis_text(text: str) -> str:
     return sanitized_text.strip()
 
 
+def get_openai_response_field(item, field_name: str):
+    if isinstance(item, dict):
+        return item.get(field_name)
+
+    return getattr(item, field_name, None)
+
+
+def extract_openai_response_text(response) -> str:
+    output_text = get_openai_response_field(response, "output_text")
+    if output_text and str(output_text).strip():
+        return str(output_text).strip()
+
+    output_items = get_openai_response_field(response, "output") or []
+    text_parts = []
+
+    for output_item in output_items:
+        content_items = get_openai_response_field(output_item, "content") or []
+        if isinstance(content_items, str):
+            text_parts.append(content_items)
+            continue
+
+        for content_item in content_items:
+            if isinstance(content_item, str):
+                text_parts.append(content_item)
+                continue
+
+            text = get_openai_response_field(content_item, "text")
+            if text is None:
+                text = get_openai_response_field(content_item, "value")
+            if text is None:
+                continue
+
+            text_parts.append(str(text))
+
+    return "\n".join(part.strip() for part in text_parts if part.strip()).strip()
+
+
 def get_openai_ai_analysis(match_data: dict) -> str:
     if not OPENAI_API_KEY:
         return "AI-разбор пока не подключён."
 
+    response = None
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)
         try:
@@ -2284,7 +2322,7 @@ def get_openai_ai_analysis(match_data: dict) -> str:
                 ],
                 max_output_tokens=700,
             )
-            content = response.output_text or ""
+            content = extract_openai_response_text(response)
         except AttributeError:
             response = client.chat.completions.create(
                 model=OPENAI_MODEL,
@@ -2308,7 +2346,16 @@ def get_openai_ai_analysis(match_data: dict) -> str:
         logger.exception("OpenAI match analysis failed: %s", e)
         return "AI-разбор временно недоступен."
 
+    if not content.strip():
+        logger.error("OpenAI returned empty AI analysis response")
+        logger.error("OpenAI empty response: %s", response)
+        return "AI-разбор временно недоступен."
+
     content = sanitize_ai_analysis_text(content)
+    if not content.strip():
+        logger.error("OpenAI returned empty AI analysis response")
+        return "AI-разбор временно недоступен."
+
     if content.startswith("🤖 AI-разбор MatchLab"):
         return content
 
