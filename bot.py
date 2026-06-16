@@ -904,6 +904,9 @@ def format_api_football_match_card(fixture_item: dict) -> str:
 def build_numbered_match_list_message(
     title: str,
     fixtures: list[dict],
+    analysis_hint: str = "🧠 Для анализа матча отправьте его номер.",
+    example_hint: str = "Например: 2",
+    limit_note: str | None = None,
 ) -> tuple[str, dict]:
     lines = [title, ""]
     options = {}
@@ -956,12 +959,44 @@ def build_numbered_match_list_message(
     lines.extend(
         [
             "",
-            "🧠 Для анализа матча отправьте его номер.",
-            "Например: 2",
+            analysis_hint,
+            example_hint,
         ]
     )
+    if limit_note:
+        lines.extend(["", limit_note])
 
     return "\n".join(lines), options
+
+
+async def show_numbered_analysis_matches(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    title: str,
+    fixtures: list[dict],
+    source: str,
+    limit: int,
+) -> None:
+    visible_fixtures = fixtures[:limit]
+    message, options = build_numbered_match_list_message(
+        title,
+        visible_fixtures,
+        analysis_hint="Введите номер матча для анализа",
+        example_hint="или нажмите ⬅️ Назад",
+        limit_note=(
+            f"Показаны первые {limit} матчей."
+            if len(fixtures) > limit
+            else None
+        ),
+    )
+    context.user_data["analysis_match_options"] = options
+    context.user_data["analysis_match_source"] = source
+    context.user_data["waiting_match_number_for_analysis"] = bool(options)
+
+    await update.message.reply_text(
+        message,
+        reply_markup=build_match_analysis_back_markup(),
+    )
 
 
 def search_api_football_team(team_name: str) -> dict | None:
@@ -2924,6 +2959,20 @@ def build_ai_prompt(match_data: dict) -> str:
         "направления. Если данных по карточкам или фолам нет, не добавляй "
         "карточки в дополнительные направления. Если данные есть только по "
         "одной команде или выборка мала, уровень должен быть не выше 🟡.\n"
+        "Не противоречь самому себе. Если в блоке 🟨 Карточки и угловые выбрано "
+        "Карточки: жёстко, дальше нельзя писать про спокойную игру по карточкам. "
+        "Если выбрано Карточки: спокойно, дальше нельзя писать про жёсткий матч. "
+        "Если выбрано Угловые: активно, дальше нельзя писать, что угловых мало. "
+        "Если выбрано Угловые: осторожно, дальше нельзя писать про высокий тотал "
+        "угловых.\n"
+        "Не используй точные или примерные цифры по угловым/карточкам, если они "
+        "не переданы явно в полных внутренних данных. Не пиши приблизительные "
+        "значения вроде 3-4 угловых без таких данных. Если данных мало, пиши: "
+        "По угловым/карточкам данных недостаточно. Не делай вывод по карточкам "
+        "и угловым только по названию команд. Если данных по карточкам/угловым "
+        "мало, не добавляй карточки/угловые как сильное направление. В блоке "
+        "🚫 Что лучше пропустить можно писать: Угловые/карточки — данных "
+        "недостаточно для сильного вывода.\n"
         "Дополнительные направления выбирай строго из списка: двойной шанс "
         "1X / X2 / 12; фора 0 / +0.5 / -0.5 / +1.0 / -1.0; командный гол; "
         "индивидуальный тотал ИТБ 0.5 / ИТБ 1.0 / ИТБ 1.5 / ИТМ 1.5; "
@@ -3483,6 +3532,11 @@ def format_top_match(item: dict) -> str:
 
 
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["analysis_match_options"] = []
+    context.user_data["analysis_match_source"] = None
+    context.user_data["waiting_match_number_for_analysis"] = False
+    context.user_data["last_match_for_ai"] = None
+
     try:
         now_almaty = datetime.now(ALMATY_TZ)
         today_start = now_almaty
@@ -3498,15 +3552,20 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             allowed_only=True,
         )
         if not api_matches:
-            await update.message.reply_text("📅 Матчи на сегодня не найдены.")
+            await update.message.reply_text(
+                "На сегодня матчей не найдено.",
+                reply_markup=build_main_menu_markup(),
+            )
             return
 
-        message = "📅 Матчи на сегодня\n\n"
-        message += "\n\n".join(
-            format_api_football_match_card(match)
-            for match in api_matches[:MAX_MATCHES]
+        await show_numbered_analysis_matches(
+            update,
+            context,
+            "📅 Матчи сегодня",
+            api_matches,
+            "today",
+            15,
         )
-        await update.message.reply_text(message)
         return
     except Exception:
         logger.exception("API-Football today matches failed, using TheSportsDB fallback")
@@ -3559,7 +3618,10 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if not matches:
-        await update.message.reply_text("В ближайшие 24 часа матчей не найдено.")
+        await update.message.reply_text(
+            "На сегодня матчей не найдено.",
+            reply_markup=build_main_menu_markup(),
+        )
         return
 
     message = "\n\n".join(
@@ -3569,6 +3631,11 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(message)
 
 async def tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["analysis_match_options"] = []
+    context.user_data["analysis_match_source"] = None
+    context.user_data["waiting_match_number_for_analysis"] = False
+    context.user_data["last_match_for_ai"] = None
+
     try:
         now_almaty = datetime.now(ALMATY_TZ)
         tomorrow_date = (now_almaty + timedelta(days=1)).date()
@@ -3589,15 +3656,20 @@ async def tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             allowed_only=True,
         )
         if not api_matches:
-            await update.message.reply_text("📆 Матчи на завтра не найдены.")
+            await update.message.reply_text(
+                "На завтра матчей не найдено.",
+                reply_markup=build_main_menu_markup(),
+            )
             return
 
-        message = "📆 Матчи на завтра\n\n"
-        message += "\n\n".join(
-            format_api_football_match_card(match)
-            for match in api_matches[:MAX_MATCHES]
+        await show_numbered_analysis_matches(
+            update,
+            context,
+            "📆 Матчи завтра",
+            api_matches,
+            "tomorrow",
+            15,
         )
-        await update.message.reply_text(message)
         return
     except Exception:
         logger.exception("API-Football tomorrow matches failed, using TheSportsDB fallback")
@@ -3632,7 +3704,10 @@ async def tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if not tomorrow_matches:
-        await update.message.reply_text("На завтра матчей не найдено.")
+        await update.message.reply_text(
+            "На завтра матчей не найдено.",
+            reply_markup=build_main_menu_markup(),
+        )
         return
 
     message = "📆 Матчи на завтра\n\n"
@@ -3653,7 +3728,9 @@ async def button_handler(
         and text == "⬅️ Назад"
     ):
         context.user_data["waiting_match_number_for_analysis"] = False
-        context.user_data["analysis_match_options"] = {}
+        context.user_data["analysis_match_options"] = []
+        context.user_data["analysis_match_source"] = None
+        context.user_data["last_match_for_ai"] = None
         await start(update, context)
         return
 
@@ -3837,7 +3914,9 @@ async def button_handler(
     context.user_data["waiting_results"] = False
     context.user_data["waiting_favorite_team"] = False
     context.user_data["waiting_match_number_for_analysis"] = False
-    context.user_data["analysis_match_options"] = {}
+    context.user_data["analysis_match_options"] = []
+    context.user_data["analysis_match_source"] = None
+    context.user_data["last_match_for_ai"] = None
     context.user_data["team_select_mode"] = None
     context.user_data["team_selected_league"] = None
     context.user_data["favorite_select_mode"] = False
@@ -4032,10 +4111,12 @@ async def match_number_analysis(
     if text == MATCH_AI_ANALYSIS_BUTTON:
         return
 
-    if not context.user_data.get("waiting_match_number_for_analysis"):
-        return
-
     options = context.user_data.get("analysis_match_options") or {}
+    if (
+        not context.user_data.get("waiting_match_number_for_analysis")
+        or not options
+    ):
+        return
 
     if not text.isdigit() or text not in options:
         context.user_data["waiting_match_number_for_analysis"] = True
@@ -4503,8 +4584,10 @@ async def show_profile(
 
 
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data["analysis_match_options"] = {}
+    context.user_data["analysis_match_options"] = []
+    context.user_data["analysis_match_source"] = None
     context.user_data["waiting_match_number_for_analysis"] = False
+    context.user_data["last_match_for_ai"] = None
 
     try:
         now_almaty = datetime.now(ALMATY_TZ)
@@ -4521,13 +4604,14 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             return
 
-        message, options = build_numbered_match_list_message(
+        await show_numbered_analysis_matches(
+            update,
+            context,
             "🔥 Топ матчи",
             api_matches[:MAX_TOP_MATCHES],
+            "top",
+            MAX_TOP_MATCHES,
         )
-        context.user_data["analysis_match_options"] = options
-        context.user_data["waiting_match_number_for_analysis"] = bool(options)
-        await update.message.reply_text(message)
         return
     except Exception:
         logger.exception("API-Football top matches failed, using TheSportsDB fallback")
