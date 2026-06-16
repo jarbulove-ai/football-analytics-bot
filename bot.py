@@ -2,12 +2,13 @@ import logging
 import os
 import re
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 
 from openai import OpenAI
 import psycopg2
 import requests
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import Json, RealDictCursor
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
@@ -29,6 +30,11 @@ API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
 THESPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+ADMIN_TELEGRAM_IDS = set(
+    int(item.strip())
+    for item in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
+    if item.strip().isdigit()
+)
 ALMATY_TZ = timezone(timedelta(hours=5))
 MAX_MATCHES = 20
 MAX_TOP_MATCHES = 15
@@ -236,12 +242,499 @@ def init_db() -> None:
                 );
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bot_users (
+                    telegram_user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    language_code TEXT,
+                    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    telegram_user_id BIGINT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    event_data JSONB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_events_user_id_created_at
+                ON user_events (telegram_user_id, created_at DESC);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_events_type_created_at
+                ON user_events (event_type, created_at DESC);
+                """
+            )
         connection.commit()
     except Exception:
         logger.exception("Failed to initialize database")
     finally:
         if connection is not None:
             connection.close()
+
+
+def upsert_bot_user(user) -> None:
+    database_url = get_database_url()
+    if not database_url or not user:
+        return
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bot_users (
+                    telegram_user_id,
+                    username,
+                    first_name,
+                    last_name,
+                    language_code,
+                    first_seen_at,
+                    last_seen_at
+                )
+                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT (telegram_user_id)
+                DO UPDATE SET
+                    username = EXCLUDED.username,
+                    first_name = EXCLUDED.first_name,
+                    last_name = EXCLUDED.last_name,
+                    language_code = EXCLUDED.language_code,
+                    last_seen_at = CURRENT_TIMESTAMP;
+                """,
+                (
+                    user.id,
+                    user.username,
+                    user.first_name,
+                    user.last_name,
+                    user.language_code,
+                ),
+            )
+        connection.commit()
+    except Exception:
+        logger.error("Failed to upsert bot user", exc_info=True)
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def make_json_safe(data: dict | None) -> dict | None:
+    if data is None:
+        return None
+
+    try:
+        return json.loads(json.dumps(data, ensure_ascii=False, default=str))
+    except Exception:
+        logger.error("Failed to serialize analytics event data", exc_info=True)
+        return None
+
+
+def log_user_event(
+    telegram_user_id: int,
+    event_type: str,
+    event_data: dict | None = None,
+) -> None:
+    database_url = get_database_url()
+    if not database_url:
+        return
+
+    connection = None
+    safe_event_data = make_json_safe(event_data)
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO user_events (
+                    telegram_user_id,
+                    event_type,
+                    event_data
+                )
+                VALUES (%s, %s, %s);
+                """,
+                (
+                    telegram_user_id,
+                    event_type,
+                    Json(safe_event_data) if safe_event_data is not None else None,
+                ),
+            )
+        connection.commit()
+    except Exception:
+        logger.error("Failed to log user event", exc_info=True)
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def track_user_action(
+    update: Update,
+    event_type: str,
+    event_data: dict | None = None,
+) -> None:
+    if not update.effective_user:
+        return
+
+    upsert_bot_user(update.effective_user)
+    log_user_event(update.effective_user.id, event_type, event_data)
+
+
+def is_admin_user(telegram_user_id: int) -> bool:
+    return telegram_user_id in ADMIN_TELEGRAM_IDS
+
+
+def get_almaty_period_start(days_back: int = 0) -> datetime:
+    now_almaty = datetime.now(ALMATY_TZ)
+    target_date = now_almaty.date() - timedelta(days=days_back)
+    return datetime.combine(
+        target_date,
+        datetime.min.time(),
+        tzinfo=ALMATY_TZ,
+    ).astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def format_db_datetime(value) -> str:
+    if not value:
+        return "-"
+
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        value = value.astimezone(ALMATY_TZ)
+        return value.strftime("%d.%m %H:%M")
+
+    return str(value)
+
+
+def get_user_display_name(row: dict) -> str:
+    username = row.get("username")
+    if username:
+        return f"@{username}"
+
+    full_name = " ".join(
+        part
+        for part in (
+            row.get("first_name"),
+            row.get("last_name"),
+        )
+        if part
+    ).strip()
+    return full_name or "Без имени"
+
+
+def format_event_line(row: dict) -> str:
+    event_type = row.get("event_type") or "-"
+    event_data = row.get("event_data") or {}
+    suffix = ""
+
+    if isinstance(event_data, dict) and event_type == "match_selected":
+        home = event_data.get("home")
+        away = event_data.get("away")
+        if home and away:
+            suffix = f" — {home} - {away}"
+
+    return f"• {format_db_datetime(row.get('created_at'))} — {event_type}{suffix}"
+
+
+async def deny_non_admin(update: Update) -> bool:
+    if not update.effective_user or not is_admin_user(update.effective_user.id):
+        await update.message.reply_text("Команда недоступна.")
+        return True
+
+    return False
+
+
+async def stats_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if await deny_non_admin(update):
+        return
+
+    database_url = get_database_url()
+    if not database_url:
+        await update.message.reply_text("База данных не подключена.")
+        return
+
+    today_start = get_almaty_period_start()
+    seven_days_start = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+        days=7
+    )
+    event_types = {
+        "today_clicked": "Сегодня",
+        "tomorrow_clicked": "Завтра",
+        "top_clicked": "Топ матчи",
+        "match_selected": "Выбрали матч",
+        "ai_analysis_clicked": "AI-разборы",
+        "premium_clicked": "Premium нажали",
+    }
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute("SELECT COUNT(*) AS value FROM bot_users;")
+            total_users = cursor.fetchone()["value"]
+
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS value
+                FROM bot_users
+                WHERE last_seen_at >= %s;
+                """,
+                (today_start,),
+            )
+            active_today = cursor.fetchone()["value"]
+
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS value
+                FROM bot_users
+                WHERE last_seen_at >= %s;
+                """,
+                (seven_days_start,),
+            )
+            active_7_days = cursor.fetchone()["value"]
+
+            event_counts = {}
+            for event_type in event_types:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS value
+                    FROM user_events
+                    WHERE event_type = %s
+                    AND created_at >= %s;
+                    """,
+                    (event_type, today_start),
+                )
+                event_counts[event_type] = cursor.fetchone()["value"]
+    except Exception:
+        logger.exception("Failed to load admin stats")
+        await update.message.reply_text("Статистика временно недоступна.")
+        return
+    finally:
+        if connection is not None:
+            connection.close()
+
+    lines = [
+        "📊 Статистика MatchLab",
+        "",
+        f"Пользователей всего: {total_users}",
+        f"Активных сегодня: {active_today}",
+        f"Активных за 7 дней: {active_7_days}",
+        "",
+        "События сегодня:",
+    ]
+    lines.extend(
+        f"• {label}: {event_counts[event_type]}"
+        for event_type, label in event_types.items()
+    )
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def users_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if await deny_non_admin(update):
+        return
+
+    database_url = get_database_url()
+    if not database_url:
+        await update.message.reply_text("База данных не подключена.")
+        return
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT telegram_user_id, username, first_name, last_name, last_seen_at
+                FROM bot_users
+                ORDER BY last_seen_at DESC
+                LIMIT 10;
+                """
+            )
+            rows = cursor.fetchall()
+    except Exception:
+        logger.exception("Failed to load admin users")
+        await update.message.reply_text("Список пользователей временно недоступен.")
+        return
+    finally:
+        if connection is not None:
+            connection.close()
+
+    lines = ["👥 Последние пользователи", ""]
+    if not rows:
+        lines.append("Пользователи не найдены.")
+    else:
+        for index, row in enumerate(rows, start=1):
+            lines.append(
+                f"{index}. {get_user_display_name(row)} — "
+                f"{row['telegram_user_id']} — {format_db_datetime(row['last_seen_at'])}"
+            )
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def user_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if await deny_non_admin(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Использование: /user telegram_id")
+        return
+
+    try:
+        telegram_user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Использование: /user telegram_id")
+        return
+
+    database_url = get_database_url()
+    if not database_url:
+        await update.message.reply_text("База данных не подключена.")
+        return
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT *
+                FROM bot_users
+                WHERE telegram_user_id = %s;
+                """,
+                (telegram_user_id,),
+            )
+            user_row = cursor.fetchone()
+
+            cursor.execute(
+                """
+                SELECT event_type, event_data, created_at
+                FROM user_events
+                WHERE telegram_user_id = %s
+                ORDER BY created_at DESC
+                LIMIT 5;
+                """,
+                (telegram_user_id,),
+            )
+            event_rows = cursor.fetchall()
+    except Exception:
+        logger.exception("Failed to load admin user card")
+        await update.message.reply_text("Карточка пользователя временно недоступна.")
+        return
+    finally:
+        if connection is not None:
+            connection.close()
+
+    if not user_row:
+        await update.message.reply_text("Пользователь не найден.")
+        return
+
+    full_name = " ".join(
+        part
+        for part in (
+            user_row.get("first_name"),
+            user_row.get("last_name"),
+        )
+        if part
+    ).strip() or "Без имени"
+    lines = [
+        "👤 Пользователь",
+        "",
+        f"ID: {user_row['telegram_user_id']}",
+        f"Username: {('@' + user_row['username']) if user_row.get('username') else '-'}",
+        f"Имя: {full_name}",
+        f"Первый запуск: {format_db_datetime(user_row.get('first_seen_at'))}",
+        f"Последняя активность: {format_db_datetime(user_row.get('last_seen_at'))}",
+        "",
+        "Последние действия:",
+    ]
+    if event_rows:
+        lines.extend(format_event_line(row) for row in event_rows)
+    else:
+        lines.append("Нет событий.")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def events_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if await deny_non_admin(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Использование: /events telegram_id")
+        return
+
+    try:
+        telegram_user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Использование: /events telegram_id")
+        return
+
+    database_url = get_database_url()
+    if not database_url:
+        await update.message.reply_text("База данных не подключена.")
+        return
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT event_type, event_data, created_at
+                FROM user_events
+                WHERE telegram_user_id = %s
+                ORDER BY created_at DESC
+                LIMIT 20;
+                """,
+                (telegram_user_id,),
+            )
+            rows = cursor.fetchall()
+    except Exception:
+        logger.exception("Failed to load admin events")
+        await update.message.reply_text("События временно недоступны.")
+        return
+    finally:
+        if connection is not None:
+            connection.close()
+
+    lines = ["🧾 Последние события", ""]
+    if rows:
+        lines.extend(format_event_line(row) for row in rows)
+    else:
+        lines.append("События не найдены.")
+
+    await update.message.reply_text("\n".join(lines))
 
 
 def get_favorite_team_from_db(user_id: int) -> str | None:
@@ -373,6 +866,8 @@ def build_match_analysis_ai_markup() -> ReplyKeyboardMarkup:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message and update.message.text and update.message.text.startswith("/start"):
+        track_user_action(update, "start")
     reply_markup = build_main_menu_markup()
 
     await update.message.reply_text(
@@ -3532,6 +4027,7 @@ def format_top_match(item: dict) -> str:
 
 
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    track_user_action(update, "today_clicked")
     context.user_data["analysis_match_options"] = []
     context.user_data["analysis_match_source"] = None
     context.user_data["waiting_match_number_for_analysis"] = False
@@ -3631,6 +4127,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(message)
 
 async def tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    track_user_action(update, "tomorrow_clicked")
     context.user_data["analysis_match_options"] = []
     context.user_data["analysis_match_source"] = None
     context.user_data["waiting_match_number_for_analysis"] = False
@@ -3727,6 +4224,7 @@ async def button_handler(
         context.user_data.get("waiting_match_number_for_analysis")
         and text == "⬅️ Назад"
     ):
+        track_user_action(update, "back_clicked")
         context.user_data["waiting_match_number_for_analysis"] = False
         context.user_data["analysis_match_options"] = []
         context.user_data["analysis_match_source"] = None
@@ -3742,6 +4240,7 @@ async def button_handler(
         mode = context.user_data["team_select_mode"]
 
         if text == "⬅️ Назад":
+            track_user_action(update, "back_clicked")
             context.user_data["team_select_mode"] = None
             context.user_data["team_selected_league"] = None
             context.user_data["waiting_team"] = False
@@ -3821,6 +4320,7 @@ async def button_handler(
         or context.user_data.get("favorite_selected_league")
     ):
         if text == "⬅️ Назад":
+            track_user_action(update, "back_clicked")
             context.user_data["waiting_favorite_team"] = False
             context.user_data["favorite_select_mode"] = False
             context.user_data["favorite_selected_league"] = None
@@ -3890,6 +4390,7 @@ async def button_handler(
         "📋 Профиль",
         "📊 Результаты",
         "⭐ Моя команда",
+        "💎 Подписка",
         FAVORITE_OPEN_PROFILE_BUTTON,
         FAVORITE_CHANGE_TEAM_BUTTON,
         MATCH_AI_ANALYSIS_BUTTON,
@@ -3909,6 +4410,19 @@ async def button_handler(
         and text not in favorite_team_buttons
     ):
         return
+
+    event_by_button = {
+        "🏆 Таблица": "standings_clicked",
+        "⬅️ Назад": "back_clicked",
+        "⚽ Команда": "team_clicked",
+        "📋 Профиль": "profile_clicked",
+        "📊 Результаты": "results_clicked",
+        "💎 Подписка": "premium_clicked",
+        FAVORITE_OPEN_PROFILE_BUTTON: "profile_clicked",
+    }
+    event_type = event_by_button.get(text)
+    if event_type:
+        track_user_action(update, event_type)
 
     context.user_data["waiting_team"] = False
     context.user_data["waiting_results"] = False
@@ -3981,6 +4495,12 @@ async def button_handler(
     
     elif text == "📊 Результаты":
         await show_team_select_leagues(update, context, "results")
+
+    elif text == "💎 Подписка":
+        await update.message.reply_text(
+            "💎 Раздел подписки пока готовится.",
+            reply_markup=build_main_menu_markup(),
+        )
 
     elif text == "⭐ Моя команда":
         if get_current_favorite_team(update, context):
@@ -4128,6 +4648,18 @@ async def match_number_analysis(
         return
 
     selected_match = options[text]
+    track_user_action(
+        update,
+        "match_selected",
+        {
+            "source": context.user_data.get("analysis_match_source"),
+            "match_number": text,
+            "home": selected_match["home"],
+            "away": selected_match["away"],
+            "fixture_id": selected_match.get("fixture_id"),
+            "league_name": selected_match.get("league_name"),
+        },
+    )
 
     try:
         analysis_data = build_match_analysis_data(
@@ -4171,7 +4703,29 @@ async def ai_match_analysis(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    match_data = context.user_data.get("last_match_for_ai")
+    track_user_action(
+        update,
+        "ai_analysis_clicked",
+        {
+            "home": (match_data or {}).get("home"),
+            "away": (match_data or {}).get("away"),
+            "fixture_id": (match_data or {}).get("fixture_id"),
+            "league_name": (match_data or {}).get("league_name"),
+        },
+    )
+
     if not OPENAI_API_KEY:
+        track_user_action(
+            update,
+            "ai_analysis_failed",
+            {
+                "home": (match_data or {}).get("home"),
+                "away": (match_data or {}).get("away"),
+                "fixture_id": (match_data or {}).get("fixture_id"),
+                "league_name": (match_data or {}).get("league_name"),
+            },
+        )
         await update.message.reply_text(
             "AI-разбор пока не подключён.",
             reply_markup=build_match_analysis_back_markup(),
@@ -4185,7 +4739,6 @@ async def ai_match_analysis(
         )
         return
 
-    match_data = context.user_data.get("last_match_for_ai")
     if not match_data:
         await update.message.reply_text(
             "Сначала выберите матч из списка и откройте обычный анализ.",
@@ -4200,6 +4753,16 @@ async def ai_match_analysis(
             match_data
         )
         message = await asyncio.to_thread(get_openai_ai_analysis, match_data)
+        ai_event_data = {
+            "home": match_data.get("home"),
+            "away": match_data.get("away"),
+            "fixture_id": match_data.get("fixture_id"),
+            "league_name": match_data.get("league_name"),
+        }
+        if message == "AI-разбор временно недоступен.":
+            track_user_action(update, "ai_analysis_failed", ai_event_data)
+        else:
+            track_user_action(update, "ai_analysis_success", ai_event_data)
 
         await update.message.reply_text(
             message,
@@ -4584,6 +5147,7 @@ async def show_profile(
 
 
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    track_user_action(update, "top_clicked")
     context.user_data["analysis_match_options"] = []
     context.user_data["analysis_match_source"] = None
     context.user_data["waiting_match_number_for_analysis"] = False
@@ -4767,6 +5331,10 @@ def main() -> None:
     application.add_handler(CommandHandler("tomorrow", tomorrow))
     application.add_handler(CommandHandler("top", top))
     application.add_handler(CommandHandler("testdb", testdb))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("users", users_command))
+    application.add_handler(CommandHandler("user", user_command))
+    application.add_handler(CommandHandler("events", events_command))
 
     application.add_handler(
         MessageHandler(
