@@ -913,6 +913,7 @@ def build_numbered_match_list_message(
         teams = fixture_item.get("teams", {})
         league = fixture_item.get("league", {})
         fixture = fixture_item.get("fixture", {})
+        venue = fixture.get("venue") or {}
 
         home_team = teams.get("home", {}).get("name", "Неизвестная команда")
         away_team = teams.get("away", {}).get("name", "Неизвестная команда")
@@ -933,9 +934,14 @@ def build_numbered_match_list_message(
             "home": home_team,
             "away": away_team,
             "fixture_id": fixture_id,
+            "league_id": league.get("id"),
             "league_name": tournament,
             "league_country": country,
+            "league_season": league.get("season"),
+            "league_round": league.get("round"),
             "kickoff": kickoff_text,
+            "venue_name": venue.get("name"),
+            "venue_city": venue.get("city"),
         }
 
         lines.extend(
@@ -2012,6 +2018,140 @@ def build_home_away_block(
     return "\n".join(lines)
 
 
+def get_home_away_context_type(
+    league_name: str | None,
+    league_country: str | None,
+    league_round: str | None,
+    venue_name: str | None = None,
+    venue_city: str | None = None,
+) -> str:
+    league_text = (league_name or "").strip().lower()
+    country_text = (league_country or "").strip().lower()
+    round_text = (league_round or "").strip().lower()
+    combined_text = " ".join(
+        value
+        for value in (
+            league_text,
+            country_text,
+            round_text,
+            (venue_name or "").strip().lower(),
+            (venue_city or "").strip().lower(),
+        )
+        if value
+    )
+
+    if not combined_text:
+        return "unknown"
+
+    leg_markers = ("1st leg", "2nd leg", "first leg", "second leg")
+    is_two_legged = any(marker in round_text for marker in leg_markers)
+    non_final_knockout_markers = ("semi", "quarter", "round of")
+    is_final_round = (
+        "finalissima" in round_text
+        or "3rd place" in round_text
+        or "third place" in round_text
+        or round_text in {"final", "finals"}
+        or round_text.endswith(" final")
+        or round_text.endswith(" finals")
+    )
+    if (
+        is_final_round
+        and not is_two_legged
+        and not any(marker in round_text for marker in non_final_knockout_markers)
+    ):
+        return "neutral_or_conditional"
+
+    neutral_tournaments = (
+        "world cup",
+        "fifa world cup",
+        "european championship",
+        "copa america",
+        "africa cup of nations",
+        "afcon",
+        "asian cup",
+        "gold cup",
+        "nations league",
+        "confederations cup",
+        "club world cup",
+    )
+    neutral_patterns = (
+        r"\buefa euro\b",
+        r"\beuro\b",
+    )
+    if any(name in combined_text for name in neutral_tournaments) or any(
+        re.search(pattern, combined_text)
+        for pattern in neutral_patterns
+    ):
+        return "neutral_or_conditional"
+
+    european_club_tournaments = (
+        "uefa champions league",
+        "champions league",
+        "uefa europa league",
+        "europa league",
+        "uefa europa conference league",
+        "conference league",
+    )
+    if any(name in league_text for name in european_club_tournaments):
+        return "strong_home_away"
+
+    domestic_leagues = (
+        "premier league",
+        "la liga",
+        "serie a",
+        "bundesliga",
+        "ligue 1",
+        "eredivisie",
+        "primeira liga",
+        "süper lig",
+        "super lig",
+        "kazakhstan premier league",
+    )
+    if any(name in league_text for name in domestic_leagues):
+        return "strong_home_away"
+
+    domestic_cups = (
+        "fa cup",
+        "efl cup",
+        "copa del rey",
+        "coppa italia",
+        "dfb pokal",
+        "coupe de france",
+        "taca de portugal",
+        "taça de portugal",
+        "turkish cup",
+        "kazakhstan cup",
+    )
+    if (
+        any(name in league_text for name in domestic_cups)
+        or " cup" in f" {league_text}"
+        or "кубок" in league_text
+    ):
+        return "strong_home_away"
+
+    if country_text == "world":
+        return "neutral_or_conditional"
+
+    if league_text and country_text and country_text != "world":
+        return "strong_home_away"
+
+    return "unknown"
+
+
+def build_home_away_context_text(context_type: str) -> str:
+    if context_type == "strong_home_away":
+        return (
+            "Контекст поля: home/away выглядит рабочим фактором для этого турнира."
+        )
+    if context_type == "neutral_or_conditional":
+        return (
+            "Контекст поля: home/away может быть условным, сильный вывод по "
+            "домашнему полю лучше не делать."
+        )
+
+    return "Контекст поля: недостаточно данных, учитываем осторожно."
+
+
 def build_full_match_analysis_text(analysis_data: dict) -> str:
     home_team = analysis_data["home_team"]
     away_team = analysis_data["away_team"]
@@ -2021,10 +2161,37 @@ def build_full_match_analysis_text(analysis_data: dict) -> str:
     home_matches_count = home_stats["matches_count"]
     away_matches_count = away_stats["matches_count"]
     h2h_matches_count = h2h_stats["h2h_matches_count"]
+    match_context = analysis_data.get("match_context") or {}
     lines = [
         "🧠 Анализ матча",
         "",
         f"{home_team['name']} - {away_team['name']}",
+    ]
+
+    tournament_lines = []
+    if match_context.get("league_name"):
+        tournament_lines.append(f"Турнир: {match_context['league_name']}")
+    if match_context.get("league_round"):
+        tournament_lines.append(f"Раунд: {match_context['league_round']}")
+    if match_context.get("kickoff"):
+        tournament_lines.append(f"Время: {match_context['kickoff']}")
+    venue_parts = [
+        part
+        for part in (
+            match_context.get("venue_name"),
+            match_context.get("venue_city"),
+        )
+        if part
+    ]
+    if venue_parts:
+        tournament_lines.append(f"Стадион/город: {', '.join(venue_parts)}")
+    if analysis_data.get("home_away_context_text"):
+        tournament_lines.append(analysis_data["home_away_context_text"])
+    if tournament_lines:
+        lines.extend(["", "🏆 Турнирный контекст:", *tournament_lines])
+
+    lines.extend(
+        [
         "",
         "📊 Форма последних 5:",
         f"{home_team['name']}: {home_stats['form_icons'] or 'Нет данных'}",
@@ -2073,7 +2240,8 @@ def build_full_match_analysis_text(analysis_data: dict) -> str:
             f"{away_matches_count} / ТБ 2.5 {away_stats['over_25_count']}/"
             f"{away_matches_count}"
         ),
-    ]
+        ]
+    )
 
     for block in (
         analysis_data["home_away_block"],
@@ -2274,6 +2442,8 @@ def build_public_match_analysis_text(analysis_data: dict) -> str:
         f"ОЗ: {btts_direction}.",
         "",
         "🏠/✈️ Контекст:",
+        analysis_data.get("home_away_context_text")
+        or build_home_away_context_text("unknown"),
         describe_public_home_away_line(
             home_name,
             analysis_data["home_home_stats"],
@@ -2305,7 +2475,9 @@ def build_match_analysis_data(
     home_team_name: str,
     away_team_name: str,
     fixture_id: int | None = None,
+    match_context: dict | None = None,
 ) -> dict:
+    match_context = match_context or {}
     home_team_name = normalize_team_name(home_team_name)
     away_team_name = normalize_team_name(away_team_name)
     home_team = search_api_football_team(home_team_name)
@@ -2392,10 +2564,22 @@ def build_match_analysis_data(
         away_away_stats,
         h2h_stats,
     )
+    home_away_context_type = get_home_away_context_type(
+        match_context.get("league_name"),
+        match_context.get("league_country"),
+        match_context.get("league_round"),
+        match_context.get("venue_name"),
+        match_context.get("venue_city"),
+    )
     analysis_data = {
         "home_team_name": home_team["name"],
         "away_team_name": away_team["name"],
         "fixture_id": fixture_id,
+        "match_context": match_context,
+        "home_away_context_type": home_away_context_type,
+        "home_away_context_text": build_home_away_context_text(
+            home_away_context_type
+        ),
         "home_team": home_team,
         "away_team": away_team,
         "home_stats": home_stats,
@@ -2451,12 +2635,190 @@ def build_api_football_team_message(team_name: str) -> str | None:
     )
 
 
+def get_fixture_league_standings(
+    league_id: int | None,
+    season: int | None,
+) -> list[dict]:
+    if not league_id or not season:
+        return []
+
+    try:
+        response = request_api_football(
+            "/standings",
+            {
+                "league": league_id,
+                "season": season,
+            },
+        )
+    except Exception:
+        logger.exception("Failed to get fixture league standings")
+        return []
+
+    if not response:
+        return []
+
+    standings_groups = response[0].get("league", {}).get("standings", [])
+    standings = []
+    for group_rows in standings_groups:
+        for row in group_rows or []:
+            row_copy = dict(row)
+            if row_copy.get("group") is None and group_rows:
+                row_copy["group"] = (group_rows[0] or {}).get("group")
+            standings.append(row_copy)
+
+    return standings
+
+
+def normalize_standings_team_name(team_name: str | None) -> str:
+    return (team_name or "").strip().lower().replace("ё", "е")
+
+
+def find_standings_row(standings: list[dict], team_name: str) -> dict | None:
+    normalized_team_name = normalize_standings_team_name(team_name)
+    if not normalized_team_name:
+        return None
+
+    for row in standings:
+        row_team_name = normalize_standings_team_name(
+            (row.get("team") or {}).get("name")
+        )
+        if not row_team_name:
+            continue
+        if row_team_name == normalized_team_name:
+            return row
+        if (
+            normalized_team_name in row_team_name
+            or row_team_name in normalized_team_name
+        ):
+            return row
+
+    return None
+
+
+def format_standings_context_row(row: dict | None) -> dict | None:
+    if not row:
+        return None
+
+    return {
+        "rank": row.get("rank"),
+        "points": row.get("points"),
+        "played": (row.get("all") or {}).get("played"),
+        "goalsDiff": row.get("goalsDiff"),
+        "form": row.get("form"),
+    }
+
+
+def extract_match_standings_context(
+    standings: list[dict],
+    home_team_name: str,
+    away_team_name: str,
+) -> dict:
+    home_row = find_standings_row(standings, home_team_name)
+    away_row = find_standings_row(standings, away_team_name)
+    if not home_row and not away_row:
+        return {}
+
+    context = {}
+    home_context = format_standings_context_row(home_row)
+    away_context = format_standings_context_row(away_row)
+    if home_context:
+        context["home"] = home_context
+    if away_context:
+        context["away"] = away_context
+
+    group = None
+    if home_row and home_row.get("group"):
+        group = home_row.get("group")
+    elif away_row and away_row.get("group"):
+        group = away_row.get("group")
+    context["group"] = group
+
+    return context
+
+
+def format_tournament_context_team_line(
+    team_name: str,
+    team_context: dict | None,
+) -> str:
+    if not team_context:
+        return f"* {team_name}: данных нет"
+
+    return (
+        f"* {team_name}: место {team_context.get('rank', '-')}, "
+        f"очки {team_context.get('points', '-')}, "
+        f"матчи {team_context.get('played', '-')}, "
+        f"разница {team_context.get('goalsDiff', '-')}, "
+        f"форма {team_context.get('form') or '-'}"
+    )
+
+
+def build_tournament_context_for_ai(match_data: dict) -> str:
+    context_type = get_home_away_context_type(
+        match_data.get("league_name"),
+        match_data.get("league_country"),
+        match_data.get("league_round"),
+        match_data.get("venue_name"),
+        match_data.get("venue_city"),
+    )
+    venue_name = match_data.get("venue_name") or "не указан"
+    venue_city = match_data.get("venue_city") or "не указан"
+    lines = [
+        "Турнир:",
+        f"* Название: {match_data.get('league_name') or 'не указано'}",
+        f"* Страна/контекст: {match_data.get('league_country') or 'не указано'}",
+        f"* Раунд: {match_data.get('league_round') or 'не указан'}",
+        f"* Стадион: {venue_name}",
+        f"* Город: {venue_city}",
+        f"* {build_home_away_context_text(context_type)}",
+        "",
+        "Таблица/мотивация:",
+    ]
+
+    standings = get_fixture_league_standings(
+        match_data.get("league_id"),
+        match_data.get("league_season"),
+    )
+    standings_context = extract_match_standings_context(
+        standings,
+        match_data.get("home") or "",
+        match_data.get("away") or "",
+    )
+    match_data["standings_context"] = standings_context
+    match_data["home_away_context_type"] = context_type
+
+    if not standings_context:
+        lines.append("Данных по таблице/мотивации нет.")
+        return "\n".join(lines)
+
+    lines.append(
+        format_tournament_context_team_line(
+            match_data.get("home") or "Команда 1",
+            standings_context.get("home"),
+        )
+    )
+    lines.append(
+        format_tournament_context_team_line(
+            match_data.get("away") or "Команда 2",
+            standings_context.get("away"),
+        )
+    )
+    lines.append(f"* Группа: {standings_context.get('group') or 'нет данных'}")
+
+    return "\n".join(lines)
+
+
 def build_ai_prompt(match_data: dict) -> str:
     home_team = match_data.get("home") or "Команда 1"
     away_team = match_data.get("away") or "Команда 2"
     league_name = match_data.get("league_name") or "не указан"
-    league_country = match_data.get("league_country") or "не указана"
+    league_round = match_data.get("league_round") or "не указан"
     kickoff = match_data.get("kickoff") or "не указано"
+    venue_name = match_data.get("venue_name") or "не указан"
+    venue_city = match_data.get("venue_city") or "не указан"
+    tournament_context_text = (
+        match_data.get("tournament_context_text")
+        or "Данных по турнирному контексту нет."
+    )
     analysis_text = match_data.get("analysis_text") or ""
 
     return (
@@ -2474,38 +2836,61 @@ def build_ai_prompt(match_data: dict) -> str:
         "Не обещай результат.\n"
         "Не придумывай факты, которых нет в данных.\n"
         "Не упоминай API-Football.\n"
+        "Ориентир по длине: 350-600 слов максимум.\n"
+        "Учитывай формат турнира.\n"
+        "Если матч проходит в нейтральном турнире или финале на нейтральном "
+        "поле, не делай сильный вывод на основе дома/в гостях.\n"
+        "Если это внутренний чемпионат, внутренний кубок не в финале, ЛЧ, ЛЕ, "
+        "ЛК, квалификация или двухматчевый формат — home/away можно учитывать.\n"
+        "Если есть таблица/группа: оцени мотивацию команд, кому важнее очки, "
+        "кому может быть достаточно ничьей, кому может быть важна разница "
+        "мячей. Если данных мало — не делай уверенных выводов. Если таблицы "
+        "нет — не придумывай мотивацию.\n"
         "Ответ дай строго в структуре:\n\n"
         "🤖 AI-разбор MatchLab\n\n"
-        "🏆 Матч:\n"
+        "🏆 Матч и турнир:\n"
         "Team A - Team B\n"
         "Турнир: …\n"
-        "Время: …\n\n"
+        "Раунд: …\n"
+        "Стадион/город: …\n"
+        "Контекст поля: домашний фактор / нейтральный или условный home/away\n\n"
+        "📊 Турнирная мотивация:\n"
+        "Если есть данные по таблице — коротко объясни. Если нет — напиши: "
+        "По таблице/мотивации данных недостаточно.\n\n"
         "📊 Форма и контекст:\n"
-        "…\n\n"
+        "2-4 предложения. Кто стабильнее, кто лучше по атаке/обороне. "
+        "Учитывай home/away только если контекст strong_home_away.\n\n"
         "⚽ Голы и тоталы:\n"
-        "• Общий тотал: …\n"
-        "• ТБ 1.5: …\n"
-        "• ТБ 2.5: …\n"
-        "• Индивидуальный тотал Team A: …\n"
-        "• Индивидуальный тотал Team B: …\n\n"
+        "• Общий тотал: осторожно / умеренно / активно\n"
+        "• ТБ 1.5: есть ли статистический сигнал\n"
+        "• ТБ 2.5: есть ли риск\n"
+        "• Индивидуальный тотал Team A: осторожно / умеренно / интересно\n"
+        "• Индивидуальный тотал Team B: осторожно / умеренно / интересно\n\n"
         "🎯 ОЗ:\n"
-        "…\n\n"
+        "Осторожно / умеренно / вероятно. Коротко объясни почему.\n\n"
         "🚑 Потери и составы:\n"
-        "…\n\n"
+        "Если есть потери — коротко объясни, насколько это может быть важно. "
+        "Если данных нет — напиши: По потерям данных пока нет. Составы обычно "
+        "появляются ближе к старту.\n\n"
         "🧭 Аналитические направления:\n"
         "🟢 Осторожнее:\n"
-        "• …\n"
+        "• 1-2 пункта\n\n"
         "🟡 Средний риск:\n"
-        "• …\n"
+        "• 1-2 пункта\n\n"
         "🔴 Рискованно:\n"
-        "• …\n\n"
+        "• 1-2 пункта\n\n"
         "💬 Итог:\n"
-        "…\n\n"
+        "2-3 предложения: главное направление матча и главный риск.\n\n"
+        "В конце обязательно:\n"
         "⚠️ Это статистический обзор, а не обещание результата.\n\n"
-        f"Матч: {home_team} - {away_team}\n\n"
+        f"Матч: {home_team} - {away_team}\n"
         f"Турнир: {league_name}\n"
-        f"Страна/регион: {league_country}\n"
+        f"Раунд: {league_round}\n"
         f"Время: {kickoff}\n\n"
+        f"Стадион: {venue_name}\n"
+        f"Город: {venue_city}\n\n"
+        "Турнирный контекст и мотивация:\n"
+        f"{tournament_context_text}\n\n"
         "Полные внутренние статистические данные MatchLab:\n"
         f"{analysis_text}"
     )
@@ -3535,6 +3920,7 @@ async def match_number_analysis(
             selected_match["home"],
             selected_match["away"],
             selected_match.get("fixture_id"),
+            selected_match,
         )
         full_analysis_text = analysis_data["full_analysis_text"]
         public_analysis_text = analysis_data["public_analysis_text"]
@@ -3542,9 +3928,14 @@ async def match_number_analysis(
             "home": selected_match["home"],
             "away": selected_match["away"],
             "fixture_id": selected_match.get("fixture_id"),
+            "league_id": selected_match.get("league_id"),
             "league_name": selected_match.get("league_name"),
             "league_country": selected_match.get("league_country"),
+            "league_season": selected_match.get("league_season"),
+            "league_round": selected_match.get("league_round"),
             "kickoff": selected_match.get("kickoff"),
+            "venue_name": selected_match.get("venue_name"),
+            "venue_city": selected_match.get("venue_city"),
             "analysis_text": full_analysis_text,
         }
         message = public_analysis_text + (
@@ -3591,6 +3982,9 @@ async def ai_match_analysis(
     context.user_data["ai_analysis_in_progress"] = True
     try:
         await update.message.reply_text("⏳ Готовлю AI-разбор…")
+        match_data["tournament_context_text"] = build_tournament_context_for_ai(
+            match_data
+        )
         message = await asyncio.to_thread(get_openai_ai_analysis, match_data)
 
         await update.message.reply_text(
