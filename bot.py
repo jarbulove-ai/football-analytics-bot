@@ -933,6 +933,9 @@ def build_numbered_match_list_message(
             "home": home_team,
             "away": away_team,
             "fixture_id": fixture_id,
+            "league_name": tournament,
+            "league_country": country,
+            "kickoff": kickoff_text,
         }
 
         lines.extend(
@@ -2009,95 +2012,15 @@ def build_home_away_block(
     return "\n".join(lines)
 
 
-def build_match_analysis_message(
-    home_team_name: str,
-    away_team_name: str,
-    fixture_id: int | None = None,
-) -> str:
-    home_team_name = normalize_team_name(home_team_name)
-    away_team_name = normalize_team_name(away_team_name)
-    home_team = search_api_football_team(home_team_name)
-    away_team = search_api_football_team(away_team_name)
-
-    if not home_team or not away_team:
-        return "Команда не найдена 😕\nПопробуйте выбрать другой матч."
-
-    home_recent_fixtures = get_api_football_recent_finished_fixtures(home_team["id"])
-    away_recent_fixtures = get_api_football_recent_finished_fixtures(away_team["id"])
-    home_fixtures = home_recent_fixtures[:5]
-    away_fixtures = away_recent_fixtures[:5]
-    home_stats = calculate_team_recent_stats(home_fixtures, home_team["id"])
-    away_stats = calculate_team_recent_stats(away_fixtures, away_team["id"])
-    home_home_stats = calculate_team_home_away_stats(
-        home_recent_fixtures,
-        home_team["id"],
-        "home",
-    )
-    away_away_stats = calculate_team_home_away_stats(
-        away_recent_fixtures,
-        away_team["id"],
-        "away",
-    )
-    h2h_fixtures = get_head_to_head_fixtures(home_team["id"], away_team["id"])
-    h2h_stats = calculate_head_to_head_stats(h2h_fixtures)
-
-    prediction_block = ""
-    injuries_block = ""
-    if fixture_id is not None:
-        prediction_block = build_prediction_block(get_fixture_prediction(fixture_id))
-        injuries_block = build_injuries_block(
-            get_fixture_injuries(fixture_id),
-            home_team["name"],
-            away_team["name"],
-        )
-
-    home_advanced_stats = calculate_team_advanced_stats(
-        home_fixtures,
-        home_team["id"],
-    )
-    away_advanced_stats = calculate_team_advanced_stats(
-        away_fixtures,
-        away_team["id"],
-    )
-    advanced_stats_block = build_advanced_stats_block(
-        home_team["name"],
-        away_team["name"],
-        home_advanced_stats,
-        away_advanced_stats,
-    )
-    home_away_block = build_home_away_block(
-        home_team["name"],
-        away_team["name"],
-        home_home_stats,
-        away_away_stats,
-    )
-    assessment_block = prediction_block or build_statistical_assessment_block(
-        home_team["name"],
-        away_team["name"],
-        home_stats,
-        away_stats,
-        home_advanced_stats,
-        away_advanced_stats,
-        home_home_stats,
-        away_away_stats,
-        h2h_stats,
-    )
-    analytical_signals_block = build_analytical_signals_block(
-        home_team["name"],
-        away_team["name"],
-        home_stats,
-        away_stats,
-        home_advanced_stats,
-        away_advanced_stats,
-        home_home_stats,
-        away_away_stats,
-        h2h_stats,
-    )
-
+def build_full_match_analysis_text(analysis_data: dict) -> str:
+    home_team = analysis_data["home_team"]
+    away_team = analysis_data["away_team"]
+    home_stats = analysis_data["home_stats"]
+    away_stats = analysis_data["away_stats"]
+    h2h_stats = analysis_data["h2h_stats"]
     home_matches_count = home_stats["matches_count"]
     away_matches_count = away_stats["matches_count"]
     h2h_matches_count = h2h_stats["h2h_matches_count"]
-
     lines = [
         "🧠 Анализ матча",
         "",
@@ -2153,11 +2076,11 @@ def build_match_analysis_message(
     ]
 
     for block in (
-        home_away_block,
-        assessment_block,
-        analytical_signals_block,
-        injuries_block,
-        advanced_stats_block,
+        analysis_data["home_away_block"],
+        analysis_data["assessment_block"],
+        analysis_data["analytical_signals_block"],
+        analysis_data["injuries_block"],
+        analysis_data["advanced_stats_block"],
     ):
         if block:
             lines.extend(["", block])
@@ -2191,6 +2114,327 @@ def build_match_analysis_message(
     return "\n".join(lines)
 
 
+def describe_public_match_picture(
+    home_team_name: str,
+    away_team_name: str,
+    home_stats: dict,
+    away_stats: dict,
+    home_advanced_stats: dict,
+    away_advanced_stats: dict,
+    home_home_stats: dict,
+    away_away_stats: dict,
+) -> str:
+    home_score = calculate_statistical_team_score(
+        home_stats,
+        home_advanced_stats,
+        home_home_stats,
+    )
+    away_score = calculate_statistical_team_score(
+        away_stats,
+        away_advanced_stats,
+        away_away_stats,
+    )
+    score_diff = home_score - away_score
+
+    if abs(score_diff) < 2:
+        return "команды примерно равны"
+    if score_diff > 0:
+        if home_stats.get("avg_goals_for", 0) > away_stats.get("avg_goals_for", 0):
+            return f"{home_team_name} выглядит активнее в атаке"
+        return f"{home_team_name} выглядит стабильнее"
+
+    if away_stats.get("avg_goals_for", 0) > home_stats.get("avg_goals_for", 0):
+        return f"{away_team_name} выглядит активнее в атаке"
+    return f"{away_team_name} выглядит стабильнее"
+
+
+def describe_public_goals_direction(home_stats: dict, away_stats: dict) -> str:
+    home_matches = home_stats.get("matches_count") or 0
+    away_matches = away_stats.get("matches_count") or 0
+    average_total = (
+        home_stats.get("avg_total_goals", 0)
+        + away_stats.get("avg_total_goals", 0)
+    ) / 2
+    over_rate = (
+        get_rate(home_stats.get("over_25_count"), home_matches)
+        + get_rate(away_stats.get("over_25_count"), away_matches)
+    ) / 2
+
+    if average_total >= 2.8 or over_rate >= 0.6:
+        return "матч может быть результативным"
+    if average_total >= 2.0 or over_rate >= 0.35:
+        return "умеренно"
+    return "осторожно"
+
+
+def describe_public_btts_direction(home_stats: dict, away_stats: dict) -> str:
+    home_matches = home_stats.get("matches_count") or 0
+    away_matches = away_stats.get("matches_count") or 0
+    btts_rate = (
+        get_rate(home_stats.get("both_teams_scored_count"), home_matches)
+        + get_rate(away_stats.get("both_teams_scored_count"), away_matches)
+    ) / 2
+
+    if btts_rate >= 0.65:
+        return "вероятно"
+    if btts_rate >= 0.35:
+        return "умеренно"
+    return "осторожно"
+
+
+def describe_public_home_away_line(team_name: str, stats: dict, label: str) -> str:
+    if not stats.get("matches_count"):
+        return f"{team_name} {label}: данных мало"
+
+    return (
+        f"{team_name} {label}: {stats['wins']}В / {stats['draws']}Н / "
+        f"{stats['losses']}П, голы {stats['goals_for']}-{stats['goals_against']}"
+    )
+
+
+def count_team_injuries(injuries: list[dict], team_name: str) -> int:
+    normalized_team_name = team_name.strip().lower()
+    count = 0
+
+    for item in injuries:
+        current_team_name = (item.get("team") or {}).get("name")
+        player_name = (item.get("player") or {}).get("name")
+        if (
+            current_team_name
+            and player_name
+            and current_team_name.strip().lower() == normalized_team_name
+        ):
+            count += 1
+
+    return count
+
+
+def build_public_injuries_summary(
+    injuries: list[dict],
+    home_team_name: str,
+    away_team_name: str,
+) -> str:
+    if not injuries:
+        return "🚑 Потери:\nДанных по потерям пока нет."
+
+    home_count = count_team_injuries(injuries, home_team_name)
+    away_count = count_team_injuries(injuries, away_team_name)
+    if not home_count and not away_count:
+        return "🚑 Потери:\nДанных по потерям пока нет."
+
+    return "\n".join(
+        [
+            "🚑 Потери:",
+            (
+                f"{home_team_name}: есть потери"
+                if home_count
+                else f"{home_team_name}: данных нет"
+            ),
+            (
+                f"{away_team_name}: есть потери"
+                if away_count
+                else f"{away_team_name}: данных нет"
+            ),
+        ]
+    )
+
+
+def build_public_match_analysis_text(analysis_data: dict) -> str:
+    home_team = analysis_data["home_team"]
+    away_team = analysis_data["away_team"]
+    home_stats = analysis_data["home_stats"]
+    away_stats = analysis_data["away_stats"]
+    home_name = home_team["name"]
+    away_name = away_team["name"]
+    picture = describe_public_match_picture(
+        home_name,
+        away_name,
+        home_stats,
+        away_stats,
+        analysis_data["home_advanced_stats"],
+        analysis_data["away_advanced_stats"],
+        analysis_data["home_home_stats"],
+        analysis_data["away_away_stats"],
+    )
+    goals_direction = describe_public_goals_direction(home_stats, away_stats)
+    btts_direction = describe_public_btts_direction(home_stats, away_stats)
+
+    lines = [
+        "🧠 Анализ матча",
+        "",
+        f"{home_name} - {away_name}",
+        "",
+        "📊 Форма последних 5:",
+        f"{home_name}: {home_stats['form_icons'] or 'Нет данных'}",
+        f"{away_name}: {away_stats['form_icons'] or 'Нет данных'}",
+        "",
+        "⚽ Общая картина:",
+        f"{picture}.",
+        f"По голам: {goals_direction}.",
+        f"ОЗ: {btts_direction}.",
+        "",
+        "🏠/✈️ Контекст:",
+        describe_public_home_away_line(
+            home_name,
+            analysis_data["home_home_stats"],
+            "дома",
+        ),
+        describe_public_home_away_line(
+            away_name,
+            analysis_data["away_away_stats"],
+            "в гостях",
+        ),
+        "",
+        build_public_injuries_summary(
+            analysis_data["injuries"],
+            home_name,
+            away_name,
+        ),
+        "",
+        "📎 Детальная статистика:",
+        "Доступна в AI-разборе.",
+        "",
+        "⚠️ Анализ основан на статистике и алгоритмической оценке. "
+        "Это не обещание результата.",
+    ]
+
+    return "\n".join(lines)
+
+
+def build_match_analysis_data(
+    home_team_name: str,
+    away_team_name: str,
+    fixture_id: int | None = None,
+) -> dict:
+    home_team_name = normalize_team_name(home_team_name)
+    away_team_name = normalize_team_name(away_team_name)
+    home_team = search_api_football_team(home_team_name)
+    away_team = search_api_football_team(away_team_name)
+
+    if not home_team or not away_team:
+        error_text = "Команда не найдена 😕\nПопробуйте выбрать другой матч."
+        return {
+            "error": error_text,
+            "full_analysis_text": error_text,
+            "public_analysis_text": error_text,
+        }
+
+    home_recent_fixtures = get_api_football_recent_finished_fixtures(home_team["id"])
+    away_recent_fixtures = get_api_football_recent_finished_fixtures(away_team["id"])
+    home_fixtures = home_recent_fixtures[:5]
+    away_fixtures = away_recent_fixtures[:5]
+    home_stats = calculate_team_recent_stats(home_fixtures, home_team["id"])
+    away_stats = calculate_team_recent_stats(away_fixtures, away_team["id"])
+    home_home_stats = calculate_team_home_away_stats(
+        home_recent_fixtures,
+        home_team["id"],
+        "home",
+    )
+    away_away_stats = calculate_team_home_away_stats(
+        away_recent_fixtures,
+        away_team["id"],
+        "away",
+    )
+    h2h_fixtures = get_head_to_head_fixtures(home_team["id"], away_team["id"])
+    h2h_stats = calculate_head_to_head_stats(h2h_fixtures)
+
+    prediction_block = ""
+    injuries = []
+    injuries_block = ""
+    if fixture_id is not None:
+        prediction_block = build_prediction_block(get_fixture_prediction(fixture_id))
+        injuries = get_fixture_injuries(fixture_id)
+        injuries_block = build_injuries_block(
+            injuries,
+            home_team["name"],
+            away_team["name"],
+        )
+
+    home_advanced_stats = calculate_team_advanced_stats(
+        home_fixtures,
+        home_team["id"],
+    )
+    away_advanced_stats = calculate_team_advanced_stats(
+        away_fixtures,
+        away_team["id"],
+    )
+    advanced_stats_block = build_advanced_stats_block(
+        home_team["name"],
+        away_team["name"],
+        home_advanced_stats,
+        away_advanced_stats,
+    )
+    home_away_block = build_home_away_block(
+        home_team["name"],
+        away_team["name"],
+        home_home_stats,
+        away_away_stats,
+    )
+    assessment_block = prediction_block or build_statistical_assessment_block(
+        home_team["name"],
+        away_team["name"],
+        home_stats,
+        away_stats,
+        home_advanced_stats,
+        away_advanced_stats,
+        home_home_stats,
+        away_away_stats,
+        h2h_stats,
+    )
+    analytical_signals_block = build_analytical_signals_block(
+        home_team["name"],
+        away_team["name"],
+        home_stats,
+        away_stats,
+        home_advanced_stats,
+        away_advanced_stats,
+        home_home_stats,
+        away_away_stats,
+        h2h_stats,
+    )
+    analysis_data = {
+        "home_team_name": home_team["name"],
+        "away_team_name": away_team["name"],
+        "fixture_id": fixture_id,
+        "home_team": home_team,
+        "away_team": away_team,
+        "home_stats": home_stats,
+        "away_stats": away_stats,
+        "home_advanced_stats": home_advanced_stats,
+        "away_advanced_stats": away_advanced_stats,
+        "home_home_stats": home_home_stats,
+        "away_away_stats": away_away_stats,
+        "h2h_stats": h2h_stats,
+        "injuries": injuries,
+        "prediction_block": prediction_block,
+        "assessment_block": assessment_block,
+        "analytical_signals_block": analytical_signals_block,
+        "injuries_block": injuries_block,
+        "advanced_stats_block": advanced_stats_block,
+        "home_away_block": home_away_block,
+    }
+    analysis_data["full_analysis_text"] = build_full_match_analysis_text(
+        analysis_data
+    )
+    analysis_data["public_analysis_text"] = build_public_match_analysis_text(
+        analysis_data
+    )
+
+    return analysis_data
+
+
+def build_match_analysis_message(
+    home_team_name: str,
+    away_team_name: str,
+    fixture_id: int | None = None,
+) -> str:
+    return build_match_analysis_data(
+        home_team_name,
+        away_team_name,
+        fixture_id,
+    )["full_analysis_text"]
+
+
 def build_api_football_team_message(team_name: str) -> str | None:
     team_name = normalize_team_name(team_name)
     team = search_api_football_team(team_name)
@@ -2210,28 +2454,59 @@ def build_api_football_team_message(team_name: str) -> str | None:
 def build_ai_prompt(match_data: dict) -> str:
     home_team = match_data.get("home") or "Команда 1"
     away_team = match_data.get("away") or "Команда 2"
+    league_name = match_data.get("league_name") or "не указан"
+    league_country = match_data.get("league_country") or "не указана"
+    kickoff = match_data.get("kickoff") or "не указано"
     analysis_text = match_data.get("analysis_text") or ""
 
     return (
         "Ты футбольный аналитический помощник MatchLab.\n"
-        "На основе предоставленного статистического анализа подготовь краткий "
-        "человеческий разбор матча.\n"
+        "Пользователь видел только сокращённый анализ. Ниже переданы полные "
+        "внутренние статистические данные MatchLab. Используй их для более "
+        "глубокого вывода.\n"
+        "Не пересказывай все цифры подряд.\n"
+        "Делай профессиональный вывод на основе данных.\n"
+        "Если по травмам/дисквалификациям данных нет — честно напиши, что "
+        "данных пока нет.\n"
+        "Не придумывай потери, составы или xG, если их нет в данных.\n"
         "Не используй слова: ставка, ставить, экспресс, купон, железно, "
         "гарантия, 100%.\n"
         "Не обещай результат.\n"
         "Не придумывай факты, которых нет в данных.\n"
         "Не упоминай API-Football.\n"
-        "Дай:\n\n"
-        "1. Краткий вывод по силе команд\n"
-        "2. Направление по голам\n"
-        "3. ОЗ: осторожно / умеренно / вероятно\n"
-        "4. 2-3 аналитических сигнала\n"
-        "5. Что выглядит рискованно\n"
-        "6. Короткий итог\n\n"
-        "В конце добавь:\n"
+        "Ответ дай строго в структуре:\n\n"
+        "🤖 AI-разбор MatchLab\n\n"
+        "🏆 Матч:\n"
+        "Team A - Team B\n"
+        "Турнир: …\n"
+        "Время: …\n\n"
+        "📊 Форма и контекст:\n"
+        "…\n\n"
+        "⚽ Голы и тоталы:\n"
+        "• Общий тотал: …\n"
+        "• ТБ 1.5: …\n"
+        "• ТБ 2.5: …\n"
+        "• Индивидуальный тотал Team A: …\n"
+        "• Индивидуальный тотал Team B: …\n\n"
+        "🎯 ОЗ:\n"
+        "…\n\n"
+        "🚑 Потери и составы:\n"
+        "…\n\n"
+        "🧭 Аналитические направления:\n"
+        "🟢 Осторожнее:\n"
+        "• …\n"
+        "🟡 Средний риск:\n"
+        "• …\n"
+        "🔴 Рискованно:\n"
+        "• …\n\n"
+        "💬 Итог:\n"
+        "…\n\n"
         "⚠️ Это статистический обзор, а не обещание результата.\n\n"
         f"Матч: {home_team} - {away_team}\n\n"
-        "Статистический анализ MatchLab:\n"
+        f"Турнир: {league_name}\n"
+        f"Страна/регион: {league_country}\n"
+        f"Время: {kickoff}\n\n"
+        "Полные внутренние статистические данные MatchLab:\n"
         f"{analysis_text}"
     )
 
@@ -3256,18 +3531,23 @@ async def match_number_analysis(
     selected_match = options[text]
 
     try:
-        analysis_text = build_match_analysis_message(
+        analysis_data = build_match_analysis_data(
             selected_match["home"],
             selected_match["away"],
             selected_match.get("fixture_id"),
         )
+        full_analysis_text = analysis_data["full_analysis_text"]
+        public_analysis_text = analysis_data["public_analysis_text"]
         context.user_data["last_match_for_ai"] = {
             "home": selected_match["home"],
             "away": selected_match["away"],
             "fixture_id": selected_match.get("fixture_id"),
-            "analysis_text": analysis_text,
+            "league_name": selected_match.get("league_name"),
+            "league_country": selected_match.get("league_country"),
+            "kickoff": selected_match.get("kickoff"),
+            "analysis_text": full_analysis_text,
         }
-        message = analysis_text + (
+        message = public_analysis_text + (
             "\n\n"
             "Введите другой номер из списка для анализа\n"
             "или нажмите ⬅️ Назад"
@@ -3315,7 +3595,7 @@ async def ai_match_analysis(
 
         await update.message.reply_text(
             message,
-            reply_markup=build_match_analysis_ai_markup(),
+            reply_markup=build_match_analysis_back_markup(),
         )
     finally:
         context.user_data["ai_analysis_in_progress"] = False
