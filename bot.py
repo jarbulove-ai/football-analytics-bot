@@ -2266,27 +2266,48 @@ def get_openai_ai_analysis(match_data: dict) -> str:
 
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Ты аккуратный футбольный аналитик. Отвечай на русском, "
-                        "кратко и нейтрально."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": build_ai_prompt(match_data),
-                },
-            ],
-            temperature=0.3,
-            max_tokens=700,
-        )
-        content = response.choices[0].message.content or ""
-    except Exception:
-        logger.exception("OpenAI match analysis failed")
+        try:
+            response = client.responses.create(
+                model=OPENAI_MODEL,
+                input=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты аккуратный футбольный аналитик. Отвечай на русском, "
+                            "кратко и нейтрально."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": build_ai_prompt(match_data),
+                    },
+                ],
+                temperature=0.3,
+                max_output_tokens=700,
+            )
+            content = response.output_text or ""
+        except AttributeError:
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты аккуратный футбольный аналитик. Отвечай на русском, "
+                            "кратко и нейтрально."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": build_ai_prompt(match_data),
+                    },
+                ],
+                temperature=0.3,
+                max_completion_tokens=700,
+            )
+            content = response.choices[0].message.content or ""
+    except Exception as e:
+        logger.exception("OpenAI match analysis failed: %s", e)
         return "AI-разбор временно недоступен."
 
     content = sanitize_ai_analysis_text(content)
@@ -3133,10 +3154,14 @@ async def match_number_analysis(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    text = update.message.text.strip()
+    if text == MATCH_AI_ANALYSIS_BUTTON:
+        await ai_match_analysis(update, context)
+        return
+
     if not context.user_data.get("waiting_match_number_for_analysis"):
         return
 
-    text = update.message.text.strip()
     options = context.user_data.get("analysis_match_options") or {}
 
     if not text.isdigit() or text not in options:
