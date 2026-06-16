@@ -2282,7 +2282,6 @@ def get_openai_ai_analysis(match_data: dict) -> str:
                         "content": build_ai_prompt(match_data),
                     },
                 ],
-                temperature=0.3,
                 max_output_tokens=700,
             )
             content = response.output_text or ""
@@ -2302,7 +2301,6 @@ def get_openai_ai_analysis(match_data: dict) -> str:
                         "content": build_ai_prompt(match_data),
                     },
                 ],
-                temperature=0.3,
                 max_completion_tokens=700,
             )
             content = response.choices[0].message.content or ""
@@ -3156,7 +3154,6 @@ async def match_number_analysis(
 ) -> None:
     text = update.message.text.strip()
     if text == MATCH_AI_ANALYSIS_BUTTON:
-        await ai_match_analysis(update, context)
         return
 
     if not context.user_data.get("waiting_match_number_for_analysis"):
@@ -3213,6 +3210,13 @@ async def ai_match_analysis(
         )
         return
 
+    if context.user_data.get("ai_analysis_in_progress"):
+        await update.message.reply_text(
+            "AI-разбор уже готовится, подождите немного.",
+            reply_markup=build_match_analysis_ai_markup(),
+        )
+        return
+
     match_data = context.user_data.get("last_match_for_ai")
     if not match_data:
         await update.message.reply_text(
@@ -3221,13 +3225,17 @@ async def ai_match_analysis(
         )
         return
 
-    await update.message.reply_text("⏳ Готовлю AI-разбор…")
-    message = await asyncio.to_thread(get_openai_ai_analysis, match_data)
+    context.user_data["ai_analysis_in_progress"] = True
+    try:
+        await update.message.reply_text("⏳ Готовлю AI-разбор…")
+        message = await asyncio.to_thread(get_openai_ai_analysis, match_data)
 
-    await update.message.reply_text(
-        message,
-        reply_markup=build_match_analysis_ai_markup(),
-    )
+        await update.message.reply_text(
+            message,
+            reply_markup=build_match_analysis_ai_markup(),
+        )
+    finally:
+        context.user_data["ai_analysis_in_progress"] = False
 
 
 async def team_search(
