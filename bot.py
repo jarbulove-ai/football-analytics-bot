@@ -1,8 +1,10 @@
 import logging
 import os
 import re
+import asyncio
 from datetime import datetime, timedelta, timezone
 
+from openai import OpenAI
 import psycopg2
 import requests
 from psycopg2.extras import RealDictCursor
@@ -25,6 +27,8 @@ from telegram.ext import (
 
 API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
 THESPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 ALMATY_TZ = timezone(timedelta(hours=5))
 MAX_MATCHES = 20
 MAX_TOP_MATCHES = 15
@@ -189,6 +193,7 @@ FAVORITE_MANUAL_INPUT_BUTTON = "⌨️ Ввести вручную"
 FAVORITE_BACK_TO_LEAGUES_BUTTON = "⬅️ К лигам"
 FAVORITE_OPEN_PROFILE_BUTTON = "📋 Открыть профиль"
 FAVORITE_CHANGE_TEAM_BUTTON = "🔄 Сменить команду"
+MATCH_AI_ANALYSIS_BUTTON = "🤖 AI-разбор"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -351,6 +356,18 @@ def build_main_menu_markup() -> ReplyKeyboardMarkup:
 def build_match_analysis_back_markup() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [["⬅️ Назад"]],
+        resize_keyboard=True,
+    )
+
+
+def build_match_analysis_ai_markup() -> ReplyKeyboardMarkup:
+    keyboard = []
+    if OPENAI_API_KEY:
+        keyboard.append([MATCH_AI_ANALYSIS_BUTTON])
+    keyboard.append(["⬅️ Назад"])
+
+    return ReplyKeyboardMarkup(
+        keyboard,
         resize_keyboard=True,
     )
 
@@ -2190,6 +2207,95 @@ def build_api_football_team_message(team_name: str) -> str | None:
     )
 
 
+def build_ai_prompt(match_data: dict) -> str:
+    home_team = match_data.get("home") or "Команда 1"
+    away_team = match_data.get("away") or "Команда 2"
+    analysis_text = match_data.get("analysis_text") or ""
+
+    return (
+        "Ты футбольный аналитический помощник MatchLab.\n"
+        "На основе предоставленного статистического анализа подготовь краткий "
+        "человеческий разбор матча.\n"
+        "Не используй слова: ставка, ставить, экспресс, купон, железно, "
+        "гарантия, 100%.\n"
+        "Не обещай результат.\n"
+        "Не придумывай факты, которых нет в данных.\n"
+        "Не упоминай API-Football.\n"
+        "Дай:\n\n"
+        "1. Краткий вывод по силе команд\n"
+        "2. Направление по голам\n"
+        "3. ОЗ: осторожно / умеренно / вероятно\n"
+        "4. 2-3 аналитических сигнала\n"
+        "5. Что выглядит рискованно\n"
+        "6. Короткий итог\n\n"
+        "В конце добавь:\n"
+        "⚠️ Это статистический обзор, а не обещание результата.\n\n"
+        f"Матч: {home_team} - {away_team}\n\n"
+        "Статистический анализ MatchLab:\n"
+        f"{analysis_text}"
+    )
+
+
+def sanitize_ai_analysis_text(text: str) -> str:
+    replacements = {
+        r"\bставка\b": "сигнал",
+        r"\bставки\b": "сигналы",
+        r"\bставить\b": "рассматривать",
+        r"\bэкспресс\b": "комбинация",
+        r"\bкупон\b": "подбор",
+        r"\bжелезно\b": "сильно",
+        r"\bгарантия\b": "оценка",
+        r"100%": "высокая уверенность",
+        r"API-Football": "статистика",
+    }
+    sanitized_text = text
+    for pattern, replacement in replacements.items():
+        sanitized_text = re.sub(
+            pattern,
+            replacement,
+            sanitized_text,
+            flags=re.IGNORECASE,
+        )
+
+    return sanitized_text.strip()
+
+
+def get_openai_ai_analysis(match_data: dict) -> str:
+    if not OPENAI_API_KEY:
+        return "AI-разбор пока не подключён."
+
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты аккуратный футбольный аналитик. Отвечай на русском, "
+                        "кратко и нейтрально."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": build_ai_prompt(match_data),
+                },
+            ],
+            temperature=0.3,
+            max_tokens=700,
+        )
+        content = response.choices[0].message.content or ""
+    except Exception:
+        logger.exception("OpenAI match analysis failed")
+        return "AI-разбор временно недоступен."
+
+    content = sanitize_ai_analysis_text(content)
+    if content.startswith("🤖 AI-разбор MatchLab"):
+        return content
+
+    return f"🤖 AI-разбор MatchLab\n\n{content}"
+
+
 def build_api_football_results_message(team_name: str) -> str | None:
     team_name = normalize_team_name(team_name)
     team = search_api_football_team(team_name)
@@ -2656,6 +2762,10 @@ async def button_handler(
         await start(update, context)
         return
 
+    if text == MATCH_AI_ANALYSIS_BUTTON:
+        await ai_match_analysis(update, context)
+        return
+
     if context.user_data.get("team_select_mode"):
         mode = context.user_data["team_select_mode"]
 
@@ -2810,6 +2920,7 @@ async def button_handler(
         "⭐ Моя команда",
         FAVORITE_OPEN_PROFILE_BUTTON,
         FAVORITE_CHANGE_TEAM_BUTTON,
+        MATCH_AI_ANALYSIS_BUTTON,
     }
 
     favorite_team_buttons = set(FAVORITE_TEAM_LEAGUES.keys())
@@ -3040,12 +3151,18 @@ async def match_number_analysis(
     selected_match = options[text]
 
     try:
-        message = build_match_analysis_message(
+        analysis_text = build_match_analysis_message(
             selected_match["home"],
             selected_match["away"],
             selected_match.get("fixture_id"),
         )
-        message += (
+        context.user_data["last_match_for_ai"] = {
+            "home": selected_match["home"],
+            "away": selected_match["away"],
+            "fixture_id": selected_match.get("fixture_id"),
+            "analysis_text": analysis_text,
+        }
+        message = analysis_text + (
             "\n\n"
             "Введите другой номер из списка для анализа\n"
             "или нажмите ⬅️ Назад"
@@ -3056,7 +3173,35 @@ async def match_number_analysis(
 
     await update.message.reply_text(
         message,
-        reply_markup=build_match_analysis_back_markup(),
+        reply_markup=build_match_analysis_ai_markup(),
+    )
+
+
+async def ai_match_analysis(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not OPENAI_API_KEY:
+        await update.message.reply_text(
+            "AI-разбор пока не подключён.",
+            reply_markup=build_match_analysis_back_markup(),
+        )
+        return
+
+    match_data = context.user_data.get("last_match_for_ai")
+    if not match_data:
+        await update.message.reply_text(
+            "Сначала выберите матч из списка и откройте обычный анализ.",
+            reply_markup=build_match_analysis_ai_markup(),
+        )
+        return
+
+    await update.message.reply_text("⏳ Готовлю AI-разбор…")
+    message = await asyncio.to_thread(get_openai_ai_analysis, match_data)
+
+    await update.message.reply_text(
+        message,
+        reply_markup=build_match_analysis_ai_markup(),
     )
 
 
@@ -3696,6 +3841,7 @@ def main() -> None:
     favorite_team_buttons.add(FAVORITE_BACK_TO_LEAGUES_BUTTON)
     favorite_team_buttons.add(FAVORITE_OPEN_PROFILE_BUTTON)
     favorite_team_buttons.add(FAVORITE_CHANGE_TEAM_BUTTON)
+    favorite_team_buttons.add(MATCH_AI_ANALYSIS_BUTTON)
     for teams in FAVORITE_TEAM_LEAGUES.values():
         favorite_team_buttons.update(teams)
 
