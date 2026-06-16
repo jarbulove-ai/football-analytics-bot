@@ -1456,6 +1456,7 @@ def calculate_team_advanced_stats(fixtures: list[dict], team_id: int) -> dict:
         "corners": 0.0,
         "yellow_cards": 0.0,
         "red_cards": 0.0,
+        "fouls": 0.0,
         "total_shots": 0.0,
         "shots_on_goal": 0.0,
         "xg": 0.0,
@@ -1491,6 +1492,14 @@ def calculate_team_advanced_stats(fixtures: list[dict], team_id: int) -> dict:
             "corners": extract_stat_value(team_stats, ["Corner Kicks"]),
             "yellow_cards": extract_stat_value(team_stats, ["Yellow Cards"]),
             "red_cards": extract_stat_value(team_stats, ["Red Cards"]),
+            "fouls": extract_stat_value(
+                team_stats,
+                [
+                    "Fouls",
+                    "Fouls committed",
+                    "Fouls Committed",
+                ],
+            ),
             "total_shots": extract_stat_value(
                 team_stats,
                 [
@@ -1533,6 +1542,7 @@ def calculate_team_advanced_stats(fixtures: list[dict], team_id: int) -> dict:
             if counts["red_cards"]
             else None
         ),
+        "avg_fouls": sums["fouls"] / counts["fouls"] if counts["fouls"] else None,
         "avg_total_shots": (
             sums["total_shots"] / counts["total_shots"]
             if counts["total_shots"]
@@ -1554,6 +1564,52 @@ def format_optional_average(value: float | None, digits: int = 1) -> str:
     return f"{value:.{digits}f}"
 
 
+def describe_cards_profile(
+    home_advanced_stats: dict,
+    away_advanced_stats: dict,
+) -> str:
+    card_values = [
+        value
+        for value in (
+            home_advanced_stats.get("avg_yellow_cards"),
+            away_advanced_stats.get("avg_yellow_cards"),
+        )
+        if value is not None
+    ]
+    red_values = [
+        value
+        for value in (
+            home_advanced_stats.get("avg_red_cards"),
+            away_advanced_stats.get("avg_red_cards"),
+        )
+        if value is not None
+    ]
+    foul_values = [
+        value
+        for value in (
+            home_advanced_stats.get("avg_fouls"),
+            away_advanced_stats.get("avg_fouls"),
+        )
+        if value is not None
+    ]
+
+    if not card_values and not red_values and not foul_values:
+        return ""
+
+    total_yellow_cards = sum(card_values) if card_values else 0
+    total_red_cards = sum(red_values) if red_values else 0
+    total_fouls = sum(foul_values) if foul_values else 0
+
+    if total_yellow_cards >= 5 or total_red_cards >= 0.5 or total_fouls >= 28:
+        profile = "жёстко"
+    elif total_yellow_cards >= 3 or total_red_cards > 0 or total_fouls >= 18:
+        profile = "умеренно"
+    else:
+        profile = "спокойно"
+
+    return f"🟨 Характер по карточкам: {profile}"
+
+
 def build_advanced_stats_block(
     home_team_name: str,
     away_team_name: str,
@@ -1566,6 +1622,7 @@ def build_advanced_stats_block(
         ("🚩 Угловые за матч", "avg_corners", 1),
         ("🟨 Жёлтые карточки за матч", "avg_yellow_cards", 1),
         ("🟥 Красные карточки за матч", "avg_red_cards", 1),
+        ("🧯 Фолы за матч", "avg_fouls", 1),
         ("🎯 Удары всего за матч", "avg_total_shots", 1),
         ("🥅 Удары в створ за матч", "avg_shots_on_goal", 1),
     ]
@@ -1580,6 +1637,22 @@ def build_advanced_stats_block(
             f"{format_optional_average(home_value, digits)} / "
             f"{away_team_name} {format_optional_average(away_value, digits)}"
         )
+
+    home_corners = home_advanced_stats.get("avg_corners")
+    away_corners = away_advanced_stats.get("avg_corners")
+    if home_corners is not None or away_corners is not None:
+        total_corners = (home_corners or 0) + (away_corners or 0)
+        rows.append(
+            "🚩 Общий средний тотал угловых: "
+            f"{format_optional_average(total_corners, 1)}"
+        )
+
+    cards_profile = describe_cards_profile(
+        home_advanced_stats,
+        away_advanced_stats,
+    )
+    if cards_profile:
+        rows.append(cards_profile)
 
     home_xg = home_advanced_stats.get("avg_xg")
     home_xga = home_advanced_stats.get("avg_xga")
@@ -2836,7 +2909,7 @@ def build_ai_prompt(match_data: dict) -> str:
         "Не обещай результат.\n"
         "Не придумывай факты, которых нет в данных.\n"
         "Не упоминай API-Football.\n"
-        "Ориентир по длине: 350-600 слов максимум.\n"
+        "Ориентир по длине: 350-650 слов максимум.\n"
         "Учитывай формат турнира.\n"
         "Если матч проходит в нейтральном турнире или финале на нейтральном "
         "поле, не делай сильный вывод на основе дома/в гостях.\n"
@@ -2846,6 +2919,27 @@ def build_ai_prompt(match_data: dict) -> str:
         "кому может быть достаточно ничьей, кому может быть важна разница "
         "мячей. Если данных мало — не делай уверенных выводов. Если таблицы "
         "нет — не придумывай мотивацию.\n"
+        "По угловым и карточкам используй только данные из внутреннего анализа. "
+        "Если данных по угловым нет, не добавляй угловые в дополнительные "
+        "направления. Если данных по карточкам или фолам нет, не добавляй "
+        "карточки в дополнительные направления. Если данные есть только по "
+        "одной команде или выборка мала, уровень должен быть не выше 🟡.\n"
+        "Дополнительные направления выбирай строго из списка: двойной шанс "
+        "1X / X2 / 12; фора 0 / +0.5 / -0.5 / +1.0 / -1.0; командный гол; "
+        "индивидуальный тотал ИТБ 0.5 / ИТБ 1.0 / ИТБ 1.5 / ИТМ 1.5; "
+        "первый тайм; угловые; карточки; сухой матч.\n"
+        "Выбери только 3-5 самых логичных направлений. Лучше 3 сильных "
+        "направления, чем 8 слабых. Не добавляй направление только ради "
+        "заполнения блока. Если данных недостаточно, пиши осторожно или "
+        "пропусти направление.\n"
+        "Первый тайм добавляй только при данных или форме, указывающих на "
+        "быстрый старт; если данных по таймам нет, формулируй осторожно. "
+        "Сухой матч добавляй только при слабом ОЗ, слабой атаке одной команды "
+        "и сильной обороне другой. Фору используй аккуратно; если матч равный, "
+        "фора должна быть осторожной или отсутствовать. Двойной шанс используй, "
+        "если одна команда стабильнее, но чистый исход рискован. "
+        "Индивидуальный тотал используй при явном перевесе атаки команды или "
+        "слабости обороны соперника.\n"
         "Ответ дай строго в структуре:\n\n"
         "🤖 AI-разбор MatchLab\n\n"
         "🏆 Матч и турнир:\n"
@@ -2868,6 +2962,17 @@ def build_ai_prompt(match_data: dict) -> str:
         "• Индивидуальный тотал Team B: осторожно / умеренно / интересно\n\n"
         "🎯 ОЗ:\n"
         "Осторожно / умеренно / вероятно. Коротко объясни почему.\n\n"
+        "🟨 Карточки и угловые:\n"
+        "• Угловые: осторожно / умеренно / активно\n"
+        "• Карточки: спокойно / умеренно / жёстко\n"
+        "• Короткий вывод: 1-2 предложения\n"
+        "Если данных нет — напиши: По угловым/карточкам данных недостаточно.\n\n"
+        "📌 Дополнительные направления:\n"
+        "• 3-5 пунктов максимум\n"
+        "• Только самые логичные направления\n"
+        "• Формат: • 🟢 Team A забьёт — причина в 1 предложении\n"
+        "Каждое направление должно иметь уровень 🟢 Осторожнее, "
+        "🟡 Средний риск или 🔴 Рискованно.\n\n"
         "🚑 Потери и составы:\n"
         "Если есть потери — коротко объясни, насколько это может быть важно. "
         "Если данных нет — напиши: По потерям данных пока нет. Составы обычно "
@@ -2901,8 +3006,8 @@ def sanitize_ai_analysis_text(text: str) -> str:
         r"\bставка\b": "сигнал",
         r"\bставки\b": "сигналы",
         r"\bставить\b": "рассматривать",
-        r"\bэкспресс\b": "комбинация",
-        r"\bкупон\b": "подбор",
+        r"\bэкспресс\b": "подборка",
+        r"\bкупон\b": "подборка",
         r"\bжелезно\b": "сильно",
         r"\bгарантия\b": "оценка",
         r"100%": "высокая уверенность",
