@@ -28,7 +28,7 @@ from telegram.ext import (
 API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
 THESPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 ALMATY_TZ = timezone(timedelta(hours=5))
 MAX_MATCHES = 20
 MAX_TOP_MATCHES = 15
@@ -2297,6 +2297,19 @@ def extract_openai_response_text(response) -> str:
     return "\n".join(part.strip() for part in text_parts if part.strip()).strip()
 
 
+def is_unsupported_reasoning_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return (
+        "reasoning" in message
+        and (
+            "unsupported" in message
+            or "not supported" in message
+            or "unknown parameter" in message
+            or "unexpected keyword" in message
+        )
+    )
+
+
 def get_openai_ai_analysis(match_data: dict) -> str:
     if not OPENAI_API_KEY:
         return "AI-разбор пока не подключён."
@@ -2320,7 +2333,8 @@ def get_openai_ai_analysis(match_data: dict) -> str:
                         "content": build_ai_prompt(match_data),
                     },
                 ],
-                max_output_tokens=700,
+                reasoning={"effort": "minimal"},
+                max_output_tokens=1500,
             )
             content = extract_openai_response_text(response)
         except AttributeError:
@@ -2339,9 +2353,31 @@ def get_openai_ai_analysis(match_data: dict) -> str:
                         "content": build_ai_prompt(match_data),
                     },
                 ],
-                max_completion_tokens=700,
+                max_completion_tokens=1500,
             )
             content = response.choices[0].message.content or ""
+        except Exception as e:
+            if not is_unsupported_reasoning_error(e):
+                raise
+
+            response = client.responses.create(
+                model=OPENAI_MODEL,
+                input=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты аккуратный футбольный аналитик. Отвечай на русском, "
+                            "кратко и нейтрально."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": build_ai_prompt(match_data),
+                    },
+                ],
+                max_output_tokens=1500,
+            )
+            content = extract_openai_response_text(response)
     except Exception as e:
         logger.exception("OpenAI match analysis failed: %s", e)
         return "AI-разбор временно недоступен."
