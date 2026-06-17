@@ -1352,7 +1352,6 @@ def build_subscription_profile_block(telegram_user_id: int) -> str:
     if is_admin_user(telegram_user_id):
         return "\n".join(
             [
-                "💎 Подписка",
                 "Тариф: Admin",
                 "AI-разборы: без лимита",
                 f"Telegram ID: {telegram_user_id}",
@@ -1362,7 +1361,6 @@ def build_subscription_profile_block(telegram_user_id: int) -> str:
     subscription = get_or_create_subscription(telegram_user_id)
     plan_text = "Premium" if is_premium_active(subscription) else "Free"
     lines = [
-        "💎 Подписка",
         f"Тариф: {plan_text}",
     ]
 
@@ -1371,7 +1369,13 @@ def build_subscription_profile_block(telegram_user_id: int) -> str:
             f"Premium до: {format_db_datetime(subscription.get('premium_until'))}"
         )
 
-    lines.append(get_ai_usage_text(subscription))
+    lines.append(
+        f"AI-разборы: {int(subscription.get('ai_used_monthly') or 0)} / "
+        f"{int(subscription.get('ai_limit_monthly') or 0)}"
+    )
+    lines.append(
+        f"Доп. AI-разборы: {int(subscription.get('extra_ai_credits') or 0)}"
+    )
     lines.append(f"Telegram ID: {telegram_user_id}")
     return "\n".join(lines)
 
@@ -5478,7 +5482,8 @@ async def button_handler(
             await update.message.reply_text(
                 f"⭐ Любимая команда сохранена:\n"
                 f"{text}\n\n"
-                f"Открывайте 📋 Профиль для просмотра матчей команды.",
+                f"Открывайте ⭐ Моя команда → 📋 Открыть профиль "
+                f"для просмотра матчей команды.",
                 reply_markup=build_main_menu_markup(),
             )
             return
@@ -5586,11 +5591,11 @@ async def button_handler(
         await show_team_select_leagues(update, context, "matches")
 
     elif text == "📋 Профиль":
-        await show_profile(update, context)
+        await show_subscription_profile(update, context)
         return
 
     elif text == FAVORITE_OPEN_PROFILE_BUTTON:
-        await show_profile(update, context)
+        await show_favorite_team_profile(update, context)
         return
 
     elif text == FAVORITE_CHANGE_TEAM_BUTTON:
@@ -5617,7 +5622,10 @@ async def button_handler(
         if get_current_favorite_team(update, context):
             await show_favorite_team_actions(update, context)
         else:
-            await show_favorite_team_leagues(update, context)
+            await update.message.reply_text(
+                build_favorite_team_missing_message(),
+                reply_markup=build_main_menu_markup(),
+            )
 
 
 def build_team_not_found_retry_message() -> str:
@@ -6155,28 +6163,49 @@ async def favorite_team(
     await update.message.reply_text(
         f"⭐ Любимая команда сохранена:\n"
         f"{favorite_team_name}\n\n"
-        f"Открывайте 📋 Профиль для просмотра матчей команды.",
+        f"Открывайте ⭐ Моя команда → 📋 Открыть профиль "
+        f"для просмотра матчей команды.",
         reply_markup=build_main_menu_markup(),
     )
 
 
-async def show_profile(
+def build_favorite_team_missing_message() -> str:
+    return (
+        "⭐ Моя команда\n\n"
+        "Любимая команда не выбрана.\n"
+        "Нажмите “⚽ Команда”, чтобы выбрать команду."
+    )
+
+
+async def show_subscription_profile(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    if not update.effective_user:
+        await update.message.reply_text(
+            "📋 Профиль временно недоступен.",
+            reply_markup=build_main_menu_markup(),
+        )
+        return
+
+    await update.message.reply_text(
+        "📋 Профиль\n\n"
+        f"{build_subscription_profile_block(update.effective_user.id)}",
+        reply_markup=build_main_menu_markup(),
+    )
+
+
+async def show_favorite_team_profile(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
 
-    subscription_block = (
-        build_subscription_profile_block(update.effective_user.id)
-        if update.effective_user
-        else ""
-    )
     favorite_team = get_current_favorite_team(update, context)
 
     if not favorite_team:
         await update.message.reply_text(
-            "⭐ Любимая команда не выбрана.\n\n"
-            "Нажмите ⭐ Моя команда и введите название.\n\n"
-            f"{subscription_block}"
+            build_favorite_team_missing_message(),
+            reply_markup=build_main_menu_markup(),
         )
         return
 
@@ -6185,8 +6214,6 @@ async def show_profile(
     try:
         message = build_api_football_profile_message(favorite_team)
         if message:
-            if subscription_block:
-                message = f"{message}\n\n{subscription_block}"
             await update.message.reply_text(message)
             return
 
@@ -6307,9 +6334,6 @@ async def show_profile(
                 f"😔 Поражений: {losses}"
             )
 
-        if subscription_block:
-            message += f"\n\n{subscription_block}"
-
         await update.message.reply_text(message)
 
     except Exception:
@@ -6318,6 +6342,13 @@ async def show_profile(
         await update.message.reply_text(
             "Ошибка при загрузке профиля."
         )
+
+
+async def show_profile(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    await show_favorite_team_profile(update, context)
 
 
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
