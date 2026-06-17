@@ -1349,6 +1349,16 @@ def approve_latest_payment_request(telegram_user_id: int) -> None:
 
 
 def build_subscription_profile_block(telegram_user_id: int) -> str:
+    if is_admin_user(telegram_user_id):
+        return "\n".join(
+            [
+                "💎 Подписка",
+                "Тариф: Admin",
+                "AI-разборы: без лимита",
+                f"Telegram ID: {telegram_user_id}",
+            ]
+        )
+
     subscription = get_or_create_subscription(telegram_user_id)
     plan_text = "Premium" if is_premium_active(subscription) else "Free"
     lines = [
@@ -5806,6 +5816,8 @@ async def ai_match_analysis(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     match_data = context.user_data.get("last_match_for_ai")
+    current_user_id = update.effective_user.id if update.effective_user else None
+    is_admin = is_admin_user(current_user_id) if current_user_id is not None else False
     track_user_action(
         update,
         "ai_analysis_clicked",
@@ -5814,6 +5826,7 @@ async def ai_match_analysis(
             "away": (match_data or {}).get("away"),
             "fixture_id": (match_data or {}).get("fixture_id"),
             "league_name": (match_data or {}).get("league_name"),
+            "is_admin": is_admin,
         },
     )
 
@@ -5826,6 +5839,7 @@ async def ai_match_analysis(
                 "away": (match_data or {}).get("away"),
                 "fixture_id": (match_data or {}).get("fixture_id"),
                 "league_name": (match_data or {}).get("league_name"),
+                "is_admin": is_admin,
             },
         )
         await update.message.reply_text(
@@ -5855,10 +5869,17 @@ async def ai_match_analysis(
         )
         return
 
-    allowed, reason, subscription = can_use_ai_analysis(update.effective_user.id)
+    if not is_admin:
+        allowed, reason, subscription = can_use_ai_analysis(update.effective_user.id)
+    else:
+        allowed = True
+        reason = ""
+        subscription = {}
+
     if not allowed:
         event_data = {
             "reason": reason,
+            "is_admin": is_admin,
             "home": match_data.get("home"),
             "away": match_data.get("away"),
             "fixture_id": match_data.get("fixture_id"),
@@ -5894,12 +5915,16 @@ async def ai_match_analysis(
             "away": match_data.get("away"),
             "fixture_id": match_data.get("fixture_id"),
             "league_name": match_data.get("league_name"),
+            "is_admin": is_admin,
         }
         if message == "AI-разбор временно недоступен.":
             track_user_action(update, "ai_analysis_failed", ai_event_data)
         else:
-            subscription = increment_ai_usage(update.effective_user.id)
-            message = f"{message}\n\n{get_ai_usage_text(subscription)}"
+            if is_admin:
+                message = f"{message}\n\nАдмин-режим: AI-разборы не расходуются."
+            else:
+                subscription = increment_ai_usage(update.effective_user.id)
+                message = f"{message}\n\n{get_ai_usage_text(subscription)}"
             track_user_action(update, "ai_analysis_success", ai_event_data)
 
         await update.message.reply_text(
