@@ -35,6 +35,17 @@ ADMIN_TELEGRAM_IDS = set(
     for item in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
     if item.strip().isdigit()
 )
+FREE_AI_LIMIT_MONTHLY = int(os.getenv("FREE_AI_LIMIT_MONTHLY", "5"))
+AI_PACK_30_PRICE_KZT = int(os.getenv("AI_PACK_30_PRICE_KZT", "499"))
+AI_PACK_30_LIMIT = int(os.getenv("AI_PACK_30_LIMIT", "30"))
+PREMIUM_30_PRICE_KZT = int(os.getenv("PREMIUM_30_PRICE_KZT", "990"))
+PREMIUM_30_DAYS = int(os.getenv("PREMIUM_30_DAYS", "30"))
+PREMIUM_30_AI_LIMIT = int(os.getenv("PREMIUM_30_AI_LIMIT", "100"))
+PREMIUM_90_PRICE_KZT = int(os.getenv("PREMIUM_90_PRICE_KZT", "2490"))
+PREMIUM_90_DAYS = int(os.getenv("PREMIUM_90_DAYS", "90"))
+PREMIUM_90_AI_LIMIT = int(os.getenv("PREMIUM_90_AI_LIMIT", "300"))
+PAYMENT_PHONE = os.getenv("PAYMENT_PHONE", "")
+PAYMENT_RECEIVER_NAME = os.getenv("PAYMENT_RECEIVER_NAME", "")
 ALMATY_TZ = timezone(timedelta(hours=5))
 MAX_MATCHES = 20
 MAX_TOP_MATCHES = 15
@@ -200,6 +211,40 @@ FAVORITE_BACK_TO_LEAGUES_BUTTON = "⬅️ К лигам"
 FAVORITE_OPEN_PROFILE_BUTTON = "📋 Открыть профиль"
 FAVORITE_CHANGE_TEAM_BUTTON = "🔄 Сменить команду"
 MATCH_AI_ANALYSIS_BUTTON = "🤖 AI-разбор"
+PREMIUM_BUTTON = "💎 Подписка"
+AI_PACK_30_BUTTON = f"⚡ 30 AI — {AI_PACK_30_PRICE_KZT} ₸"
+PREMIUM_30_BUTTON = f"💎 1 месяц — {PREMIUM_30_PRICE_KZT} ₸"
+PREMIUM_90_BUTTON = f"🏆 3 месяца — {PREMIUM_90_PRICE_KZT:,} ₸".replace(",", " ")
+PAYMENT_PACKAGE_BUTTONS = {
+    AI_PACK_30_BUTTON,
+    PREMIUM_30_BUTTON,
+    PREMIUM_90_BUTTON,
+}
+PAYMENT_PACKAGES = {
+    "ai_30": {
+        "title": "⚡ Пакет 30 AI",
+        "button": AI_PACK_30_BUTTON,
+        "amount_kzt": AI_PACK_30_PRICE_KZT,
+        "ai_credits": AI_PACK_30_LIMIT,
+        "admin_command": "add_ai_limit",
+    },
+    "premium_30": {
+        "title": "💎 Premium 1 месяц",
+        "button": PREMIUM_30_BUTTON,
+        "amount_kzt": PREMIUM_30_PRICE_KZT,
+        "days": PREMIUM_30_DAYS,
+        "ai_limit": PREMIUM_30_AI_LIMIT,
+        "admin_command": "grant_premium",
+    },
+    "premium_90": {
+        "title": "🏆 Premium 3 месяца",
+        "button": PREMIUM_90_BUTTON,
+        "amount_kzt": PREMIUM_90_PRICE_KZT,
+        "days": PREMIUM_90_DAYS,
+        "ai_limit": PREMIUM_90_AI_LIMIT,
+        "admin_command": "grant_premium",
+    },
+}
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -276,6 +321,35 @@ def init_db() -> None:
                 """
                 CREATE INDEX IF NOT EXISTS idx_user_events_type_created_at
                 ON user_events (event_type, created_at DESC);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    telegram_user_id BIGINT PRIMARY KEY,
+                    plan TEXT NOT NULL DEFAULT 'free',
+                    premium_until TIMESTAMP,
+                    ai_limit_monthly INT NOT NULL DEFAULT 5,
+                    ai_used_monthly INT NOT NULL DEFAULT 0,
+                    usage_period TEXT NOT NULL,
+                    extra_ai_credits INT NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS payment_requests (
+                    id BIGSERIAL PRIMARY KEY,
+                    telegram_user_id BIGINT NOT NULL,
+                    package_code TEXT NOT NULL,
+                    amount_kzt INT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    receipt_file_id TEXT,
+                    receipt_file_name TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
         connection.commit()
@@ -737,6 +811,950 @@ async def events_command(
     await update.message.reply_text("\n".join(lines))
 
 
+def get_current_usage_period() -> str:
+    return datetime.now(ALMATY_TZ).strftime("%Y-%m")
+
+
+def get_now_utc_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def get_free_subscription(telegram_user_id: int) -> dict:
+    return {
+        "telegram_user_id": telegram_user_id,
+        "plan": "free",
+        "premium_until": None,
+        "ai_limit_monthly": FREE_AI_LIMIT_MONTHLY,
+        "ai_used_monthly": 0,
+        "usage_period": get_current_usage_period(),
+        "extra_ai_credits": 0,
+        "updated_at": get_now_utc_naive(),
+    }
+
+
+def normalize_subscription_row(row: dict | None, telegram_user_id: int) -> dict:
+    if not row:
+        return get_free_subscription(telegram_user_id)
+
+    subscription = dict(row)
+    subscription["telegram_user_id"] = telegram_user_id
+    subscription["plan"] = subscription.get("plan") or "free"
+    subscription["ai_limit_monthly"] = int(
+        subscription.get("ai_limit_monthly") or FREE_AI_LIMIT_MONTHLY
+    )
+    subscription["ai_used_monthly"] = int(subscription.get("ai_used_monthly") or 0)
+    subscription["extra_ai_credits"] = int(
+        subscription.get("extra_ai_credits") or 0
+    )
+    subscription["usage_period"] = (
+        subscription.get("usage_period") or get_current_usage_period()
+    )
+    return subscription
+
+
+def is_premium_active(subscription: dict) -> bool:
+    if not subscription or subscription.get("plan") != "premium":
+        return False
+
+    premium_until = subscription.get("premium_until")
+    if not isinstance(premium_until, datetime):
+        return False
+
+    if premium_until.tzinfo is None:
+        premium_until = premium_until.replace(tzinfo=timezone.utc)
+
+    return premium_until > datetime.now(timezone.utc)
+
+
+def get_or_create_subscription(telegram_user_id: int) -> dict:
+    database_url = get_database_url()
+    if not database_url:
+        return get_free_subscription(telegram_user_id)
+
+    connection = None
+    usage_period = get_current_usage_period()
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO subscriptions (
+                    telegram_user_id,
+                    plan,
+                    premium_until,
+                    ai_limit_monthly,
+                    ai_used_monthly,
+                    usage_period,
+                    extra_ai_credits,
+                    updated_at
+                )
+                VALUES (%s, 'free', NULL, %s, 0, %s, 0, CURRENT_TIMESTAMP)
+                ON CONFLICT (telegram_user_id) DO NOTHING;
+                """,
+                (telegram_user_id, FREE_AI_LIMIT_MONTHLY, usage_period),
+            )
+            cursor.execute(
+                """
+                SELECT *
+                FROM subscriptions
+                WHERE telegram_user_id = %s;
+                """,
+                (telegram_user_id,),
+            )
+            subscription = normalize_subscription_row(
+                cursor.fetchone(),
+                telegram_user_id,
+            )
+
+            needs_update = False
+            if subscription["usage_period"] != usage_period:
+                subscription["usage_period"] = usage_period
+                subscription["ai_used_monthly"] = 0
+                needs_update = True
+
+            if (
+                subscription["plan"] == "premium"
+                and subscription.get("premium_until")
+                and not is_premium_active(subscription)
+            ):
+                subscription["plan"] = "free"
+                subscription["premium_until"] = None
+                subscription["ai_limit_monthly"] = FREE_AI_LIMIT_MONTHLY
+                needs_update = True
+
+            if needs_update:
+                cursor.execute(
+                    """
+                    UPDATE subscriptions
+                    SET plan = %s,
+                        premium_until = %s,
+                        ai_limit_monthly = %s,
+                        ai_used_monthly = %s,
+                        usage_period = %s,
+                        extra_ai_credits = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE telegram_user_id = %s
+                    RETURNING *;
+                    """,
+                    (
+                        subscription["plan"],
+                        subscription.get("premium_until"),
+                        subscription["ai_limit_monthly"],
+                        subscription["ai_used_monthly"],
+                        subscription["usage_period"],
+                        subscription["extra_ai_credits"],
+                        telegram_user_id,
+                    ),
+                )
+                subscription = normalize_subscription_row(
+                    cursor.fetchone(),
+                    telegram_user_id,
+                )
+        connection.commit()
+        return subscription
+    except Exception:
+        logger.error("Failed to get or create subscription", exc_info=True)
+        return get_free_subscription(telegram_user_id)
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def get_ai_available_count(subscription: dict) -> int:
+    monthly_left = max(
+        0,
+        int(subscription.get("ai_limit_monthly") or 0)
+        - int(subscription.get("ai_used_monthly") or 0),
+    )
+    return monthly_left + int(subscription.get("extra_ai_credits") or 0)
+
+
+def get_ai_usage_text(subscription: dict) -> str:
+    used = int(subscription.get("ai_used_monthly") or 0)
+    limit = int(subscription.get("ai_limit_monthly") or 0)
+    lines = [f"AI-разборы: {used} / {limit}"]
+    extra_ai_credits = int(subscription.get("extra_ai_credits") or 0)
+    if extra_ai_credits > 0:
+        lines.append(f"Доп. AI-разборы: {extra_ai_credits}")
+    return "\n".join(lines)
+
+
+def can_use_ai_analysis(telegram_user_id: int) -> tuple[bool, str, dict]:
+    subscription = get_or_create_subscription(telegram_user_id)
+    if int(subscription.get("extra_ai_credits") or 0) > 0:
+        return True, "", subscription
+
+    ai_limit_monthly = int(subscription.get("ai_limit_monthly") or 0)
+    ai_used_monthly = int(subscription.get("ai_used_monthly") or 0)
+    if ai_used_monthly >= ai_limit_monthly:
+        return False, "monthly_limit_reached", subscription
+
+    return True, "", subscription
+
+
+def increment_ai_usage(telegram_user_id: int) -> dict:
+    database_url = get_database_url()
+    if not database_url:
+        subscription = get_or_create_subscription(telegram_user_id)
+        subscription["ai_used_monthly"] = int(
+            subscription.get("ai_used_monthly") or 0
+        ) + 1
+        return subscription
+
+    connection = None
+    subscription = get_or_create_subscription(telegram_user_id)
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            if int(subscription.get("extra_ai_credits") or 0) > 0:
+                cursor.execute(
+                    """
+                    UPDATE subscriptions
+                    SET extra_ai_credits = GREATEST(extra_ai_credits - 1, 0),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE telegram_user_id = %s
+                    RETURNING *;
+                    """,
+                    (telegram_user_id,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE subscriptions
+                    SET ai_used_monthly = ai_used_monthly + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE telegram_user_id = %s
+                    RETURNING *;
+                    """,
+                    (telegram_user_id,),
+                )
+            updated_subscription = normalize_subscription_row(
+                cursor.fetchone(),
+                telegram_user_id,
+            )
+        connection.commit()
+        return updated_subscription
+    except Exception:
+        logger.error("Failed to increment AI usage", exc_info=True)
+        return subscription
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def grant_premium(telegram_user_id: int, days: int, ai_limit: int) -> dict:
+    database_url = get_database_url()
+    current_subscription = get_or_create_subscription(telegram_user_id)
+    if not database_url:
+        return current_subscription
+
+    usage_period = get_current_usage_period()
+    now_utc = get_now_utc_naive()
+    current_until = current_subscription.get("premium_until")
+    if isinstance(current_until, datetime):
+        if current_until.tzinfo is not None:
+            current_until = current_until.astimezone(timezone.utc).replace(tzinfo=None)
+        base_date = max(now_utc, current_until)
+    else:
+        base_date = now_utc
+    premium_until = base_date + timedelta(days=days)
+    ai_used_monthly = (
+        0
+        if current_subscription.get("usage_period") != usage_period
+        else int(current_subscription.get("ai_used_monthly") or 0)
+    )
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO subscriptions (
+                    telegram_user_id,
+                    plan,
+                    premium_until,
+                    ai_limit_monthly,
+                    ai_used_monthly,
+                    usage_period,
+                    extra_ai_credits,
+                    updated_at
+                )
+                VALUES (%s, 'premium', %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (telegram_user_id)
+                DO UPDATE SET
+                    plan = 'premium',
+                    premium_until = EXCLUDED.premium_until,
+                    ai_limit_monthly = EXCLUDED.ai_limit_monthly,
+                    ai_used_monthly = EXCLUDED.ai_used_monthly,
+                    usage_period = EXCLUDED.usage_period,
+                    extra_ai_credits = subscriptions.extra_ai_credits,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING *;
+                """,
+                (
+                    telegram_user_id,
+                    premium_until,
+                    ai_limit,
+                    ai_used_monthly,
+                    usage_period,
+                    int(current_subscription.get("extra_ai_credits") or 0),
+                ),
+            )
+            subscription = normalize_subscription_row(
+                cursor.fetchone(),
+                telegram_user_id,
+            )
+        connection.commit()
+        return subscription
+    except Exception:
+        logger.error("Failed to grant premium", exc_info=True)
+        return current_subscription
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def revoke_premium(telegram_user_id: int) -> dict:
+    database_url = get_database_url()
+    current_subscription = get_or_create_subscription(telegram_user_id)
+    if not database_url:
+        return current_subscription
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                UPDATE subscriptions
+                SET plan = 'free',
+                    premium_until = NULL,
+                    ai_limit_monthly = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE telegram_user_id = %s
+                RETURNING *;
+                """,
+                (FREE_AI_LIMIT_MONTHLY, telegram_user_id),
+            )
+            subscription = normalize_subscription_row(
+                cursor.fetchone(),
+                telegram_user_id,
+            )
+        connection.commit()
+        return subscription
+    except Exception:
+        logger.error("Failed to revoke premium", exc_info=True)
+        return current_subscription
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def add_ai_limit(telegram_user_id: int, amount: int) -> dict:
+    database_url = get_database_url()
+    current_subscription = get_or_create_subscription(telegram_user_id)
+    if not database_url:
+        current_subscription["extra_ai_credits"] = int(
+            current_subscription.get("extra_ai_credits") or 0
+        ) + amount
+        return current_subscription
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO subscriptions (
+                    telegram_user_id,
+                    plan,
+                    premium_until,
+                    ai_limit_monthly,
+                    ai_used_monthly,
+                    usage_period,
+                    extra_ai_credits,
+                    updated_at
+                )
+                VALUES (%s, 'free', NULL, %s, 0, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (telegram_user_id)
+                DO UPDATE SET
+                    extra_ai_credits = subscriptions.extra_ai_credits
+                        + EXCLUDED.extra_ai_credits,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING *;
+                """,
+                (
+                    telegram_user_id,
+                    FREE_AI_LIMIT_MONTHLY,
+                    get_current_usage_period(),
+                    amount,
+                ),
+            )
+            subscription = normalize_subscription_row(
+                cursor.fetchone(),
+                telegram_user_id,
+            )
+        connection.commit()
+        return subscription
+    except Exception:
+        logger.error("Failed to add AI limit", exc_info=True)
+        return current_subscription
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def format_kzt(amount: int) -> str:
+    return f"{amount:,}".replace(",", " ")
+
+
+def get_payment_package_by_button(
+    button_text: str,
+) -> tuple[str | None, dict | None]:
+    for package_code, package in PAYMENT_PACKAGES.items():
+        if package["button"] == button_text:
+            return package_code, package
+    return None, None
+
+
+def get_admin_activation_command(telegram_user_id: int, package_code: str) -> str:
+    if package_code == "ai_30":
+        return f"/add_ai_limit {telegram_user_id} {AI_PACK_30_LIMIT}"
+    if package_code == "premium_90":
+        return f"/grant_premium {telegram_user_id} {PREMIUM_90_DAYS}"
+    return f"/grant_premium {telegram_user_id} {PREMIUM_30_DAYS}"
+
+
+def create_payment_request(
+    telegram_user_id: int,
+    package_code: str,
+    amount_kzt: int,
+) -> dict | None:
+    database_url = get_database_url()
+    if not database_url:
+        return None
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO payment_requests (
+                    telegram_user_id,
+                    package_code,
+                    amount_kzt,
+                    status,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, 'pending', CURRENT_TIMESTAMP)
+                RETURNING *;
+                """,
+                (telegram_user_id, package_code, amount_kzt),
+            )
+            payment_request = cursor.fetchone()
+        connection.commit()
+        return payment_request
+    except Exception:
+        logger.error("Failed to create payment request", exc_info=True)
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def update_latest_payment_request_with_receipt(
+    telegram_user_id: int,
+    receipt_file_id: str,
+    receipt_file_name: str,
+) -> dict | None:
+    database_url = get_database_url()
+    if not database_url:
+        return None
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                UPDATE payment_requests
+                SET status = 'receipt_received',
+                    receipt_file_id = %s,
+                    receipt_file_name = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = (
+                    SELECT id
+                    FROM payment_requests
+                    WHERE telegram_user_id = %s
+                    AND status = 'pending'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                )
+                RETURNING *;
+                """,
+                (receipt_file_id, receipt_file_name, telegram_user_id),
+            )
+            payment_request = cursor.fetchone()
+        connection.commit()
+        return payment_request
+    except Exception:
+        logger.error("Failed to update payment request receipt", exc_info=True)
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def approve_latest_payment_request(telegram_user_id: int) -> None:
+    database_url = get_database_url()
+    if not database_url:
+        return
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE payment_requests
+                SET status = 'approved',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = (
+                    SELECT id
+                    FROM payment_requests
+                    WHERE telegram_user_id = %s
+                    AND status IN ('receipt_received', 'pending')
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                );
+                """,
+                (telegram_user_id,),
+            )
+        connection.commit()
+    except Exception:
+        logger.error("Failed to approve payment request", exc_info=True)
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def build_subscription_profile_block(telegram_user_id: int) -> str:
+    subscription = get_or_create_subscription(telegram_user_id)
+    plan_text = "Premium" if is_premium_active(subscription) else "Free"
+    lines = [
+        "💎 Подписка",
+        f"Тариф: {plan_text}",
+    ]
+
+    if is_premium_active(subscription):
+        lines.append(
+            f"Premium до: {format_db_datetime(subscription.get('premium_until'))}"
+        )
+
+    lines.append(get_ai_usage_text(subscription))
+    lines.append(f"Telegram ID: {telegram_user_id}")
+    return "\n".join(lines)
+
+
+def format_user_for_admin(user) -> str:
+    if not user:
+        return "ID: неизвестно\nUsername: нет\nИмя: нет"
+
+    full_name = " ".join(
+        part
+        for part in (user.first_name, user.last_name)
+        if part
+    ).strip()
+    return "\n".join(
+        [
+            f"ID: {user.id}",
+            f"Username: @{user.username}" if user.username else "Username: нет",
+            f"Имя: {full_name or 'нет'}",
+        ]
+    )
+
+
+async def notify_admins(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    if not ADMIN_TELEGRAM_IDS:
+        return
+
+    for admin_id in ADMIN_TELEGRAM_IDS:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text)
+        except Exception:
+            logger.error("Failed to notify admin %s", admin_id, exc_info=True)
+
+
+def build_ai_limit_markup() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[PREMIUM_BUTTON], ["⬅️ Назад"]],
+        resize_keyboard=True,
+    )
+
+
+def build_premium_markup() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [AI_PACK_30_BUTTON],
+            [PREMIUM_30_BUTTON],
+            [PREMIUM_90_BUTTON],
+            ["📋 Профиль"],
+            ["⬅️ Назад"],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def build_payment_instruction_markup() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[PREMIUM_BUTTON], ["⬅️ Назад"]],
+        resize_keyboard=True,
+    )
+
+
+def build_payment_instruction_text(
+    telegram_user_id: int,
+    package_code: str,
+    package: dict,
+) -> str:
+    if not PAYMENT_PHONE or not PAYMENT_RECEIVER_NAME:
+        return (
+            f"{package['title']}\n\n"
+            "Реквизиты оплаты скоро появятся. "
+            "Для тестового доступа напишите администратору."
+        )
+
+    amount_text = format_kzt(package["amount_kzt"])
+    if package_code == "ai_30":
+        benefit_text = f"{package['ai_credits']} полных AI-разборов"
+        activation_text = "После проверки AI-разборы будут добавлены."
+    else:
+        benefit_text = (
+            f"{package['ai_limit']} полных AI-разборов "
+            f"на {package['days']} дней"
+        )
+        activation_text = "После проверки Premium будет активирован."
+
+    return (
+        f"{package['title']}\n\n"
+        f"Стоимость: {amount_text} ₸\n"
+        f"Что получите: {benefit_text}\n\n"
+        "Как оплатить:\n\n"
+        f"1. Переведите {amount_text} ₸ через Kaspi.\n"
+        f"2. Получатель: {PAYMENT_RECEIVER_NAME}\n"
+        f"3. Номер: {PAYMENT_PHONE}\n"
+        f"4. Комментарий к переводу: MatchLab {telegram_user_id}\n"
+        "5. После оплаты отправьте PDF-чек в этот бот.\n\n"
+        "⏱ Проверка обычно занимает 5–15 минут.\n"
+        f"{activation_text}"
+    )
+
+
+async def show_premium_screen(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    telegram_user_id = update.effective_user.id if update.effective_user else 0
+    await notify_admins(
+        context,
+        "🔔 Пользователь открыл Premium\n\n"
+        f"{format_user_for_admin(update.effective_user)}\n"
+        f"Время: {datetime.now(ALMATY_TZ).strftime('%d.%m %H:%M')}\n\n"
+        "Пользователь посмотрел условия подписки.",
+    )
+
+    message = (
+        "💎 MatchLab Premium\n\n"
+        "Во всех платных вариантах AI-разбор одинаковый по качеству.\n"
+        "Отличается только количество AI-разборов и срок доступа.\n\n"
+        "Free:\n"
+        "• обычный анализ матчей\n"
+        "• матчи Сегодня / Завтра / Топ матчи\n"
+        f"• {FREE_AI_LIMIT_MONTHLY} AI-разборов в месяц\n\n"
+        f"⚡ Пакет {AI_PACK_30_LIMIT} AI — {format_kzt(AI_PACK_30_PRICE_KZT)} ₸\n"
+        f"• {AI_PACK_30_LIMIT} полных AI-разборов\n"
+        "• Без подписки\n"
+        "• Можно использовать для матчей Сегодня / Завтра / Топ матчи\n"
+        "• Подходит, чтобы попробовать Premium-разбор\n\n"
+        f"💎 Premium 1 месяц — {format_kzt(PREMIUM_30_PRICE_KZT)} ₸\n"
+        f"• {PREMIUM_30_AI_LIMIT} полных AI-разборов на {PREMIUM_30_DAYS} дней\n"
+        "• Турнирная мотивация\n"
+        "• Тоталы, форы, угловые, карточки\n"
+        "• Главное направление и что лучше пропустить\n\n"
+        f"🏆 Premium 3 месяца — {format_kzt(PREMIUM_90_PRICE_KZT)} ₸\n"
+        f"• {PREMIUM_90_AI_LIMIT} полных AI-разборов на {PREMIUM_90_DAYS} дней\n"
+        "• Всё, что входит в Premium\n"
+        "• Выгоднее, чем платить каждый месяц\n\n"
+        "Выберите пакет ниже.\n\n"
+        f"Ваш Telegram ID: {telegram_user_id}"
+    )
+
+    await update.message.reply_text(message, reply_markup=build_premium_markup())
+
+
+async def handle_payment_package_selection(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    package_code: str,
+    package: dict,
+) -> None:
+    if not update.effective_user:
+        return
+
+    telegram_user_id = update.effective_user.id
+    payment_request = create_payment_request(
+        telegram_user_id,
+        package_code,
+        package["amount_kzt"],
+    )
+    if not payment_request:
+        await update.message.reply_text(
+            "Заявка на оплату временно недоступна. Попробуйте позже.",
+            reply_markup=build_premium_markup(),
+        )
+        return
+
+    context.user_data["selected_payment_package"] = package_code
+    event_data = {
+        "package_code": package_code,
+        "package_title": package["title"],
+        "amount_kzt": package["amount_kzt"],
+    }
+    track_user_action(update, "payment_package_selected", event_data)
+
+    await notify_admins(
+        context,
+        "💳 Пользователь выбрал пакет\n\n"
+        f"{format_user_for_admin(update.effective_user)}\n"
+        f"Пакет: {package['title']}\n"
+        f"Сумма: {format_kzt(package['amount_kzt'])} ₸\n"
+        f"Время: {datetime.now(ALMATY_TZ).strftime('%d.%m %H:%M')}\n\n"
+        "Ожидаем PDF-чек.\n\n"
+        "Готовая команда после проверки:\n"
+        f"{get_admin_activation_command(telegram_user_id, package_code)}",
+    )
+
+    await update.message.reply_text(
+        build_payment_instruction_text(telegram_user_id, package_code, package),
+        reply_markup=build_payment_instruction_markup(),
+    )
+
+
+async def payment_receipt_document(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not update.message or not update.message.document or not update.effective_user:
+        return
+
+    document = update.message.document
+    file_name = document.file_name or "receipt.pdf"
+    mime_type = document.mime_type or ""
+    is_pdf = mime_type == "application/pdf" or file_name.lower().endswith(".pdf")
+    if not is_pdf:
+        return
+
+    telegram_user_id = update.effective_user.id
+    file_size = document.file_size
+    track_user_action(
+        update,
+        "pdf_receipt_sent",
+        {
+            "file_name": file_name,
+            "file_size": file_size,
+        },
+    )
+    payment_request = update_latest_payment_request_with_receipt(
+        telegram_user_id,
+        document.file_id,
+        file_name,
+    )
+
+    if payment_request:
+        package_code = payment_request["package_code"]
+        package = PAYMENT_PACKAGES.get(package_code, {})
+        package_title = package.get("title", package_code)
+        admin_command = get_admin_activation_command(telegram_user_id, package_code)
+        await update.message.reply_text(
+            "✅ PDF-чек получен.\n\n"
+            "Проверка обычно занимает 5–15 минут.\n"
+            "После подтверждения доступ будет активирован.",
+            reply_markup=build_main_menu_markup(),
+        )
+        await notify_admins(
+            context,
+            "🧾 Получен PDF-чек на проверку\n\n"
+            f"{format_user_for_admin(update.effective_user)}\n"
+            f"Пакет: {package_title}\n"
+            f"Сумма: {format_kzt(payment_request['amount_kzt'])} ₸\n"
+            f"Файл: {file_name}\n"
+            f"Размер: {file_size}\n"
+            f"Время: {datetime.now(ALMATY_TZ).strftime('%d.%m %H:%M')}\n\n"
+            "Проверь оплату и активируй доступ:\n"
+            f"{admin_command}",
+        )
+        return
+
+    await update.message.reply_text(
+        "✅ PDF-чек получен.\n\n"
+        "Но пакет не выбран. Нажмите “💎 Подписка” и выберите нужный пакет, "
+        "чтобы мы могли быстрее проверить оплату.",
+        reply_markup=build_payment_instruction_markup(),
+    )
+    await notify_admins(
+        context,
+        "🧾 Получен PDF-чек без выбранного пакета\n\n"
+        f"{format_user_for_admin(update.effective_user)}\n"
+        f"Файл: {file_name}\n"
+        f"Размер: {file_size}\n"
+        f"Время: {datetime.now(ALMATY_TZ).strftime('%d.%m %H:%M')}\n\n"
+        "Проверь вручную.",
+    )
+
+
+async def grant_premium_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if await deny_non_admin(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Использование: /grant_premium telegram_id days")
+        return
+
+    try:
+        telegram_user_id = int(context.args[0])
+        days = int(context.args[1]) if len(context.args) > 1 else PREMIUM_30_DAYS
+    except ValueError:
+        await update.message.reply_text("Использование: /grant_premium telegram_id days")
+        return
+
+    if days <= 0:
+        await update.message.reply_text("Количество дней должно быть больше 0.")
+        return
+
+    ai_limit = PREMIUM_90_AI_LIMIT if days == PREMIUM_90_DAYS else PREMIUM_30_AI_LIMIT
+    subscription = grant_premium(telegram_user_id, days, ai_limit)
+    approve_latest_payment_request(telegram_user_id)
+    log_user_event(
+        telegram_user_id,
+        "premium_granted",
+        {
+            "days": days,
+            "ai_limit": ai_limit,
+            "admin_id": update.effective_user.id if update.effective_user else None,
+        },
+    )
+
+    await update.message.reply_text(
+        "✅ Premium выдан пользователю "
+        f"{telegram_user_id} до {format_db_datetime(subscription.get('premium_until'))}"
+    )
+
+
+async def revoke_premium_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if await deny_non_admin(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Использование: /revoke_premium telegram_id")
+        return
+
+    try:
+        telegram_user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Использование: /revoke_premium telegram_id")
+        return
+
+    revoke_premium(telegram_user_id)
+    await update.message.reply_text(
+        f"✅ Premium отключён для пользователя {telegram_user_id}"
+    )
+
+
+async def add_ai_limit_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if await deny_non_admin(update):
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text("Использование: /add_ai_limit telegram_id amount")
+        return
+
+    try:
+        telegram_user_id = int(context.args[0])
+        amount = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("Использование: /add_ai_limit telegram_id amount")
+        return
+
+    if amount <= 0:
+        await update.message.reply_text("Количество AI-разборов должно быть больше 0.")
+        return
+
+    subscription = add_ai_limit(telegram_user_id, amount)
+    approve_latest_payment_request(telegram_user_id)
+    log_user_event(
+        telegram_user_id,
+        "ai_limit_added",
+        {
+            "amount": amount,
+            "admin_id": update.effective_user.id if update.effective_user else None,
+        },
+    )
+
+    await update.message.reply_text(
+        f"✅ Добавлено {amount} AI-разборов пользователю {telegram_user_id}. "
+        f"Доп. AI-разборы: {subscription.get('extra_ai_credits', 0)}"
+    )
+
+
+async def subscription_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if await deny_non_admin(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Использование: /subscription telegram_id")
+        return
+
+    try:
+        telegram_user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Использование: /subscription telegram_id")
+        return
+
+    subscription = get_or_create_subscription(telegram_user_id)
+    await update.message.reply_text(
+        "💎 Подписка пользователя\n\n"
+        f"plan: {subscription.get('plan')}\n"
+        f"premium_until: {format_db_datetime(subscription.get('premium_until'))}\n"
+        "ai_used_monthly / ai_limit_monthly: "
+        f"{subscription.get('ai_used_monthly')} / "
+        f"{subscription.get('ai_limit_monthly')}\n"
+        f"extra_ai_credits: {subscription.get('extra_ai_credits')}\n"
+        f"usage_period: {subscription.get('usage_period')}"
+    )
+
+
 def get_favorite_team_from_db(user_id: int) -> str | None:
     database_url = get_database_url()
     if not database_url:
@@ -837,7 +1855,7 @@ def build_main_menu_markup() -> ReplyKeyboardMarkup:
         ["🔥 Топ матчи"],
         ["⚽ Команда", "📊 Результаты"],
         ["⭐ Моя команда", "📋 Профиль"],
-        ["🏆 Таблица"],
+        ["🏆 Таблица", PREMIUM_BUTTON],
     ]
 
     return ReplyKeyboardMarkup(
@@ -3500,9 +4518,9 @@ def build_ai_prompt(match_data: dict) -> str:
         "🤖 AI-разбор MatchLab\n\n"
         "🏆 Матч и турнир:\n"
         "Team A - Team B\n"
-        "Турнир: …\n"
-        "Раунд: …\n"
-        "Стадион/город: …\n"
+        "Турнир: название турнира из данных\n"
+        "Раунд: раунд из данных или данных недостаточно\n"
+        "Стадион/город: стадион и город из данных или данных недостаточно\n"
         "Контекст поля: домашний фактор / нейтральный или условный home/away\n\n"
         "📊 Турнирная мотивация:\n"
         "Если есть данные по таблице — коротко объясни. Если нет — напиши: "
@@ -4390,11 +5408,12 @@ async def button_handler(
         "📋 Профиль",
         "📊 Результаты",
         "⭐ Моя команда",
-        "💎 Подписка",
+        PREMIUM_BUTTON,
         FAVORITE_OPEN_PROFILE_BUTTON,
         FAVORITE_CHANGE_TEAM_BUTTON,
         MATCH_AI_ANALYSIS_BUTTON,
     }
+    menu_buttons.update(PAYMENT_PACKAGE_BUTTONS)
 
     favorite_team_buttons = set(FAVORITE_TEAM_LEAGUES.keys())
     for teams in FAVORITE_TEAM_LEAGUES.values():
@@ -4417,7 +5436,7 @@ async def button_handler(
         "⚽ Команда": "team_clicked",
         "📋 Профиль": "profile_clicked",
         "📊 Результаты": "results_clicked",
-        "💎 Подписка": "premium_clicked",
+        PREMIUM_BUTTON: "premium_clicked",
         FAVORITE_OPEN_PROFILE_BUTTON: "profile_clicked",
     }
     event_type = event_by_button.get(text)
@@ -4496,11 +5515,18 @@ async def button_handler(
     elif text == "📊 Результаты":
         await show_team_select_leagues(update, context, "results")
 
-    elif text == "💎 Подписка":
-        await update.message.reply_text(
-            "💎 Раздел подписки пока готовится.",
-            reply_markup=build_main_menu_markup(),
-        )
+    elif text == PREMIUM_BUTTON:
+        await show_premium_screen(update, context)
+
+    elif text in PAYMENT_PACKAGE_BUTTONS:
+        package_code, package = get_payment_package_by_button(text)
+        if package_code and package:
+            await handle_payment_package_selection(
+                update,
+                context,
+                package_code,
+                package,
+            )
 
     elif text == "⭐ Моя команда":
         if get_current_favorite_team(update, context):
@@ -4746,9 +5772,43 @@ async def ai_match_analysis(
         )
         return
 
+    if not update.effective_user:
+        await update.message.reply_text(
+            "AI-разбор временно недоступен.",
+            reply_markup=build_match_analysis_back_markup(),
+        )
+        return
+
+    allowed, reason, subscription = can_use_ai_analysis(update.effective_user.id)
+    if not allowed:
+        event_data = {
+            "reason": reason,
+            "home": match_data.get("home"),
+            "away": match_data.get("away"),
+            "fixture_id": match_data.get("fixture_id"),
+            "league_name": match_data.get("league_name"),
+        }
+        track_user_action(update, "ai_limit_reached", event_data)
+        await notify_admins(
+            context,
+            "⚠️ Пользователь достиг лимита AI-разборов\n\n"
+            f"{format_user_for_admin(update.effective_user)}\n"
+            f"Матч: {match_data.get('home')} - {match_data.get('away')}\n"
+            f"Доступно сейчас: {get_ai_available_count(subscription)}\n"
+            f"Время: {datetime.now(ALMATY_TZ).strftime('%d.%m %H:%M')}",
+        )
+        await update.message.reply_text(
+            "Лимит AI-разборов закончился.\n\n"
+            f"Free-лимит: {FREE_AI_LIMIT_MONTHLY} AI-разборов в месяц.\n"
+            "Можно купить пакет или Premium.\n\n"
+            "Нажмите “💎 Подписка”, чтобы выбрать вариант.",
+            reply_markup=build_ai_limit_markup(),
+        )
+        return
+
     context.user_data["ai_analysis_in_progress"] = True
     try:
-        await update.message.reply_text("⏳ Готовлю AI-разбор…")
+        await update.message.reply_text("⏳ Готовлю AI-разбор")
         match_data["tournament_context_text"] = build_tournament_context_for_ai(
             match_data
         )
@@ -4762,6 +5822,8 @@ async def ai_match_analysis(
         if message == "AI-разбор временно недоступен.":
             track_user_action(update, "ai_analysis_failed", ai_event_data)
         else:
+            subscription = increment_ai_usage(update.effective_user.id)
+            message = f"{message}\n\n{get_ai_usage_text(subscription)}"
             track_user_action(update, "ai_analysis_success", ai_event_data)
 
         await update.message.reply_text(
@@ -5002,12 +6064,18 @@ async def show_profile(
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
 
+    subscription_block = (
+        build_subscription_profile_block(update.effective_user.id)
+        if update.effective_user
+        else ""
+    )
     favorite_team = get_current_favorite_team(update, context)
 
     if not favorite_team:
         await update.message.reply_text(
             "⭐ Любимая команда не выбрана.\n\n"
-            "Нажмите ⭐ Моя команда и введите название."
+            "Нажмите ⭐ Моя команда и введите название.\n\n"
+            f"{subscription_block}"
         )
         return
 
@@ -5016,6 +6084,8 @@ async def show_profile(
     try:
         message = build_api_football_profile_message(favorite_team)
         if message:
+            if subscription_block:
+                message = f"{message}\n\n{subscription_block}"
             await update.message.reply_text(message)
             return
 
@@ -5135,6 +6205,9 @@ async def show_profile(
                 f"🤝 Ничьих: {draws}\n"
                 f"😔 Поражений: {losses}"
             )
+
+        if subscription_block:
+            message += f"\n\n{subscription_block}"
 
         await update.message.reply_text(message)
 
@@ -5335,6 +6408,10 @@ def main() -> None:
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("user", user_command))
     application.add_handler(CommandHandler("events", events_command))
+    application.add_handler(CommandHandler("grant_premium", grant_premium_command))
+    application.add_handler(CommandHandler("revoke_premium", revoke_premium_command))
+    application.add_handler(CommandHandler("add_ai_limit", add_ai_limit_command))
+    application.add_handler(CommandHandler("subscription", subscription_command))
 
     application.add_handler(
         MessageHandler(
@@ -5417,6 +6494,8 @@ def main() -> None:
     favorite_team_buttons.add(FAVORITE_OPEN_PROFILE_BUTTON)
     favorite_team_buttons.add(FAVORITE_CHANGE_TEAM_BUTTON)
     favorite_team_buttons.add(MATCH_AI_ANALYSIS_BUTTON)
+    favorite_team_buttons.add(PREMIUM_BUTTON)
+    favorite_team_buttons.update(PAYMENT_PACKAGE_BUTTONS)
     for teams in FAVORITE_TEAM_LEAGUES.values():
         favorite_team_buttons.update(teams)
 
@@ -5429,6 +6508,13 @@ def main() -> None:
                 ) + ")$"
             ),
             button_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Document.ALL,
+            payment_receipt_document
         )
     )
 
