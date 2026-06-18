@@ -649,6 +649,13 @@ function ProfileScreen() {
                     ? "Telegram Mini App"
                     : "Тестовый режим"}
                 </p>
+                <p className="mt-1 text-[10px] leading-4 text-slate-500">
+                  Telegram SDK:{" "}
+                  {telegramIdentity.sdkAvailable ? "есть" : "нет"}
+                  {" · "}
+                  initData:{" "}
+                  {telegramIdentity.initDataAvailable ? "есть" : "нет"}
+                </p>
               </div>
               {profile.is_admin && (
                 <ShieldCheck className="ml-auto h-5 w-5 text-lime" />
