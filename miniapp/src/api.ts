@@ -1,4 +1,4 @@
-import { API_BASE_URL, TEST_TELEGRAM_USER_ID } from "./config";
+import { API_BASE_URL } from "./config";
 import type {
   AppConfig,
   MatchListType,
@@ -24,9 +24,11 @@ export function getMatches(type: MatchListType): Promise<MatchResponse> {
   return apiRequest<MatchResponse>(`/api/matches/${type}`);
 }
 
-export function getSubscription(): Promise<SubscriptionData> {
+export function getSubscription(
+  telegramUserId: number,
+): Promise<SubscriptionData> {
   return apiRequest<SubscriptionData>(
-    `/api/subscription?telegram_user_id=${TEST_TELEGRAM_USER_ID}`,
+    `/api/subscription?telegram_user_id=${telegramUserId}`,
   );
 }
 

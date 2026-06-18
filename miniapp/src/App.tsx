@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { getAppConfig, getMatches, getSubscription } from "./api";
+import { getTelegramUserIdentity } from "./telegramUser";
 import type {
   AppConfig,
   MatchItem,
@@ -584,16 +585,17 @@ function MatchDetails({
 }
 
 function ProfileScreen() {
+  const telegramIdentity = useMemo(getTelegramUserIdentity, []);
   const [profile, setProfile] = useState<SubscriptionData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    getSubscription()
+    getSubscription(telegramIdentity.id)
       .then(setProfile)
       .catch(() => setError(true))
       .finally(() => setLoading(false));
-  }, []);
+  }, [telegramIdentity.id]);
 
   const usagePercent = useMemo(() => {
     if (!profile || profile.is_admin || profile.ai_limit_monthly <= 0) return 0;
@@ -641,6 +643,11 @@ function ProfileScreen() {
                 </p>
                 <p className="mt-0.5 text-xs text-slate-400">
                   Telegram ID: {profile.telegram_user_id}
+                </p>
+                <p className="mt-1 text-[11px] font-semibold text-lime">
+                  {telegramIdentity.mode === "telegram"
+                    ? "Telegram Mini App"
+                    : "Тестовый режим"}
                 </p>
               </div>
               {profile.is_admin && (
