@@ -38,6 +38,24 @@ export interface MatchAiAnalysisErrorResponse {
   message: string;
 }
 
+export type MiniAppPaymentPackageCode =
+  | "ai_30"
+  | "month_1"
+  | "months_3";
+
+export interface PaymentReceiptResponse {
+  ok: true;
+  message: string;
+  package_title: string;
+  amount: number;
+}
+
+export interface PaymentReceiptErrorResponse {
+  ok: false;
+  error: string;
+  message: string;
+}
+
 export interface SubscriptionData {
   ok: boolean;
   telegram_user_id: number;

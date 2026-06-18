@@ -5,6 +5,9 @@ import type {
   MatchAiAnalysisResponse,
   MatchListType,
   MatchResponse,
+  MiniAppPaymentPackageCode,
+  PaymentReceiptErrorResponse,
+  PaymentReceiptResponse,
   SubscriptionData,
 } from "./types";
 
@@ -15,6 +18,18 @@ export class MatchAiAnalysisError extends Error {
   constructor(status: number, code: string, message: string) {
     super(message);
     this.name = "MatchAiAnalysisError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+export class PaymentReceiptError extends Error {
+  status: number;
+  code: string;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.name = "PaymentReceiptError";
     this.status = status;
     this.code = code;
   }
@@ -81,4 +96,36 @@ export async function requestMatchAiAnalysis(
   }
 
   return responseData as MatchAiAnalysisResponse;
+}
+
+export async function submitPaymentReceipt(
+  telegramUserId: number,
+  packageCode: MiniAppPaymentPackageCode,
+  receiptFile: File,
+): Promise<PaymentReceiptResponse> {
+  const formData = new FormData();
+  formData.append("telegram_user_id", String(telegramUserId));
+  formData.append("package_code", packageCode);
+  formData.append("receipt_file", receiptFile);
+
+  const response = await fetch(`${API_BASE_URL}/api/payments/request`, {
+    method: "POST",
+    headers: {
+      "X-Telegram-Init-Data":
+        window.Telegram?.WebApp?.initData || "",
+    },
+    body: formData,
+  });
+  const responseData: unknown = await response.json();
+
+  if (!response.ok) {
+    const errorData = responseData as PaymentReceiptErrorResponse;
+    throw new PaymentReceiptError(
+      response.status,
+      errorData.error || "unknown_error",
+      errorData.message || "Не удалось отправить чек. Попробуйте позже.",
+    );
+  }
+
+  return responseData as PaymentReceiptResponse;
 }

@@ -7,6 +7,7 @@ import {
   CircleUserRound,
   Clock3,
   Crown,
+  FileText,
   Flame,
   Home,
   LoaderCircle,
@@ -14,6 +15,7 @@ import {
   ShieldCheck,
   Sparkles,
   Trophy,
+  Upload,
   WalletCards,
   Zap,
 } from "lucide-react";
@@ -23,7 +25,9 @@ import {
   getMatches,
   getSubscription,
   MatchAiAnalysisError,
+  PaymentReceiptError,
   requestMatchAiAnalysis,
+  submitPaymentReceipt,
 } from "./api";
 import { getTelegramUserIdentity } from "./telegramUser";
 import type {
@@ -31,7 +35,9 @@ import type {
   MatchAiAnalysisResponse,
   MatchItem,
   MatchListType,
+  MiniAppPaymentPackageCode,
   PaymentPackage,
+  PaymentReceiptResponse,
   Screen,
   SubscriptionData,
 } from "./types";
@@ -817,14 +823,27 @@ function packageDescription(item: PaymentPackage) {
   return "Возможности MatchLab";
 }
 
-function SubscriptionScreen({
-  onNotice,
-}: {
-  onNotice: (message: string) => void;
-}) {
+function getMiniAppPaymentPackageCode(
+  packageCode: string,
+): MiniAppPaymentPackageCode | null {
+  if (packageCode === "ai_30") return "ai_30";
+  if (packageCode === "premium_30") return "month_1";
+  if (packageCode === "premium_90") return "months_3";
+  return null;
+}
+
+function SubscriptionScreen() {
+  const telegramIdentity = useMemo(getTelegramUserIdentity, []);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [selectedPackage, setSelectedPackage] =
+    useState<PaymentPackage | null>(null);
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
+  const [receiptLoading, setReceiptLoading] = useState(false);
+  const [receiptError, setReceiptError] = useState("");
+  const [receiptSuccess, setReceiptSuccess] =
+    useState<PaymentReceiptResponse | null>(null);
 
   useEffect(() => {
     getAppConfig()
@@ -832,6 +851,166 @@ function SubscriptionScreen({
       .catch(() => setError(true))
       .finally(() => setLoading(false));
   }, []);
+
+  function selectPackage(item: PaymentPackage) {
+    setSelectedPackage(item);
+    setReceiptFile(null);
+    setReceiptError("");
+    setReceiptSuccess(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function handleReceiptSubmit() {
+    if (!selectedPackage || !receiptFile) {
+      setReceiptError("Загрузите PDF-чек.");
+      return;
+    }
+
+    if (
+      receiptFile.type !== "application/pdf" &&
+      !receiptFile.name.toLowerCase().endsWith(".pdf")
+    ) {
+      setReceiptError("Загрузите PDF-чек.");
+      return;
+    }
+
+    const packageCode = getMiniAppPaymentPackageCode(
+      selectedPackage.code,
+    );
+    if (!packageCode) {
+      setReceiptError("Не удалось отправить чек. Попробуйте позже.");
+      return;
+    }
+
+    setReceiptLoading(true);
+    setReceiptError("");
+    setReceiptSuccess(null);
+    try {
+      const response = await submitPaymentReceipt(
+        telegramIdentity.id,
+        packageCode,
+        receiptFile,
+      );
+      setReceiptSuccess(response);
+    } catch (submitError) {
+      if (submitError instanceof PaymentReceiptError) {
+        if (submitError.code === "invalid_receipt") {
+          setReceiptError("Загрузите PDF-чек.");
+        } else {
+          setReceiptError(
+            submitError.message ||
+              "Не удалось отправить чек. Попробуйте позже.",
+          );
+        }
+      } else {
+        setReceiptError("Не удалось отправить чек. Попробуйте позже.");
+      }
+    } finally {
+      setReceiptLoading(false);
+    }
+  }
+
+  if (selectedPackage) {
+    return (
+      <div className="animate-rise">
+        <AppHeader compact />
+        <button
+          type="button"
+          onClick={() => setSelectedPackage(null)}
+          className="mb-5 flex items-center gap-2 text-sm font-semibold text-slate-300"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Назад к тарифам
+        </button>
+
+        <p className="text-xs font-semibold uppercase text-slate-500">
+          Оплата
+        </p>
+        <h1 className="mt-1 text-2xl font-extrabold text-white">
+          {selectedPackage.title}
+        </h1>
+        <p className="mt-2 text-xl font-black text-gold">
+          {formatPrice(selectedPackage.price_kzt)} ₸
+        </p>
+
+        <section className="mt-6 rounded-lg border border-line bg-panel p-5">
+          <p className="text-xs font-semibold uppercase text-slate-500">
+            Реквизиты
+          </p>
+          <div className="mt-4 space-y-3">
+            <div>
+              <p className="text-xs text-slate-500">Получатель</p>
+              <p className="mt-1 text-sm font-bold text-white">Эльдар.Д</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500">Карта / номер</p>
+              <p className="mt-1 break-all text-sm font-bold text-white">
+                4400430320823104
+              </p>
+            </div>
+          </div>
+          <p className="mt-5 border-t border-line pt-4 text-sm leading-6 text-slate-300">
+            Оплатите переводом на карту, затем загрузите PDF-чек.
+          </p>
+        </section>
+
+        <section className="mt-4 rounded-lg border border-line bg-panel p-5">
+          <div className="flex items-center gap-3">
+            <FileText className="h-5 w-5 text-accent" />
+            <div>
+              <p className="text-sm font-bold text-white">PDF-чек</p>
+              <p className="text-xs text-slate-500">
+                Выберите файл после оплаты
+              </p>
+            </div>
+          </div>
+          <label className="mt-4 flex min-h-24 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-slate-600 bg-white/[0.02] px-4 text-center">
+            <Upload className="h-5 w-5 text-slate-400" />
+            <span className="mt-2 text-sm font-semibold text-slate-200">
+              {receiptFile ? receiptFile.name : "Выбрать PDF-файл"}
+            </span>
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              className="sr-only"
+              onChange={(event) => {
+                setReceiptFile(event.target.files?.[0] || null);
+                setReceiptError("");
+                setReceiptSuccess(null);
+              }}
+            />
+          </label>
+
+          {receiptError && (
+            <p className="mt-4 rounded-md bg-red-500/[0.08] px-3 py-2 text-sm text-red-200">
+              {receiptError}
+            </p>
+          )}
+          {receiptSuccess && (
+            <p className="mt-4 rounded-md bg-lime/[0.08] px-3 py-2 text-sm leading-5 text-lime">
+              {receiptSuccess.message}
+            </p>
+          )}
+
+          <button
+            type="button"
+            onClick={handleReceiptSubmit}
+            disabled={receiptLoading || Boolean(receiptSuccess)}
+            className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {receiptLoading ? (
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+            ) : (
+              <Upload className="h-4 w-4" />
+            )}
+            {receiptLoading
+              ? "Чек отправляется…"
+              : "Отправить PDF-чек"}
+          </button>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="animate-rise">
@@ -900,11 +1079,7 @@ function SubscriptionScreen({
                 </div>
                 <button
                   type="button"
-                  onClick={() =>
-                    onNotice(
-                      "Оплата будет подключена на следующем этапе.",
-                    )
-                  }
+                  onClick={() => selectPackage(item)}
                   className={`mt-5 h-11 w-full rounded-md text-sm font-bold transition active:scale-[0.99] ${
                     premium
                       ? "bg-gold text-zinc-950"
@@ -960,19 +1135,10 @@ function BottomNavigation({
   );
 }
 
-function Toast({ message }: { message: string }) {
-  return (
-    <div className="fixed inset-x-4 bottom-24 z-50 mx-auto max-w-md animate-rise rounded-lg border border-accent/25 bg-[#171d27] px-4 py-3 text-center text-sm font-semibold text-white shadow-card">
-      {message}
-    </div>
-  );
-}
-
 export default function App() {
   const [screen, setScreen] = useState<Screen>("home");
   const [matchType, setMatchType] = useState<MatchListType>("top");
   const [selectedMatch, setSelectedMatch] = useState<MatchItem | null>(null);
-  const [notice, setNotice] = useState("");
 
   useEffect(() => {
     const telegramWebApp = window.Telegram?.WebApp;
@@ -982,12 +1148,6 @@ export default function App() {
     document.documentElement.dataset.telegramTheme =
       telegramWebApp?.colorScheme || "dark";
   }, []);
-
-  useEffect(() => {
-    if (!notice) return;
-    const timeout = window.setTimeout(() => setNotice(""), 3200);
-    return () => window.clearTimeout(timeout);
-  }, [notice]);
 
   function navigate(nextScreen: Screen) {
     setSelectedMatch(null);
@@ -1026,7 +1186,7 @@ export default function App() {
               />
             )}
             {screen === "subscription" && (
-              <SubscriptionScreen onNotice={setNotice} />
+              <SubscriptionScreen />
             )}
             {screen === "profile" && <ProfileScreen />}
           </>
@@ -1034,7 +1194,6 @@ export default function App() {
       </main>
 
       <BottomNavigation activeScreen={screen} onNavigate={navigate} />
-      {notice && <Toast message={notice} />}
     </div>
   );
 }

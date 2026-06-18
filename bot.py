@@ -8,7 +8,9 @@ import hashlib
 import hmac
 import json
 import threading
+import tempfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import parse_qsl
 
 from flask import Flask, jsonify, request as flask_request
@@ -265,6 +267,11 @@ PAYMENT_PACKAGES = {
         "ai_limit": PREMIUM_90_AI_LIMIT,
         "admin_command": "grant_premium",
     },
+}
+MINIAPP_PAYMENT_PACKAGE_CODES = {
+    "ai_30": "ai_30",
+    "month_1": "premium_30",
+    "months_3": "premium_90",
 }
 
 logging.basicConfig(
@@ -6643,6 +6650,11 @@ def get_api_telegram_user(request) -> dict | None:
             telegram_user_id = str(
                 request_data.get("telegram_user_id") or ""
             ).strip()
+    if not telegram_user_id:
+        telegram_user_id = request.form.get(
+            "telegram_user_id",
+            "",
+        ).strip()
 
     if not telegram_user_id.isdigit():
         return None
@@ -6799,6 +6811,56 @@ def build_miniapp_ai_match_data(match: dict) -> dict:
         match_data
     )
     return match_data
+
+
+def notify_admins_about_miniapp_receipt(
+    telegram_user_id: int,
+    package_code: str,
+    package: dict,
+    receipt_path: Path,
+) -> None:
+    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not telegram_token or not ADMIN_TELEGRAM_IDS:
+        return
+
+    caption = (
+        "🧾 Получен PDF-чек из Mini App\n\n"
+        f"Telegram ID: {telegram_user_id}\n"
+        f"Пакет: {package.get('title', package_code)}\n"
+        f"Сумма: {format_kzt(package['amount_kzt'])} ₸\n"
+        f"Время: {datetime.now(ALMATY_TZ).strftime('%d.%m %H:%M')}\n\n"
+        "Проверь оплату и активируй доступ:\n"
+        f"{get_admin_activation_command(telegram_user_id, package_code)}"
+    )
+    send_document_url = (
+        f"https://api.telegram.org/bot{telegram_token}/sendDocument"
+    )
+
+    for admin_id in ADMIN_TELEGRAM_IDS:
+        try:
+            with receipt_path.open("rb") as receipt_file:
+                response = requests.post(
+                    send_document_url,
+                    data={
+                        "chat_id": admin_id,
+                        "caption": caption,
+                    },
+                    files={
+                        "document": (
+                            receipt_path.name,
+                            receipt_file,
+                            "application/pdf",
+                        )
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
+        except Exception:
+            logger.error(
+                "Failed to notify admin %s about Mini App receipt",
+                admin_id,
+                exc_info=True,
+            )
 
 
 @miniapp_api.get("/api/health")
@@ -7009,6 +7071,123 @@ def miniapp_match_ai_analysis(match_id: str):
             "limit_charged": limit_charged,
             "remaining_ai": remaining_ai,
             "is_admin": is_admin,
+        }
+    )
+
+
+@miniapp_api.route(
+    "/api/payments/request",
+    methods=["POST", "OPTIONS"],
+)
+def miniapp_payment_request():
+    if flask_request.method == "OPTIONS":
+        return "", 204
+
+    telegram_user = get_api_telegram_user(flask_request)
+    if not telegram_user:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "telegram_user_id_required",
+                "message": "Не удалось определить пользователя Telegram.",
+            }
+        ), 400
+
+    requested_package_code = flask_request.form.get(
+        "package_code",
+        "",
+    ).strip()
+    package_code = MINIAPP_PAYMENT_PACKAGE_CODES.get(
+        requested_package_code
+    )
+    if not package_code:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "invalid_package",
+                "message": "Неизвестный пакет.",
+            }
+        ), 400
+
+    receipt_file = flask_request.files.get("receipt_file")
+    receipt_file_name = (
+        receipt_file.filename.strip()
+        if receipt_file and receipt_file.filename
+        else ""
+    )
+    if not receipt_file or not receipt_file_name.lower().endswith(".pdf"):
+        return jsonify(
+            {
+                "ok": False,
+                "error": "invalid_receipt",
+                "message": "Загрузите PDF-чек.",
+            }
+        ), 400
+
+    telegram_user_id = int(telegram_user["id"])
+    package = PAYMENT_PACKAGES[package_code]
+    payment_request = create_payment_request(
+        telegram_user_id,
+        package_code,
+        package["amount_kzt"],
+    )
+    if not payment_request:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "payment_request_unavailable",
+                "message": "Не удалось отправить чек. Попробуйте позже.",
+            }
+        ), 503
+
+    receipts_directory = (
+        Path(tempfile.gettempdir()) / "matchlab_receipts"
+    )
+    receipts_directory.mkdir(parents=True, exist_ok=True)
+    safe_receipt_name = (
+        f"receipt_{telegram_user_id}_{payment_request['id']}.pdf"
+    )
+    receipt_path = receipts_directory / safe_receipt_name
+
+    try:
+        receipt_file.save(receipt_path)
+        updated_request = update_latest_payment_request_with_receipt(
+            telegram_user_id,
+            str(receipt_path),
+            safe_receipt_name,
+        )
+        if not updated_request:
+            raise RuntimeError("Failed to save Mini App payment receipt")
+
+        notify_admins_about_miniapp_receipt(
+            telegram_user_id,
+            package_code,
+            package,
+            receipt_path,
+        )
+    except Exception:
+        logger.exception(
+            "Mini App payment receipt processing failed: user_id=%s",
+            telegram_user_id,
+        )
+        receipt_path.unlink(missing_ok=True)
+        return jsonify(
+            {
+                "ok": False,
+                "error": "receipt_processing_failed",
+                "message": "Не удалось отправить чек. Попробуйте позже.",
+            }
+        ), 503
+
+    return jsonify(
+        {
+            "ok": True,
+            "message": (
+                "Чек отправлен на проверку. "
+                "После проверки доступ будет активирован."
+            ),
+            "package_title": package["title"],
+            "amount": package["amount_kzt"],
         }
     )
 
