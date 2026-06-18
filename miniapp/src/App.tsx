@@ -18,10 +18,17 @@ import {
   Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { getAppConfig, getMatches, getSubscription } from "./api";
+import {
+  getAppConfig,
+  getMatches,
+  getSubscription,
+  MatchAiAnalysisError,
+  requestMatchAiAnalysis,
+} from "./api";
 import { getTelegramUserIdentity } from "./telegramUser";
 import type {
   AppConfig,
+  MatchAiAnalysisResponse,
   MatchItem,
   MatchListType,
   PaymentPackage,
@@ -483,13 +490,51 @@ function MatchesScreen({
 function MatchDetails({
   match,
   onBack,
-  onNotice,
 }: {
   match: MatchItem;
   onBack: () => void;
-  onNotice: (message: string) => void;
 }) {
   const kickoff = formatKickoff(match.kickoff);
+  const telegramIdentity = useMemo(getTelegramUserIdentity, []);
+  const [aiAnalysis, setAiAnalysis] =
+    useState<MatchAiAnalysisResponse | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
+
+  async function handleAiAnalysis() {
+    setAiLoading(true);
+    setAiError("");
+
+    try {
+      const response = await requestMatchAiAnalysis(
+        match.id,
+        telegramIdentity.id,
+      );
+      setAiAnalysis(response);
+    } catch (error) {
+      setAiAnalysis(null);
+      if (error instanceof MatchAiAnalysisError) {
+        if (error.status === 402 || error.code === "ai_limit_exceeded") {
+          setAiError(
+            "AI-лимит закончился. Можно оформить подписку или докупить AI-разборы.",
+          );
+        } else if (error.status === 404 || error.code === "match_not_found") {
+          setAiError("Матч не найден или уже недоступен.");
+        } else if (
+          error.status === 503 ||
+          error.code === "ai_analysis_unavailable"
+        ) {
+          setAiError("AI-разбор временно недоступен.");
+        } else {
+          setAiError("Не удалось получить AI-разбор. Попробуйте позже.");
+        }
+      } else {
+        setAiError("Не удалось получить AI-разбор. Попробуйте позже.");
+      }
+    } finally {
+      setAiLoading(false);
+    }
+  }
 
   return (
     <div className="animate-rise">
@@ -561,23 +606,52 @@ function MatchDetails({
           </div>
           <div>
             <h2 className="text-sm font-bold text-white">
-              AI-разбор скоро здесь
+              AI-разбор MatchLab
             </h2>
             <p className="mt-1 text-xs leading-5 text-slate-400">
-              Матчевый контекст, форма команд и аналитические сигналы появятся
-              на следующем этапе.
+              Матчевый контекст, форма команд и аналитические сигналы.
             </p>
           </div>
         </div>
+
+        {aiAnalysis && (
+          <div className="mt-5 rounded-lg border border-accent/20 bg-panel p-4">
+            <div className="whitespace-pre-line text-sm leading-6 text-slate-200">
+              {aiAnalysis.analysis}
+            </div>
+            <div className="mt-4 border-t border-line pt-3">
+              {aiAnalysis.is_admin && (
+                <p className="text-xs font-semibold text-lime">
+                  Админ-режим: AI-разборы не расходуются.
+                </p>
+              )}
+              {typeof aiAnalysis.remaining_ai === "number" && (
+                <p className="text-xs font-semibold text-lime">
+                  Осталось AI-разборов: {aiAnalysis.remaining_ai}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {aiError && (
+          <div className="mt-5 rounded-lg border border-red-500/20 bg-red-500/[0.06] px-4 py-3 text-sm leading-5 text-red-200">
+            {aiError}
+          </div>
+        )}
+
         <button
           type="button"
-          onClick={() =>
-            onNotice("AI-разбор будет подключён на следующем этапе.")
-          }
-          className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white transition active:scale-[0.99]"
+          onClick={handleAiAnalysis}
+          disabled={aiLoading}
+          className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white transition active:scale-[0.99] disabled:cursor-wait disabled:opacity-70"
         >
-          <Bot className="h-4 w-4" />
-          AI-разбор
+          {aiLoading ? (
+            <LoaderCircle className="h-4 w-4 animate-spin" />
+          ) : (
+            <Bot className="h-4 w-4" />
+          )}
+          {aiLoading ? "AI-разбор готовится…" : "AI-разбор"}
         </button>
       </section>
     </div>
@@ -933,7 +1007,6 @@ export default function App() {
           <MatchDetails
             match={selectedMatch}
             onBack={() => setSelectedMatch(null)}
-            onNotice={setNotice}
           />
         ) : (
           <>

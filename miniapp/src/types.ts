@@ -21,6 +21,23 @@ export interface MatchResponse {
   error?: string;
 }
 
+export interface MatchAiAnalysisResponse {
+  ok: true;
+  match_id: string;
+  home: string;
+  away: string;
+  analysis: string;
+  limit_charged: boolean;
+  remaining_ai: number | null;
+  is_admin: boolean;
+}
+
+export interface MatchAiAnalysisErrorResponse {
+  ok: false;
+  error: string;
+  message: string;
+}
+
 export interface SubscriptionData {
   ok: boolean;
   telegram_user_id: number;
