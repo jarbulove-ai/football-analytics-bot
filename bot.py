@@ -40,6 +40,14 @@ THESPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
+# Render Background Worker:
+# RUN_TELEGRAM_BOT=true
+# ENABLE_MINIAPP_API=false
+#
+# Render Web Service:
+# RUN_TELEGRAM_BOT=false
+# ENABLE_MINIAPP_API=true
+RUN_TELEGRAM_BOT = os.getenv("RUN_TELEGRAM_BOT", "true").lower() == "true"
 ENABLE_MINIAPP_API = os.getenv("ENABLE_MINIAPP_API", "false").lower() == "true"
 MINIAPP_API_HOST = os.getenv("MINIAPP_API_HOST", "0.0.0.0")
 MINIAPP_API_PORT = int(os.getenv("PORT", os.getenv("MINIAPP_API_PORT", "8000")))
@@ -6828,6 +6836,26 @@ def run_miniapp_api_server() -> None:
 
 
 def main() -> None:
+    init_db()
+
+    if not RUN_TELEGRAM_BOT:
+        logger.info("🤖 Telegram bot polling disabled")
+        if ENABLE_MINIAPP_API:
+            logger.info(
+                "🌐 Mini App API enabled on %s:%s",
+                MINIAPP_API_HOST,
+                MINIAPP_API_PORT,
+            )
+            logger.info("🌐 Mini App API running as main web service")
+            run_miniapp_api_server()
+        else:
+            logger.info("🌐 Mini App API disabled")
+            logger.warning(
+                "RUN_TELEGRAM_BOT and ENABLE_MINIAPP_API are both disabled"
+            )
+        return
+
+    logger.info("🤖 Telegram bot polling enabled")
     telegram_token = get_required_env("TELEGRAM_BOT_TOKEN")
     #football_api_key = os.getenv("FOOTBALL_API_KEY", "")
 
@@ -6993,7 +7021,6 @@ def main() -> None:
         group=4
     )
 
-    init_db()
     if ENABLE_MINIAPP_API:
         logger.info(
             "🌐 Mini App API enabled on %s:%s",
