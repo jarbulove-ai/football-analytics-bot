@@ -6637,6 +6637,13 @@ def get_api_telegram_user(request) -> dict | None:
         return None
 
     telegram_user_id = request.args.get("telegram_user_id", "").strip()
+    if not telegram_user_id:
+        request_data = request.get_json(silent=True)
+        if isinstance(request_data, dict):
+            telegram_user_id = str(
+                request_data.get("telegram_user_id") or ""
+            ).strip()
+
     if not telegram_user_id.isdigit():
         return None
 
@@ -6736,6 +6743,62 @@ def get_miniapp_matches(match_type: str) -> list[dict]:
         if formatted_item and formatted_item.get("id"):
             items.append(formatted_item)
     return items
+
+
+def find_miniapp_match(match_id: str) -> dict | None:
+    normalized_match_id = str(match_id).strip()
+    if not normalized_match_id:
+        return None
+
+    for match_type in ("top", "today", "tomorrow"):
+        try:
+            matches = get_miniapp_matches(match_type)
+        except Exception:
+            logger.warning(
+                "Mini App match lookup failed for list: %s",
+                match_type,
+                exc_info=True,
+            )
+            continue
+
+        for match in matches:
+            if str(match.get("id") or "") == normalized_match_id:
+                return match
+
+    return None
+
+
+def build_miniapp_ai_match_data(match: dict) -> dict:
+    fixture_id_text = str(match.get("id") or "")
+    fixture_id = int(fixture_id_text) if fixture_id_text.isdigit() else None
+    match_context = {
+        "league_name": match.get("league"),
+        "league_country": match.get("country"),
+        "kickoff": match.get("kickoff"),
+    }
+    analysis_data = build_match_analysis_data(
+        match.get("home") or "",
+        match.get("away") or "",
+        fixture_id,
+        match_context,
+    )
+    if analysis_data.get("error"):
+        raise RuntimeError("Mini App match analysis data is unavailable")
+
+    match_data = {
+        "home": match.get("home") or "",
+        "away": match.get("away") or "",
+        "fixture_id": fixture_id,
+        "league_name": match.get("league"),
+        "league_country": match.get("country"),
+        "kickoff": match.get("kickoff"),
+        "numeric_basis_block": analysis_data.get("numeric_basis_block"),
+        "analysis_text": analysis_data.get("full_analysis_text") or "",
+    }
+    match_data["tournament_context_text"] = build_tournament_context_for_ai(
+        match_data
+    )
+    return match_data
 
 
 @miniapp_api.get("/api/health")
@@ -6849,6 +6912,105 @@ def miniapp_matches_tomorrow():
 @miniapp_api.get("/api/matches/top")
 def miniapp_matches_top():
     return build_miniapp_matches_response("top")
+
+
+@miniapp_api.route(
+    "/api/matches/<match_id>/ai",
+    methods=["POST", "OPTIONS"],
+)
+def miniapp_match_ai_analysis(match_id: str):
+    if flask_request.method == "OPTIONS":
+        return "", 204
+
+    telegram_user = get_api_telegram_user(flask_request)
+    if not telegram_user:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "telegram_user_id_required",
+                "message": "Не удалось определить пользователя Telegram.",
+            }
+        ), 400
+
+    telegram_user_id = int(telegram_user["id"])
+    is_admin = is_admin_user(telegram_user_id)
+    logger.info(
+        "Mini App AI analysis requested: match_id=%s user_id=%s",
+        match_id,
+        telegram_user_id,
+    )
+
+    match = find_miniapp_match(match_id)
+    if not match:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "match_not_found",
+                "message": "Матч не найден или уже недоступен.",
+            }
+        ), 404
+
+    if is_admin:
+        allowed = True
+        subscription = {}
+    else:
+        allowed, _, subscription = can_use_ai_analysis(telegram_user_id)
+
+    if not allowed:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "ai_limit_exceeded",
+                "message": (
+                    "AI-лимит закончился. Оформите подписку "
+                    "или докупите AI-разборы."
+                ),
+            }
+        ), 402
+
+    try:
+        match_data = build_miniapp_ai_match_data(match)
+        analysis = get_openai_ai_analysis(match_data)
+    except Exception:
+        logger.exception(
+            "Mini App AI analysis failed: match_id=%s user_id=%s",
+            match_id,
+            telegram_user_id,
+        )
+        analysis = "AI-разбор временно недоступен."
+
+    if analysis in {
+        "AI-разбор пока не подключён.",
+        "AI-разбор временно недоступен.",
+    }:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "ai_analysis_unavailable",
+                "message": "AI-разбор временно недоступен.",
+            }
+        ), 503
+
+    limit_charged = False
+    remaining_ai = None
+    if not is_admin:
+        available_before = get_ai_available_count(subscription)
+        updated_subscription = increment_ai_usage(telegram_user_id)
+        remaining_ai = get_ai_available_count(updated_subscription)
+        limit_charged = remaining_ai < available_before
+
+    return jsonify(
+        {
+            "ok": True,
+            "match_id": str(match.get("id") or match_id),
+            "home": match.get("home") or "",
+            "away": match.get("away") or "",
+            "analysis": analysis,
+            "limit_charged": limit_charged,
+            "remaining_ai": remaining_ai,
+            "is_admin": is_admin,
+        }
+    )
 
 
 def run_miniapp_api_server() -> None:
