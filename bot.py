@@ -1960,6 +1960,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=reply_markup,
     )
 
+    if WEBAPP_URL:
+        await update.message.reply_text(
+            "🚀 Mini App доступен здесь:",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🚀 Открыть MatchLab",
+                            web_app=WebAppInfo(url=WEBAPP_URL),
+                        )
+                    ]
+                ]
+            ),
+        )
+
 
 def fetch_fixtures_for_date(api_key: str, date_value: datetime) -> list[dict]:
     response = requests.get(
@@ -6847,6 +6862,8 @@ def run_miniapp_api_server() -> None:
 
 def main() -> None:
     init_db()
+    if WEBAPP_URL:
+        logger.info("Mini App WEBAPP_URL configured: %s", WEBAPP_URL)
 
     if not RUN_TELEGRAM_BOT:
         logger.info("🤖 Telegram bot polling disabled")
