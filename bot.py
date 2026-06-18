@@ -11,7 +11,7 @@ import threading
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import Flask, jsonify, request as flask_request
 from openai import OpenAI
@@ -2010,16 +2010,38 @@ def build_main_menu_markup() -> ReplyKeyboardMarkup:
     )
 
 
-def build_miniapp_inline_keyboard() -> InlineKeyboardMarkup | None:
+def build_miniapp_inline_keyboard(
+    screen: str | None = None,
+) -> InlineKeyboardMarkup | None:
     if not WEBAPP_URL:
         return None
+
+    button_url = WEBAPP_URL
+    button_text = "🚀 Открыть MatchLab"
+    if screen:
+        url_parts = urlsplit(WEBAPP_URL)
+        query_params = dict(
+            parse_qsl(url_parts.query, keep_blank_values=True)
+        )
+        query_params["screen"] = screen
+        button_url = urlunsplit(
+            (
+                url_parts.scheme,
+                url_parts.netloc,
+                url_parts.path,
+                urlencode(query_params),
+                url_parts.fragment,
+            )
+        )
+        if screen == "profile":
+            button_text = "👤 Открыть профиль"
 
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    "🚀 Открыть MatchLab",
-                    web_app=WebAppInfo(url=WEBAPP_URL),
+                    button_text,
+                    web_app=WebAppInfo(url=button_url),
                 )
             ]
         ]
@@ -7111,7 +7133,7 @@ async def admin_payment_confirm_callback(
         await context.bot.send_message(
             chat_id=telegram_user_id,
             text=build_activated_payment_user_message(package_code),
-            reply_markup=build_miniapp_inline_keyboard(),
+            reply_markup=build_miniapp_inline_keyboard("profile"),
         )
         user_notified = True
     except Exception:

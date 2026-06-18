@@ -1184,8 +1184,16 @@ function BottomNavigation({
   );
 }
 
+function getInitialScreenFromUrl(): Screen {
+  const requestedScreen = new URLSearchParams(
+    window.location.search,
+  ).get("screen");
+
+  return requestedScreen === "profile" ? "profile" : "home";
+}
+
 export default function App() {
-  const [screen, setScreen] = useState<Screen>("home");
+  const [screen, setScreen] = useState<Screen>(getInitialScreenFromUrl);
   const [matchType, setMatchType] = useState<MatchListType>("top");
   const [selectedMatch, setSelectedMatch] = useState<MatchItem | null>(null);
 
