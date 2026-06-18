@@ -1,20 +1,29 @@
+from __future__ import annotations
+
 import logging
 import os
 import re
 import asyncio
+import hashlib
+import hmac
 import json
+import threading
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qsl
 
+from flask import Flask, jsonify, request as flask_request
 from openai import OpenAI
 import psycopg2
 import requests
 from psycopg2.extras import Json, RealDictCursor
 from telegram import (
-    Update,
-    ReplyKeyboardMarkup,
     BotCommand,
+    KeyboardButton,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    Update,
+    WebAppInfo,
 )
 from telegram.ext import (
     Application,
@@ -30,6 +39,10 @@ API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
 THESPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "")
+ENABLE_MINIAPP_API = os.getenv("ENABLE_MINIAPP_API", "false").lower() == "true"
+MINIAPP_API_HOST = os.getenv("MINIAPP_API_HOST", "0.0.0.0")
+MINIAPP_API_PORT = int(os.getenv("PORT", os.getenv("MINIAPP_API_PORT", "8000")))
 ADMIN_TELEGRAM_IDS = set(
     int(item.strip())
     for item in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
@@ -251,6 +264,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+miniapp_api = Flask("matchlab_miniapp_api")
 
 
 def normalize_team_name(team_name: str) -> str:
@@ -1871,6 +1885,16 @@ def build_main_menu_markup() -> ReplyKeyboardMarkup:
         ["⭐ Моя команда", "📋 Профиль"],
         ["🏆 Таблица", PREMIUM_BUTTON],
     ]
+    if WEBAPP_URL:
+        keyboard.insert(
+            0,
+            [
+                KeyboardButton(
+                    text="🚀 Открыть MatchLab",
+                    web_app=WebAppInfo(url=WEBAPP_URL),
+                )
+            ],
+        )
 
     return ReplyKeyboardMarkup(
         keyboard,
@@ -6516,6 +6540,285 @@ async def testdb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(message)
 
 
+def validate_telegram_webapp_init_data(init_data: str) -> dict | None:
+    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not telegram_token or not init_data:
+        return None
+
+    try:
+        init_data_values = dict(parse_qsl(init_data, keep_blank_values=True))
+        received_hash = init_data_values.pop("hash", "")
+        if not received_hash:
+            logger.debug("Telegram WebApp initData does not contain a hash")
+            return None
+
+        data_check_string = "\n".join(
+            f"{key}={value}"
+            for key, value in sorted(init_data_values.items())
+        )
+        secret_key = hmac.new(
+            b"WebAppData",
+            telegram_token.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        calculated_hash = hmac.new(
+            secret_key,
+            data_check_string.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+        if not hmac.compare_digest(calculated_hash, received_hash):
+            logger.warning("Telegram WebApp initData hash validation failed")
+            return None
+
+        user_data = json.loads(init_data_values.get("user", ""))
+        if not isinstance(user_data, dict) or not user_data.get("id"):
+            logger.debug("Telegram WebApp initData does not contain a valid user")
+            return None
+
+        user_data["_auth_mode"] = "init_data"
+        return user_data
+    except (TypeError, ValueError, json.JSONDecodeError):
+        logger.warning("Failed to parse Telegram WebApp initData")
+        return None
+    except Exception:
+        logger.warning(
+            "Unexpected Telegram WebApp initData validation error",
+            exc_info=True,
+        )
+        return None
+
+
+def get_api_telegram_user(request) -> dict | None:
+    init_data = request.headers.get("X-Telegram-Init-Data", "").strip()
+    if init_data:
+        telegram_user = validate_telegram_webapp_init_data(init_data)
+        if telegram_user:
+            return telegram_user
+
+    # TODO: Remove this query fallback before the public Mini App launch.
+    if not ENABLE_MINIAPP_API:
+        return None
+
+    telegram_user_id = request.args.get("telegram_user_id", "").strip()
+    if not telegram_user_id.isdigit():
+        return None
+
+    user_id = int(telegram_user_id)
+    if user_id <= 0:
+        return None
+
+    return {
+        "id": user_id,
+        "_auth_mode": "query_fallback",
+    }
+
+
+def serialize_api_datetime(value) -> str | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    return str(value)
+
+
+def format_miniapp_fixture_item(fixture_item: dict) -> dict | None:
+    fixture = fixture_item.get("fixture") or {}
+    teams = fixture_item.get("teams") or {}
+    league = fixture_item.get("league") or {}
+    fixture_id = fixture.get("id")
+    timestamp = fixture.get("timestamp")
+
+    if fixture_id is None:
+        return None
+
+    kickoff = None
+    if timestamp is not None:
+        kickoff = datetime.fromtimestamp(
+            timestamp,
+            tz=timezone.utc,
+        ).astimezone(ALMATY_TZ).isoformat()
+
+    return {
+        "id": str(fixture_id),
+        "home": (teams.get("home") or {}).get("name") or "",
+        "away": (teams.get("away") or {}).get("name") or "",
+        "league": league.get("name") or "",
+        "country": league.get("country") or "",
+        "kickoff": kickoff,
+        "source": "api_football",
+    }
+
+
+def get_miniapp_matches(match_type: str) -> list[dict]:
+    now_almaty = datetime.now(ALMATY_TZ)
+
+    if match_type == "today":
+        start_almaty = now_almaty
+        end_almaty = datetime.combine(
+            now_almaty.date(),
+            datetime.max.time(),
+            tzinfo=ALMATY_TZ,
+        )
+        only_top = False
+    elif match_type == "tomorrow":
+        tomorrow_date = (now_almaty + timedelta(days=1)).date()
+        start_almaty = datetime.combine(
+            tomorrow_date,
+            datetime.min.time(),
+            tzinfo=ALMATY_TZ,
+        )
+        end_almaty = datetime.combine(
+            tomorrow_date,
+            datetime.max.time(),
+            tzinfo=ALMATY_TZ,
+        )
+        only_top = False
+    elif match_type == "top":
+        start_almaty = now_almaty
+        end_almaty = now_almaty + timedelta(hours=72)
+        only_top = True
+    else:
+        raise ValueError(f"Unsupported Mini App match type: {match_type}")
+
+    fixtures = get_api_football_matches_between(
+        start_almaty,
+        end_almaty,
+        only_top=only_top,
+        allowed_only=True,
+    )
+    items = []
+    for fixture_item in fixtures[:MAX_TOP_MATCHES]:
+        formatted_item = format_miniapp_fixture_item(fixture_item)
+        if formatted_item:
+            items.append(formatted_item)
+    return items
+
+
+@miniapp_api.get("/api/health")
+def miniapp_health():
+    return jsonify(
+        {
+            "ok": True,
+            "service": "matchlab",
+            "version": "miniapp-api-v1",
+        }
+    )
+
+
+@miniapp_api.get("/api/config")
+def miniapp_config():
+    packages = []
+    for package_code, package in PAYMENT_PACKAGES.items():
+        package_data = {
+            "code": package_code,
+            "title": package["title"],
+            "price_kzt": package["amount_kzt"],
+        }
+        for field_name in ("ai_credits", "days", "ai_limit"):
+            if field_name in package:
+                package_data[field_name] = package[field_name]
+        packages.append(package_data)
+
+    return jsonify(
+        {
+            "bot_username": "Match_Stat_bot",
+            "free_ai_limit": FREE_AI_LIMIT_MONTHLY,
+            "packages": packages,
+        }
+    )
+
+
+@miniapp_api.get("/api/subscription")
+def miniapp_subscription():
+    telegram_user = get_api_telegram_user(flask_request)
+    if not telegram_user:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "telegram_user_id_required",
+            }
+        ), 400
+
+    telegram_user_id = int(telegram_user["id"])
+    auth_mode = telegram_user.get("_auth_mode", "init_data")
+    subscription = get_or_create_subscription(telegram_user_id)
+    is_admin = is_admin_user(telegram_user_id)
+
+    if is_admin:
+        plan = "admin"
+    elif is_premium_active(subscription):
+        plan = "premium"
+    else:
+        plan = "free"
+
+    response_data = {
+        "ok": True,
+        "telegram_user_id": telegram_user_id,
+        "plan": plan,
+        "premium_until": serialize_api_datetime(
+            subscription.get("premium_until")
+        ),
+        "ai_used_monthly": int(subscription.get("ai_used_monthly") or 0),
+        "ai_limit_monthly": int(subscription.get("ai_limit_monthly") or 0),
+        "extra_ai_credits": int(subscription.get("extra_ai_credits") or 0),
+        "usage_period": (
+            subscription.get("usage_period") or get_current_usage_period()
+        ),
+        "is_admin": is_admin,
+        "auth_mode": auth_mode,
+    }
+    if is_admin:
+        response_data["ai_text"] = "без лимита"
+
+    return jsonify(response_data)
+
+
+def build_miniapp_matches_response(match_type: str):
+    try:
+        return jsonify(
+            {
+                "ok": True,
+                "items": get_miniapp_matches(match_type),
+            }
+        )
+    except Exception:
+        logger.exception("Mini App %s matches request failed", match_type)
+        return jsonify(
+            {
+                "ok": False,
+                "items": [],
+                "error": "matches_unavailable",
+            }
+        ), 503
+
+
+@miniapp_api.get("/api/matches/today")
+def miniapp_matches_today():
+    return build_miniapp_matches_response("today")
+
+
+@miniapp_api.get("/api/matches/tomorrow")
+def miniapp_matches_tomorrow():
+    return build_miniapp_matches_response("tomorrow")
+
+
+@miniapp_api.get("/api/matches/top")
+def miniapp_matches_top():
+    return build_miniapp_matches_response("top")
+
+
+def run_miniapp_api_server() -> None:
+    miniapp_api.run(
+        host=MINIAPP_API_HOST,
+        port=MINIAPP_API_PORT,
+        use_reloader=False,
+        threaded=True,
+    )
+
+
 def main() -> None:
     telegram_token = get_required_env("TELEGRAM_BOT_TOKEN")
     #football_api_key = os.getenv("FOOTBALL_API_KEY", "")
@@ -6683,6 +6986,19 @@ def main() -> None:
     )
 
     init_db()
+    if ENABLE_MINIAPP_API:
+        logger.info(
+            "🌐 Mini App API enabled on %s:%s",
+            MINIAPP_API_HOST,
+            MINIAPP_API_PORT,
+        )
+        threading.Thread(
+            target=run_miniapp_api_server,
+            daemon=True,
+            name="matchlab-miniapp-api",
+        ).start()
+    else:
+        logger.info("🌐 Mini App API disabled")
 
     application.run_polling(
     drop_pending_updates=True
