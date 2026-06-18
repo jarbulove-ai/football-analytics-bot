@@ -6631,6 +6631,8 @@ def format_miniapp_fixture_item(fixture_item: dict) -> dict | None:
     fixture = fixture_item.get("fixture") or {}
     teams = fixture_item.get("teams") or {}
     league = fixture_item.get("league") or {}
+    home_team = teams.get("home") or {}
+    away_team = teams.get("away") or {}
     fixture_id = fixture.get("id")
     timestamp = fixture.get("timestamp")
 
@@ -6646,9 +6648,12 @@ def format_miniapp_fixture_item(fixture_item: dict) -> dict | None:
 
     return {
         "id": str(fixture_id),
-        "home": (teams.get("home") or {}).get("name") or "",
-        "away": (teams.get("away") or {}).get("name") or "",
+        "home": home_team.get("name") or "",
+        "away": away_team.get("name") or "",
+        "home_logo": home_team.get("logo") or None,
+        "away_logo": away_team.get("logo") or None,
         "league": league.get("name") or "",
+        "league_logo": league.get("logo") or None,
         "country": league.get("country") or "",
         "kickoff": kickoff,
         "source": "api_football",
@@ -6695,7 +6700,7 @@ def get_miniapp_matches(match_type: str) -> list[dict]:
     items = []
     for fixture_item in fixtures[:MAX_TOP_MATCHES]:
         formatted_item = format_miniapp_fixture_item(fixture_item)
-        if formatted_item:
+        if formatted_item and formatted_item.get("id"):
             items.append(formatted_item)
     return items
 
