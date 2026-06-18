@@ -7000,6 +7000,28 @@ def activate_payment_package(
     )
 
 
+def build_activated_payment_user_message(package_code: str) -> str:
+    if package_code == "ai_30":
+        return (
+            "✅ Доступ активирован!\n\n"
+            "Ваш пакет: ⚡ 30 AI-разборов\n"
+            "Теперь можно снова пользоваться AI-разборами в MatchLab.\n\n"
+            "Откройте Mini App и проверьте профиль."
+        )
+
+    if package_code == "premium_90":
+        tariff_text = "🏆 3 месяца"
+    else:
+        tariff_text = "💎 1 месяц"
+
+    return (
+        "✅ Подписка активирована!\n\n"
+        f"Ваш тариф: {tariff_text}\n"
+        "AI-разборы доступны в MatchLab.\n\n"
+        "Откройте Mini App и проверьте профиль."
+    )
+
+
 async def admin_payment_confirm_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -7076,13 +7098,32 @@ async def admin_payment_confirm_callback(
         },
     )
 
+    user_notified = False
+    try:
+        await context.bot.send_message(
+            chat_id=telegram_user_id,
+            text=build_activated_payment_user_message(package_code),
+        )
+        user_notified = True
+    except Exception:
+        logger.warning(
+            "Failed to notify user about activated payment",
+            exc_info=True,
+        )
+
     activated_at = datetime.now(ALMATY_TZ).strftime("%d.%m %H:%M")
     current_caption = query.message.caption if query.message else ""
+    notification_status = (
+        "📩 Пользователь уведомлён"
+        if user_notified
+        else "📩 Пользователь не уведомлён"
+    )
     activated_caption = (
         f"{current_caption}\n\n"
         "✅ Доступ активирован\n"
         f"Админ: {admin_id}\n"
-        f"Время: {activated_at}"
+        f"Время: {activated_at}\n"
+        f"{notification_status}"
     ).strip()
 
     await query.answer("Доступ активирован")
