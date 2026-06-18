@@ -1,0 +1,51 @@
+export type MatchListType = "top" | "today" | "tomorrow";
+
+export type Screen = "home" | "matches" | "subscription" | "profile";
+
+export interface MatchItem {
+  id: string;
+  home: string;
+  away: string;
+  home_logo: string | null;
+  away_logo: string | null;
+  league: string;
+  league_logo: string | null;
+  country: string;
+  kickoff: string | null;
+  source: string;
+}
+
+export interface MatchResponse {
+  ok: boolean;
+  items: MatchItem[];
+  error?: string;
+}
+
+export interface SubscriptionData {
+  ok: boolean;
+  telegram_user_id: number;
+  plan: "free" | "premium" | "admin";
+  premium_until: string | null;
+  ai_used_monthly: number;
+  ai_limit_monthly: number;
+  extra_ai_credits: number;
+  usage_period: string;
+  is_admin: boolean;
+  auth_mode: string;
+  ai_text?: string;
+}
+
+export interface PaymentPackage {
+  code: string;
+  title: string;
+  price_kzt: number;
+  ai_credits?: number;
+  days?: number;
+  ai_limit?: number;
+}
+
+export interface AppConfig {
+  bot_username: string;
+  free_ai_limit: number;
+  packages: PaymentPackage[];
+}

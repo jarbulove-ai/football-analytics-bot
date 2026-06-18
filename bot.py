@@ -275,6 +275,16 @@ logger = logging.getLogger(__name__)
 miniapp_api = Flask("matchlab_miniapp_api")
 
 
+@miniapp_api.after_request
+def add_miniapp_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers[
+        "Access-Control-Allow-Headers"
+    ] = "Content-Type, X-Telegram-Init-Data"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
+
+
 def normalize_team_name(team_name: str) -> str:
     stripped_team_name = team_name.strip()
     normalized_team_name = stripped_team_name.lower().replace("ё", "е")
