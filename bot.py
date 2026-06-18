@@ -2010,6 +2010,22 @@ def build_main_menu_markup() -> ReplyKeyboardMarkup:
     )
 
 
+def build_miniapp_inline_keyboard() -> InlineKeyboardMarkup | None:
+    if not WEBAPP_URL:
+        return None
+
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🚀 Открыть MatchLab",
+                    web_app=WebAppInfo(url=WEBAPP_URL),
+                )
+            ]
+        ]
+    )
+
+
 def build_match_analysis_back_markup() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [["⬅️ Назад"]],
@@ -2047,19 +2063,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=reply_markup,
     )
 
-    if WEBAPP_URL:
+    miniapp_markup = build_miniapp_inline_keyboard()
+    if miniapp_markup:
         await update.message.reply_text(
             "🚀 Mini App доступен здесь:",
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🚀 Открыть MatchLab",
-                            web_app=WebAppInfo(url=WEBAPP_URL),
-                        )
-                    ]
-                ]
-            ),
+            reply_markup=miniapp_markup,
         )
 
 
@@ -7103,6 +7111,7 @@ async def admin_payment_confirm_callback(
         await context.bot.send_message(
             chat_id=telegram_user_id,
             text=build_activated_payment_user_message(package_code),
+            reply_markup=build_miniapp_inline_keyboard(),
         )
         user_notified = True
     except Exception:
