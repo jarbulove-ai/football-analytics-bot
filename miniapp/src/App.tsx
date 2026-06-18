@@ -21,6 +21,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import {
   getAppConfig,
+  getMatchContext,
   getMatches,
   getSubscription,
   MatchAiAnalysisError,
@@ -32,6 +33,8 @@ import { getTelegramUserIdentity } from "./telegramUser";
 import type {
   AppConfig,
   MatchAiAnalysisResponse,
+  MatchContextMatch,
+  MatchContextResponse,
   MatchItem,
   MatchListType,
   MiniAppPaymentPackageCode,
@@ -87,6 +90,28 @@ function formatKickoff(value: string | null) {
 
 function formatPrice(value: number) {
   return new Intl.NumberFormat("ru-RU").format(value);
+}
+
+function formatContextMatchDate(value: string | null) {
+  if (!value) {
+    return "Дата уточняется";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Дата уточняется";
+  }
+
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function normalizeTeamLabel(value: string) {
+  return value.trim().toLocaleLowerCase("ru-RU");
 }
 
 function TeamLogo({
@@ -515,6 +540,73 @@ function MatchesScreen({
   );
 }
 
+function MatchContextLoading() {
+  return (
+    <div className="flex min-h-40 items-center justify-center">
+      <LoaderCircle className="h-6 w-6 animate-spin text-accent" />
+    </div>
+  );
+}
+
+function ContextMatchRow({ match }: { match: MatchContextMatch }) {
+  const hasScore =
+    typeof match.home_score === "number" &&
+    typeof match.away_score === "number";
+
+  return (
+    <div className="grid grid-cols-[4.75rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-line/80 px-3 py-3 first:border-t-0">
+      <div>
+        <p className="text-[10px] leading-4 text-slate-500">
+          {formatContextMatchDate(match.date)}
+        </p>
+        {match.status && (
+          <p className="mt-0.5 text-[10px] font-semibold text-slate-400">
+            {match.status}
+          </p>
+        )}
+      </div>
+      <div className="min-w-0 space-y-1.5">
+        <p className="truncate text-xs font-semibold text-white">
+          {match.home || "Хозяева"}
+        </p>
+        <p className="truncate text-xs font-semibold text-white">
+          {match.away || "Гости"}
+        </p>
+      </div>
+      <div className="space-y-1.5 text-right text-xs font-bold text-white">
+        <p>{hasScore ? match.home_score : "—"}</p>
+        <p>{hasScore ? match.away_score : "—"}</p>
+      </div>
+    </div>
+  );
+}
+
+function MatchContextGroup({
+  title,
+  matches,
+}: {
+  title: string;
+  matches: MatchContextMatch[];
+}) {
+  if (matches.length === 0) {
+    return null;
+  }
+
+  return (
+    <section>
+      <h2 className="mb-2 text-sm font-bold text-white">{title}</h2>
+      <div className="overflow-hidden rounded-lg border border-line bg-panel">
+        {matches.map((contextMatch, index) => (
+          <ContextMatchRow
+            key={`${title}-${contextMatch.id}-${index}`}
+            match={contextMatch}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function MatchDetails({
   match,
   onBack,
@@ -530,6 +622,38 @@ function MatchDetails({
   const [aiError, setAiError] = useState("");
   const [activeTab, setActiveTab] =
     useState<MatchDetailTab>("details");
+  const [matchContext, setMatchContext] =
+    useState<MatchContextResponse | null>(null);
+  const [contextLoading, setContextLoading] = useState(true);
+  const [contextError, setContextError] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setContextLoading(true);
+    setContextError(false);
+    setMatchContext(null);
+
+    getMatchContext(match.id)
+      .then((response) => {
+        if (active) {
+          setMatchContext(response);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setContextError(true);
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setContextLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [match.id]);
 
   async function handleAiAnalysis() {
     setAiLoading(true);
@@ -661,6 +785,16 @@ function MatchDetails({
                 </p>
               </div>
             </div>
+            {matchContext && (
+              <div className="mt-4 border-t border-line pt-3">
+                <p className="text-[10px] uppercase text-slate-500">
+                  Источник данных
+                </p>
+                <p className="mt-1 text-xs font-semibold text-slate-300">
+                  MatchLab
+                </p>
+              </div>
+            )}
           </div>
         </section>
       )}
@@ -724,20 +858,126 @@ function MatchDetails({
       )}
 
       {activeTab === "table" && (
-        <section className="animate-rise py-12 text-center">
-          <Trophy className="mx-auto h-7 w-7 text-slate-600" />
-          <p className="mt-4 text-sm font-semibold text-white">
-            Таблица для этого турнира пока недоступна.
-          </p>
+        <section className="animate-rise py-6">
+          {contextLoading && <MatchContextLoading />}
+
+          {!contextLoading && contextError && (
+            <div className="py-10 text-center">
+              <Trophy className="mx-auto h-7 w-7 text-slate-600" />
+              <p className="mt-4 text-sm font-semibold text-white">
+                Данные таблицы временно недоступны.
+              </p>
+            </div>
+          )}
+
+          {!contextLoading &&
+            !contextError &&
+            (!matchContext || matchContext.standings.length === 0) && (
+              <div className="py-10 text-center">
+                <Trophy className="mx-auto h-7 w-7 text-slate-600" />
+                <p className="mt-4 text-sm font-semibold text-white">
+                  Таблица для этого турнира пока недоступна.
+                </p>
+              </div>
+            )}
+
+          {!contextLoading &&
+            !contextError &&
+            matchContext &&
+            matchContext.standings.length > 0 && (
+              <div className="overflow-hidden rounded-lg border border-line bg-panel">
+                <div className="grid grid-cols-[minmax(0,1fr)_2.25rem_2.75rem_2.75rem] gap-2 border-b border-line px-3 py-2 text-[10px] font-semibold uppercase text-slate-500">
+                  <span>Команда</span>
+                  <span className="text-center">P</span>
+                  <span className="text-center">GD</span>
+                  <span className="text-center">PTS</span>
+                </div>
+                {matchContext.standings.map((row) => {
+                  const normalizedTeam = normalizeTeamLabel(row.team);
+                  const isSelectedTeam =
+                    normalizedTeam === normalizeTeamLabel(match.home) ||
+                    normalizedTeam === normalizeTeamLabel(match.away);
+
+                  return (
+                    <div
+                      key={`${row.rank}-${row.team}`}
+                      className={`grid grid-cols-[minmax(0,1fr)_2.25rem_2.75rem_2.75rem] items-center gap-2 border-t border-line/70 px-3 py-2.5 text-xs first:border-t-0 ${
+                        isSelectedTeam ? "bg-accent/[0.09]" : ""
+                      }`}
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="w-5 shrink-0 text-center font-semibold text-slate-500">
+                          {row.rank}
+                        </span>
+                        <span className="truncate font-semibold text-white">
+                          {row.team}
+                        </span>
+                      </div>
+                      <span className="text-center text-slate-300">
+                        {row.played ?? "—"}
+                      </span>
+                      <span className="text-center text-slate-300">
+                        {row.goal_diff ?? "—"}
+                      </span>
+                      <span className="text-center font-bold text-white">
+                        {row.points ?? "—"}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
         </section>
       )}
 
       {activeTab === "matches" && (
-        <section className="animate-rise py-12 text-center">
-          <CalendarDays className="mx-auto h-7 w-7 text-slate-600" />
-          <p className="mx-auto mt-4 max-w-72 text-sm font-semibold leading-6 text-white">
-            История и ближайшие матчи появятся на следующем этапе.
-          </p>
+        <section className="animate-rise py-6">
+          {contextLoading && <MatchContextLoading />}
+
+          {!contextLoading && contextError && (
+            <div className="py-10 text-center">
+              <CalendarDays className="mx-auto h-7 w-7 text-slate-600" />
+              <p className="mx-auto mt-4 max-w-72 text-sm font-semibold leading-6 text-white">
+                Данные матчей временно недоступны.
+              </p>
+            </div>
+          )}
+
+          {!contextLoading &&
+            !contextError &&
+            matchContext &&
+            matchContext.h2h.length === 0 &&
+            matchContext.home_recent.length === 0 &&
+            matchContext.away_recent.length === 0 &&
+            matchContext.upcoming.length === 0 && (
+              <div className="py-10 text-center">
+                <CalendarDays className="mx-auto h-7 w-7 text-slate-600" />
+                <p className="mx-auto mt-4 max-w-72 text-sm font-semibold leading-6 text-white">
+                  История и ближайшие матчи пока недоступны.
+                </p>
+              </div>
+            )}
+
+          {!contextLoading && !contextError && matchContext && (
+            <div className="space-y-6">
+              <MatchContextGroup
+                title="Очные встречи"
+                matches={matchContext.h2h}
+              />
+              <MatchContextGroup
+                title={`Последние матчи: ${match.home}`}
+                matches={matchContext.home_recent}
+              />
+              <MatchContextGroup
+                title={`Последние матчи: ${match.away}`}
+                matches={matchContext.away_recent}
+              />
+              <MatchContextGroup
+                title="Ближайшие матчи"
+                matches={matchContext.upcoming}
+              />
+            </div>
+          )}
         </section>
       )}
     </div>

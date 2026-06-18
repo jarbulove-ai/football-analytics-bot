@@ -21,6 +21,45 @@ export interface MatchResponse {
   error?: string;
 }
 
+export interface MatchContextMatch {
+  id: string;
+  date: string | null;
+  league: string;
+  home: string;
+  away: string;
+  home_score: number | null;
+  away_score: number | null;
+  status: string;
+}
+
+export interface MatchStandingRow {
+  rank: number;
+  team: string;
+  played: number | null;
+  wins: number | null;
+  draws: number | null;
+  losses: number | null;
+  goals_for: number | null;
+  goals_against: number | null;
+  goal_diff: number | null;
+  points: number | null;
+}
+
+export interface MatchContextResponse {
+  ok: true;
+  match_id: string;
+  home: string;
+  away: string;
+  league: string;
+  country: string;
+  kickoff: string | null;
+  standings: MatchStandingRow[];
+  h2h: MatchContextMatch[];
+  home_recent: MatchContextMatch[];
+  away_recent: MatchContextMatch[];
+  upcoming: MatchContextMatch[];
+}
+
 export interface MatchAiAnalysisResponse {
   ok: true;
   match_id: string;

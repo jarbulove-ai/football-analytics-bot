@@ -3,6 +3,7 @@ import type {
   AppConfig,
   MatchAiAnalysisErrorResponse,
   MatchAiAnalysisResponse,
+  MatchContextResponse,
   MatchListType,
   MatchResponse,
   MiniAppPaymentPackageCode,
@@ -51,6 +52,14 @@ async function apiRequest<T>(path: string): Promise<T> {
 
 export function getMatches(type: MatchListType): Promise<MatchResponse> {
   return apiRequest<MatchResponse>(`/api/matches/${type}`);
+}
+
+export function getMatchContext(
+  matchId: string,
+): Promise<MatchContextResponse> {
+  return apiRequest<MatchContextResponse>(
+    `/api/matches/${encodeURIComponent(matchId)}/context`,
+  );
 }
 
 export function getSubscription(

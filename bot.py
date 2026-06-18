@@ -6890,6 +6890,203 @@ def find_miniapp_match(match_id: str) -> dict | None:
     return None
 
 
+def format_miniapp_context_fixture(fixture_item: dict) -> dict | None:
+    fixture = fixture_item.get("fixture") or {}
+    teams = fixture_item.get("teams") or {}
+    league = fixture_item.get("league") or {}
+    goals = fixture_item.get("goals") or {}
+    fixture_id = fixture.get("id")
+    timestamp = fixture.get("timestamp")
+
+    if fixture_id is None:
+        return None
+
+    date = None
+    if timestamp is not None:
+        date = datetime.fromtimestamp(
+            timestamp,
+            tz=timezone.utc,
+        ).astimezone(ALMATY_TZ).isoformat()
+    elif fixture.get("date"):
+        date = str(fixture["date"])
+
+    return {
+        "id": str(fixture_id),
+        "date": date,
+        "league": league.get("name") or "",
+        "home": (teams.get("home") or {}).get("name") or "",
+        "away": (teams.get("away") or {}).get("name") or "",
+        "home_score": goals.get("home"),
+        "away_score": goals.get("away"),
+        "status": (fixture.get("status") or {}).get("short") or "",
+    }
+
+
+def format_miniapp_standing_row(row: dict) -> dict | None:
+    team = row.get("team") or {}
+    all_stats = row.get("all") or {}
+    goals = all_stats.get("goals") or {}
+    team_name = team.get("name") or ""
+    rank = row.get("rank")
+
+    if not team_name or rank is None:
+        return None
+
+    goals_for = goals.get("for")
+    goals_against = goals.get("against")
+    goal_diff = row.get("goalsDiff")
+    if (
+        goal_diff is None
+        and isinstance(goals_for, (int, float))
+        and isinstance(goals_against, (int, float))
+    ):
+        goal_diff = goals_for - goals_against
+
+    return {
+        "rank": rank,
+        "team": team_name,
+        "played": all_stats.get("played"),
+        "wins": all_stats.get("win"),
+        "draws": all_stats.get("draw"),
+        "losses": all_stats.get("lose"),
+        "goals_for": goals_for,
+        "goals_against": goals_against,
+        "goal_diff": goal_diff,
+        "points": row.get("points"),
+    }
+
+
+def get_miniapp_match_context(match: dict) -> dict:
+    match_id = str(match.get("id") or "")
+    fixture_item = {}
+
+    try:
+        fixture_response = request_api_football(
+            "/fixtures",
+            {
+                "id": match_id,
+                "timezone": "UTC",
+            },
+        )
+        if fixture_response:
+            fixture_item = fixture_response[0]
+    except Exception:
+        logger.warning(
+            "Mini App fixture context lookup failed: match_id=%s",
+            match_id,
+            exc_info=True,
+        )
+
+    teams = fixture_item.get("teams") or {}
+    league = fixture_item.get("league") or {}
+    home_team = teams.get("home") or {}
+    away_team = teams.get("away") or {}
+    home_team_id = home_team.get("id")
+    away_team_id = away_team.get("id")
+
+    standings = []
+    for row in get_fixture_league_standings(
+        league.get("id"),
+        league.get("season"),
+    ):
+        formatted_row = format_miniapp_standing_row(row)
+        if formatted_row:
+            standings.append(formatted_row)
+
+    h2h_fixtures = []
+    if home_team_id and away_team_id:
+        try:
+            h2h_fixtures = get_head_to_head_fixtures(
+                home_team_id,
+                away_team_id,
+            )
+        except Exception:
+            logger.warning(
+                "Mini App head-to-head lookup failed: match_id=%s",
+                match_id,
+                exc_info=True,
+            )
+
+    recent_fixtures = {}
+    upcoming_fixtures = {}
+    for side, team_id in (
+        ("home", home_team_id),
+        ("away", away_team_id),
+    ):
+        if not team_id:
+            recent_fixtures[side] = []
+            upcoming_fixtures[side] = []
+            continue
+
+        try:
+            recent_fixtures[side] = get_api_football_finished_fixtures(
+                team_id
+            )
+        except Exception:
+            logger.warning(
+                "Mini App recent fixtures lookup failed: "
+                "match_id=%s side=%s",
+                match_id,
+                side,
+                exc_info=True,
+            )
+            recent_fixtures[side] = []
+
+        try:
+            upcoming_fixtures[side] = get_api_football_next_fixtures(team_id)
+        except Exception:
+            logger.warning(
+                "Mini App upcoming fixtures lookup failed: "
+                "match_id=%s side=%s",
+                match_id,
+                side,
+                exc_info=True,
+            )
+            upcoming_fixtures[side] = []
+
+    def format_fixture_list(fixtures: list[dict]) -> list[dict]:
+        formatted_fixtures = []
+        for item in fixtures:
+            formatted_item = format_miniapp_context_fixture(item)
+            if formatted_item:
+                formatted_fixtures.append(formatted_item)
+        return formatted_fixtures
+
+    upcoming_by_id = {}
+    for item in (
+        upcoming_fixtures.get("home", [])
+        + upcoming_fixtures.get("away", [])
+    ):
+        formatted_item = format_miniapp_context_fixture(item)
+        if not formatted_item or formatted_item["id"] == match_id:
+            continue
+        upcoming_by_id[formatted_item["id"]] = formatted_item
+
+    upcoming = sorted(
+        upcoming_by_id.values(),
+        key=lambda item: item.get("date") or "",
+    )[:8]
+
+    return {
+        "ok": True,
+        "match_id": match_id,
+        "home": match.get("home") or home_team.get("name") or "",
+        "away": match.get("away") or away_team.get("name") or "",
+        "league": match.get("league") or league.get("name") or "",
+        "country": match.get("country") or league.get("country") or "",
+        "kickoff": match.get("kickoff"),
+        "standings": standings,
+        "h2h": format_fixture_list(h2h_fixtures),
+        "home_recent": format_fixture_list(
+            recent_fixtures.get("home", [])
+        ),
+        "away_recent": format_fixture_list(
+            recent_fixtures.get("away", [])
+        ),
+        "upcoming": upcoming,
+    }
+
+
 def build_miniapp_ai_match_data(match: dict) -> dict:
     fixture_id_text = str(match.get("id") or "")
     fixture_id = int(fixture_id_text) if fixture_id_text.isdigit() else None
@@ -7281,6 +7478,40 @@ def miniapp_matches_tomorrow():
 @miniapp_api.get("/api/matches/top")
 def miniapp_matches_top():
     return build_miniapp_matches_response("top")
+
+
+@miniapp_api.route(
+    "/api/matches/<match_id>/context",
+    methods=["GET", "OPTIONS"],
+)
+def miniapp_match_context(match_id: str):
+    if flask_request.method == "OPTIONS":
+        return "", 204
+
+    match = find_miniapp_match(match_id)
+    if not match:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "match_not_found",
+                "message": "Матч не найден или уже недоступен.",
+            }
+        ), 404
+
+    try:
+        return jsonify(get_miniapp_match_context(match))
+    except Exception:
+        logger.exception(
+            "Mini App match context request failed: match_id=%s",
+            match_id,
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "error": "match_context_unavailable",
+                "message": "Данные матча временно недоступны.",
+            }
+        ), 503
 
 
 @miniapp_api.route(
