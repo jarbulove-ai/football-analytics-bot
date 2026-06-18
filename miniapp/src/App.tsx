@@ -3,7 +3,6 @@ import {
   ArrowLeft,
   Bot,
   CalendarDays,
-  ChevronRight,
   CircleUserRound,
   Clock3,
   Crown,
@@ -48,6 +47,15 @@ const matchTabs: Array<{ id: MatchListType; label: string }> = [
   { id: "tomorrow", label: "Завтра" },
 ];
 
+type MatchDetailTab = "details" | "ai" | "table" | "matches";
+
+const matchDetailTabs: Array<{ id: MatchDetailTab; label: string }> = [
+  { id: "details", label: "Детали" },
+  { id: "ai", label: "AI-разбор" },
+  { id: "table", label: "Таблица" },
+  { id: "matches", label: "Матчи" },
+];
+
 const navigation = [
   { id: "home" as Screen, label: "Главная", icon: Home },
   { id: "matches" as Screen, label: "Матчи", icon: Activity },
@@ -88,9 +96,10 @@ function TeamLogo({
 }: {
   logo: string | null;
   name: string;
-  size?: "sm" | "md" | "lg";
+  size?: "xs" | "sm" | "md" | "lg";
 }) {
   const sizeClass = {
+    xs: "h-7 w-7 text-[10px]",
     sm: "h-8 w-8 text-xs",
     md: "h-11 w-11 text-sm",
     lg: "h-16 w-16 text-lg",
@@ -98,13 +107,17 @@ function TeamLogo({
 
   if (logo) {
     return (
-      <div
-        className={`${sizeClass} flex shrink-0 items-center justify-center rounded-full bg-white/95 p-1.5`}
-      >
+      <div className={`${sizeClass} relative shrink-0`}>
         <img
           src={logo}
           alt=""
-          className="h-full w-full object-contain"
+          className="absolute inset-0 h-full w-full scale-125 object-contain opacity-45 blur-md"
+          aria-hidden="true"
+        />
+        <img
+          src={logo}
+          alt=""
+          className="relative h-full w-full object-contain drop-shadow-[0_4px_10px_rgba(0,0,0,0.55)]"
           loading="lazy"
         />
       </div>
@@ -283,87 +296,59 @@ function HomeScreen({
 
 function MatchSkeleton() {
   return (
-    <div className="rounded-lg border border-line bg-panel p-4">
-      <div className="mb-5 flex items-center gap-3">
+    <div className="overflow-hidden rounded-lg border border-line bg-panel">
+      <div className="flex items-center gap-3 border-b border-line px-4 py-3">
         <div className="h-6 w-6 animate-pulseSoft rounded-full bg-white/10" />
         <div className="h-3 w-36 animate-pulseSoft rounded bg-white/10" />
       </div>
-      <div className="space-y-3">
-        <div className="flex items-center gap-3">
-          <div className="h-11 w-11 animate-pulseSoft rounded-full bg-white/10" />
-          <div className="h-4 w-32 animate-pulseSoft rounded bg-white/10" />
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="h-11 w-11 animate-pulseSoft rounded-full bg-white/10" />
-          <div className="h-4 w-28 animate-pulseSoft rounded bg-white/10" />
+      <div className="flex items-center gap-3 px-4 py-4">
+        <div className="h-8 w-10 animate-pulseSoft rounded bg-white/10" />
+        <div className="flex-1 space-y-3">
+          <div className="h-3 w-32 animate-pulseSoft rounded bg-white/10" />
+          <div className="h-3 w-28 animate-pulseSoft rounded bg-white/10" />
         </div>
       </div>
     </div>
   );
 }
 
-function MatchCard({
+function CompactMatchRow({
   match,
   onOpen,
-  index,
 }: {
   match: MatchItem;
   onOpen: (match: MatchItem) => void;
-  index: number;
 }) {
   const kickoff = formatKickoff(match.kickoff);
 
   return (
-    <article
-      className="animate-rise rounded-lg border border-line bg-panel p-4 shadow-card"
-      style={{ animationDelay: `${Math.min(index * 45, 225)}ms` }}
+    <button
+      type="button"
+      onClick={() => onOpen(match)}
+      className="grid w-full grid-cols-[3.25rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-line/80 px-4 py-3 text-left transition hover:bg-white/[0.035] active:bg-white/[0.06]"
     >
-      <div className="mb-4 flex items-center gap-2.5 border-b border-line pb-3">
-        <LeagueLogo logo={match.league_logo} name={match.league} />
-        <div className="min-w-0">
-          <p className="truncate text-xs font-semibold text-slate-200">
-            {match.league || "Турнир"}
-          </p>
-          <p className="truncate text-[11px] text-slate-500">
-            {match.country || "Страна не указана"}
-          </p>
-        </div>
-        <div className="ml-auto text-right">
-          <p className="text-sm font-bold text-white">{kickoff.time}</p>
-          <p className="text-[10px] uppercase text-slate-500">{kickoff.date}</p>
-        </div>
+      <div>
+        <p className="text-sm font-bold text-white">{kickoff.time}</p>
+        <p className="mt-0.5 text-[10px] text-slate-500">{kickoff.date}</p>
       </div>
-
-      <div className="space-y-3">
-        <div className="flex items-center gap-3">
-          <TeamLogo logo={match.home_logo} name={match.home} />
-          <p className="min-w-0 flex-1 truncate text-sm font-semibold text-white">
+      <div className="min-w-0 space-y-2">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <TeamLogo logo={match.home_logo} name={match.home} size="xs" />
+          <p className="truncate text-sm font-semibold text-white">
             {match.home || "Хозяева"}
           </p>
-          <span className="text-[10px] font-semibold uppercase text-slate-500">
-            Дома
-          </span>
         </div>
-        <div className="flex items-center gap-3">
-          <TeamLogo logo={match.away_logo} name={match.away} />
-          <p className="min-w-0 flex-1 truncate text-sm font-semibold text-white">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <TeamLogo logo={match.away_logo} name={match.away} size="xs" />
+          <p className="truncate text-sm font-semibold text-white">
             {match.away || "Гости"}
           </p>
-          <span className="text-[10px] font-semibold uppercase text-slate-500">
-            Гости
-          </span>
         </div>
       </div>
-
-      <button
-        type="button"
-        onClick={() => onOpen(match)}
-        className="mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-md bg-white/[0.06] text-sm font-semibold text-white transition hover:bg-white/10 active:scale-[0.99]"
-      >
-        Открыть
-        <ChevronRight className="h-4 w-4" />
-      </button>
-    </article>
+      <span className="rounded-full bg-white/[0.05] px-2 py-1 text-[10px] font-semibold text-slate-400">
+        Детали
+      </span>
+    </button>
   );
 }
 
@@ -379,6 +364,16 @@ function MatchesScreen({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const groupedMatches = useMemo(() => {
+    const groups = new Map<string, MatchItem[]>();
+    matches.forEach((match) => {
+      const leagueName = match.league || "Другие турниры";
+      const group = groups.get(leagueName) || [];
+      group.push(match);
+      groups.set(leagueName, group);
+    });
+    return Array.from(groups.entries());
+  }, [matches]);
 
   useEffect(() => {
     let active = true;
@@ -480,14 +475,41 @@ function MatchesScreen({
 
         {!loading &&
           !error &&
-          matches.map((match, index) => (
-            <MatchCard
-              key={match.id}
-              match={match}
-              index={index}
-              onOpen={onOpenMatch}
-            />
-          ))}
+          groupedMatches.map(([leagueName, leagueMatches], index) => {
+            const firstMatch = leagueMatches[0];
+            return (
+              <section
+                key={leagueName}
+                className="animate-rise overflow-hidden rounded-lg border border-line bg-panel shadow-card"
+                style={{ animationDelay: `${Math.min(index * 55, 220)}ms` }}
+              >
+                <div className="flex items-center gap-3 px-4 py-3">
+                  <LeagueLogo
+                    logo={firstMatch.league_logo}
+                    name={leagueName}
+                  />
+                  <div className="min-w-0">
+                    <h2 className="truncate text-sm font-bold text-white">
+                      {leagueName}
+                    </h2>
+                    <p className="truncate text-[11px] text-slate-500">
+                      {firstMatch.country || "Международный турнир"}
+                    </p>
+                  </div>
+                  <span className="ml-auto text-xs font-semibold text-slate-500">
+                    {leagueMatches.length}
+                  </span>
+                </div>
+                {leagueMatches.map((match) => (
+                  <CompactMatchRow
+                    key={match.id}
+                    match={match}
+                    onOpen={onOpenMatch}
+                  />
+                ))}
+              </section>
+            );
+          })}
       </div>
     </div>
   );
@@ -506,6 +528,8 @@ function MatchDetails({
     useState<MatchAiAnalysisResponse | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
+  const [activeTab, setActiveTab] =
+    useState<MatchDetailTab>("details");
 
   async function handleAiAnalysis() {
     setAiLoading(true);
@@ -559,13 +583,7 @@ function MatchDetails({
         </div>
       </div>
 
-      <section className="border-b border-line pb-7 text-center">
-        <div className="mb-6 flex items-center justify-center gap-3 text-xs text-slate-400">
-          <LeagueLogo logo={match.league_logo} name={match.league} />
-          <span>{match.league || "Турнир"}</span>
-          <span className="text-slate-700">•</span>
-          <span>{match.country}</span>
-        </div>
+      <section className="pb-6 text-center">
         <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-4">
           <div className="flex min-w-0 flex-col items-center">
             <TeamLogo logo={match.home_logo} name={match.home} size="lg" />
@@ -586,80 +604,142 @@ function MatchDetails({
         </div>
       </section>
 
-      <section className="py-6">
-        <div className="mb-3 flex items-center gap-2">
-          <Activity className="h-4 w-4 text-lime" />
-          <h2 className="text-sm font-bold text-white">Краткий обзор</h2>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="rounded-lg bg-panel p-3">
-            <p className="text-[10px] uppercase text-slate-500">Статус</p>
-            <p className="mt-1 text-sm font-semibold text-white">
-              Матч ожидается
-            </p>
-          </div>
-          <div className="rounded-lg bg-panel p-3">
-            <p className="text-[10px] uppercase text-slate-500">Источник</p>
-            <p className="mt-1 text-sm font-semibold text-white">MatchLab</p>
-          </div>
-        </div>
-      </section>
-
-      <section className="border-t border-line pt-6">
-        <div className="flex items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
-            <Bot className="h-5 w-5" />
-          </div>
-          <div>
-            <h2 className="text-sm font-bold text-white">
-              AI-разбор MatchLab
-            </h2>
-            <p className="mt-1 text-xs leading-5 text-slate-400">
-              Матчевый контекст, форма команд и аналитические сигналы.
-            </p>
-          </div>
-        </div>
-
-        {aiAnalysis && (
-          <div className="mt-5 rounded-lg border border-accent/20 bg-panel p-4">
-            <div className="whitespace-pre-line text-sm leading-6 text-slate-200">
-              {aiAnalysis.analysis}
-            </div>
-            <div className="mt-4 border-t border-line pt-3">
-              {aiAnalysis.is_admin && (
-                <p className="text-xs font-semibold text-lime">
-                  Админ-режим: AI-разборы не расходуются.
-                </p>
+      <div className="-mx-4 overflow-x-auto border-y border-line px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="flex min-w-max gap-1">
+          {matchDetailTabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className={`relative h-12 px-4 text-sm font-semibold transition ${
+                activeTab === tab.id
+                  ? "text-white"
+                  : "text-slate-500"
+              }`}
+            >
+              {tab.label}
+              {activeTab === tab.id && (
+                <span className="absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-lime" />
               )}
-              {typeof aiAnalysis.remaining_ai === "number" && (
-                <p className="text-xs font-semibold text-lime">
-                  Осталось AI-разборов: {aiAnalysis.remaining_ai}
-                </p>
-              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {activeTab === "details" && (
+        <section className="animate-rise py-6">
+          <div className="mb-4 flex items-center gap-2">
+            <LeagueLogo logo={match.league_logo} name={match.league} />
+            <div>
+              <h2 className="text-sm font-bold text-white">
+                {match.league || "Турнир"}
+              </h2>
+              <p className="text-xs text-slate-500">
+                {match.country || "Страна не указана"}
+              </p>
             </div>
           </div>
-        )}
-
-        {aiError && (
-          <div className="mt-5 rounded-lg border border-red-500/20 bg-red-500/[0.06] px-4 py-3 text-sm leading-5 text-red-200">
-            {aiError}
+          <div className="rounded-lg border border-line bg-panel p-4">
+            <p className="text-sm font-semibold text-white">
+              Матчевый контекст и базовая информация
+            </p>
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-[10px] uppercase text-slate-500">
+                  Начало
+                </p>
+                <p className="mt-1 text-sm font-semibold text-white">
+                  {kickoff.date}, {kickoff.time}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase text-slate-500">
+                  Статус
+                </p>
+                <p className="mt-1 text-sm font-semibold text-white">
+                  Матч ожидается
+                </p>
+              </div>
+            </div>
           </div>
-        )}
+        </section>
+      )}
 
-        <button
-          type="button"
-          onClick={handleAiAnalysis}
-          disabled={aiLoading}
-          className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white transition active:scale-[0.99] disabled:cursor-wait disabled:opacity-70"
-        >
-          {aiLoading ? (
-            <LoaderCircle className="h-4 w-4 animate-spin" />
-          ) : (
-            <Bot className="h-4 w-4" />
+      {activeTab === "ai" && (
+        <section className="animate-rise pt-6">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
+              <Bot className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-white">
+                AI-разбор MatchLab
+              </h2>
+              <p className="mt-1 text-xs leading-5 text-slate-400">
+                Матчевый контекст, форма команд и аналитические сигналы.
+              </p>
+            </div>
+          </div>
+
+          {aiAnalysis && (
+            <div className="mt-5 rounded-lg border border-accent/20 bg-panel p-4">
+              <div className="whitespace-pre-line text-sm leading-6 text-slate-200">
+                {aiAnalysis.analysis}
+              </div>
+              <div className="mt-4 border-t border-line pt-3">
+                {aiAnalysis.is_admin && (
+                  <p className="text-xs font-semibold text-lime">
+                    Админ-режим: AI-разборы не расходуются.
+                  </p>
+                )}
+                {typeof aiAnalysis.remaining_ai === "number" && (
+                  <p className="text-xs font-semibold text-lime">
+                    Осталось AI-разборов: {aiAnalysis.remaining_ai}
+                  </p>
+                )}
+              </div>
+            </div>
           )}
-          {aiLoading ? "AI-разбор готовится…" : "AI-разбор"}
-        </button>
-      </section>
+
+          {aiError && (
+            <div className="mt-5 rounded-lg border border-red-500/20 bg-red-500/[0.06] px-4 py-3 text-sm leading-5 text-red-200">
+              {aiError}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={handleAiAnalysis}
+            disabled={aiLoading}
+            className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white transition active:scale-[0.99] disabled:cursor-wait disabled:opacity-70"
+          >
+            {aiLoading ? (
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+            ) : (
+              <Bot className="h-4 w-4" />
+            )}
+            {aiLoading ? "AI-разбор готовится…" : "AI-разбор"}
+          </button>
+        </section>
+      )}
+
+      {activeTab === "table" && (
+        <section className="animate-rise py-12 text-center">
+          <Trophy className="mx-auto h-7 w-7 text-slate-600" />
+          <p className="mt-4 text-sm font-semibold text-white">
+            Таблица для этого турнира пока недоступна.
+          </p>
+        </section>
+      )}
+
+      {activeTab === "matches" && (
+        <section className="animate-rise py-12 text-center">
+          <CalendarDays className="mx-auto h-7 w-7 text-slate-600" />
+          <p className="mx-auto mt-4 max-w-72 text-sm font-semibold leading-6 text-white">
+            История и ближайшие матчи появятся на следующем этапе.
+          </p>
+        </section>
+      )}
     </div>
   );
 }
