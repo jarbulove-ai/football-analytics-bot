@@ -1372,7 +1372,11 @@ def approve_latest_payment_request(telegram_user_id: int) -> None:
                     SELECT id
                     FROM payment_requests
                     WHERE telegram_user_id = %s
-                    AND status IN ('receipt_received', 'pending')
+                    AND status IN (
+                        'receipt_received',
+                        'pending',
+                        'processing'
+                    )
                     ORDER BY created_at DESC
                     LIMIT 1
                 );
@@ -1382,6 +1386,82 @@ def approve_latest_payment_request(telegram_user_id: int) -> None:
         connection.commit()
     except Exception:
         logger.error("Failed to approve payment request", exc_info=True)
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def claim_payment_request_for_activation(
+    telegram_user_id: int,
+    package_code: str,
+) -> dict | None:
+    database_url = get_database_url()
+    if not database_url:
+        return None
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                UPDATE payment_requests
+                SET status = 'processing',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = (
+                    SELECT id
+                    FROM payment_requests
+                    WHERE telegram_user_id = %s
+                    AND package_code = %s
+                    AND status = 'receipt_received'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING *;
+                """,
+                (telegram_user_id, package_code),
+            )
+            payment_request = cursor.fetchone()
+        connection.commit()
+        return payment_request
+    except Exception:
+        logger.error(
+            "Failed to claim payment request for activation",
+            exc_info=True,
+        )
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def update_payment_request_status(
+    payment_request_id: int,
+    status: str,
+) -> None:
+    database_url = get_database_url()
+    if not database_url:
+        return
+
+    connection = None
+
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE payment_requests
+                SET status = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s;
+                """,
+                (status, payment_request_id),
+            )
+        connection.commit()
+    except Exception:
+        logger.error("Failed to update payment request status", exc_info=True)
     finally:
         if connection is not None:
             connection.close()
@@ -6835,6 +6915,25 @@ def notify_admins_about_miniapp_receipt(
     send_document_url = (
         f"https://api.telegram.org/bot{telegram_token}/sendDocument"
     )
+    if package_code == "ai_30":
+        button_text = "✅ Активировать 30 AI"
+    elif package_code == "premium_90":
+        button_text = "✅ Активировать 3 месяца"
+    else:
+        button_text = "✅ Активировать 1 месяц"
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": button_text,
+                    "callback_data": (
+                        "admin_pay_confirm:"
+                        f"{telegram_user_id}:{package_code}"
+                    ),
+                }
+            ]
+        ]
+    }
 
     for admin_id in ADMIN_TELEGRAM_IDS:
         try:
@@ -6844,6 +6943,7 @@ def notify_admins_about_miniapp_receipt(
                     data={
                         "chat_id": admin_id,
                         "caption": caption,
+                        "reply_markup": json.dumps(reply_markup),
                     },
                     files={
                         "document": (
@@ -6861,6 +6961,141 @@ def notify_admins_about_miniapp_receipt(
                 admin_id,
                 exc_info=True,
             )
+
+
+def activate_payment_package(
+    telegram_user_id: int,
+    package_code: str,
+) -> bool:
+    if package_code == "ai_30":
+        before_subscription = get_or_create_subscription(telegram_user_id)
+        before_credits = int(
+            before_subscription.get("extra_ai_credits") or 0
+        )
+        subscription = add_ai_limit(
+            telegram_user_id,
+            AI_PACK_30_LIMIT,
+        )
+        return int(
+            subscription.get("extra_ai_credits") or 0
+        ) >= before_credits + AI_PACK_30_LIMIT
+
+    if package_code == "premium_90":
+        days = PREMIUM_90_DAYS
+        ai_limit = PREMIUM_90_AI_LIMIT
+    elif package_code == "premium_30":
+        days = PREMIUM_30_DAYS
+        ai_limit = PREMIUM_30_AI_LIMIT
+    else:
+        return False
+
+    subscription = grant_premium(
+        telegram_user_id,
+        days,
+        ai_limit,
+    )
+    return (
+        is_premium_active(subscription)
+        and int(subscription.get("ai_limit_monthly") or 0) == ai_limit
+    )
+
+
+async def admin_payment_confirm_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.answer("Недоступно", show_alert=True)
+        return
+
+    callback_data = query.data or ""
+    parts = callback_data.split(":")
+    if len(parts) != 3 or parts[0] != "admin_pay_confirm":
+        await query.answer("Не удалось активировать", show_alert=True)
+        return
+
+    try:
+        telegram_user_id = int(parts[1])
+    except ValueError:
+        await query.answer("Не удалось активировать", show_alert=True)
+        return
+
+    package_code = parts[2]
+    if package_code not in PAYMENT_PACKAGES:
+        await query.answer("Не удалось активировать", show_alert=True)
+        return
+
+    payment_request = claim_payment_request_for_activation(
+        telegram_user_id,
+        package_code,
+    )
+    if not payment_request:
+        await query.answer("Уже обработано", show_alert=True)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            logger.debug(
+                "Failed to remove processed payment button",
+                exc_info=True,
+            )
+        return
+
+    payment_request_id = int(payment_request["id"])
+    try:
+        if not activate_payment_package(telegram_user_id, package_code):
+            raise RuntimeError("Payment package activation failed")
+    except Exception:
+        update_payment_request_status(
+            payment_request_id,
+            "receipt_received",
+        )
+        logger.exception(
+            "Admin payment activation failed: user_id=%s package=%s",
+            telegram_user_id,
+            package_code,
+        )
+        await query.answer(
+            "Не удалось активировать",
+            show_alert=True,
+        )
+        return
+
+    update_payment_request_status(payment_request_id, "approved")
+    log_user_event(
+        telegram_user_id,
+        "payment_approved",
+        {
+            "package_code": package_code,
+            "admin_id": admin_id,
+            "source": "miniapp_callback",
+        },
+    )
+
+    activated_at = datetime.now(ALMATY_TZ).strftime("%d.%m %H:%M")
+    current_caption = query.message.caption if query.message else ""
+    activated_caption = (
+        f"{current_caption}\n\n"
+        "✅ Доступ активирован\n"
+        f"Админ: {admin_id}\n"
+        f"Время: {activated_at}"
+    ).strip()
+
+    await query.answer("Доступ активирован")
+    try:
+        await query.edit_message_caption(
+            caption=activated_caption,
+            reply_markup=None,
+        )
+    except Exception:
+        logger.error(
+            "Failed to update activated payment message",
+            exc_info=True,
+        )
 
 
 @miniapp_api.get("/api/health")
@@ -7251,6 +7486,12 @@ def main() -> None:
     application.add_handler(CommandHandler("revoke_premium", revoke_premium_command))
     application.add_handler(CommandHandler("add_ai_limit", add_ai_limit_command))
     application.add_handler(CommandHandler("subscription", subscription_command))
+    application.add_handler(
+        CallbackQueryHandler(
+            admin_payment_confirm_callback,
+            pattern=r"^admin_pay_confirm:\d+:(ai_30|premium_30|premium_90)$",
+        )
+    )
 
     application.add_handler(
         MessageHandler(

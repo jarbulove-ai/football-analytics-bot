@@ -729,13 +729,15 @@ function ProfileScreen() {
                     ? "Telegram Mini App"
                     : "Тестовый режим"}
                 </p>
-                <p className="mt-1 text-[10px] leading-4 text-slate-500">
-                  Telegram SDK:{" "}
-                  {telegramIdentity.sdkAvailable ? "есть" : "нет"}
-                  {" · "}
-                  initData:{" "}
-                  {telegramIdentity.initDataAvailable ? "есть" : "нет"}
-                </p>
+                {profile.is_admin && (
+                  <p className="mt-1 text-[10px] leading-4 text-slate-500">
+                    Telegram SDK:{" "}
+                    {telegramIdentity.sdkAvailable ? "есть" : "нет"}
+                    {" · "}
+                    initData:{" "}
+                    {telegramIdentity.initDataAvailable ? "есть" : "нет"}
+                  </p>
+                )}
               </div>
               {profile.is_admin && (
                 <ShieldCheck className="ml-auto h-5 w-5 text-lime" />
@@ -860,6 +862,15 @@ function SubscriptionScreen() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function returnToPackages() {
+    setSelectedPackage(null);
+    setReceiptFile(null);
+    setReceiptError("");
+    setReceiptSuccess(null);
+    setReceiptLoading(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   async function handleReceiptSubmit() {
     if (!selectedPackage || !receiptFile) {
       setReceiptError("Загрузите PDF-чек.");
@@ -916,7 +927,7 @@ function SubscriptionScreen() {
         <AppHeader compact />
         <button
           type="button"
-          onClick={() => setSelectedPackage(null)}
+          onClick={returnToPackages}
           className="mb-5 flex items-center gap-2 text-sm font-semibold text-slate-300"
         >
           <ArrowLeft className="h-4 w-4" />
@@ -955,58 +966,96 @@ function SubscriptionScreen() {
         </section>
 
         <section className="mt-4 rounded-lg border border-line bg-panel p-5">
-          <div className="flex items-center gap-3">
-            <FileText className="h-5 w-5 text-accent" />
+          {receiptSuccess ? (
             <div>
-              <p className="text-sm font-bold text-white">PDF-чек</p>
-              <p className="text-xs text-slate-500">
-                Выберите файл после оплаты
+              <div className="flex h-11 w-11 items-center justify-center rounded-full bg-lime/10 text-lime">
+                <ShieldCheck className="h-5 w-5" />
+              </div>
+              <h2 className="mt-4 text-lg font-bold text-white">
+                Чек отправлен на проверку
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-slate-400">
+                После проверки доступ будет активирован админом. Обычно это
+                занимает немного времени.
               </p>
+              <div className="mt-5 space-y-3 rounded-lg bg-white/[0.03] p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-xs text-slate-500">Пакет</span>
+                  <span className="text-right text-sm font-semibold text-white">
+                    {receiptSuccess.package_title}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-xs text-slate-500">Сумма</span>
+                  <span className="text-sm font-semibold text-white">
+                    {formatPrice(receiptSuccess.amount)} ₸
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-xs text-slate-500">Статус</span>
+                  <span className="text-sm font-semibold text-gold">
+                    На проверке
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={returnToPackages}
+                className="mt-5 h-11 w-full rounded-md bg-white/[0.06] text-sm font-bold text-white transition active:scale-[0.99]"
+              >
+                Вернуться к тарифам
+              </button>
             </div>
-          </div>
-          <label className="mt-4 flex min-h-24 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-slate-600 bg-white/[0.02] px-4 text-center">
-            <Upload className="h-5 w-5 text-slate-400" />
-            <span className="mt-2 text-sm font-semibold text-slate-200">
-              {receiptFile ? receiptFile.name : "Выбрать PDF-файл"}
-            </span>
-            <input
-              type="file"
-              accept="application/pdf,.pdf"
-              className="sr-only"
-              onChange={(event) => {
-                setReceiptFile(event.target.files?.[0] || null);
-                setReceiptError("");
-                setReceiptSuccess(null);
-              }}
-            />
-          </label>
+          ) : (
+            <>
+              <div className="flex items-center gap-3">
+                <FileText className="h-5 w-5 text-accent" />
+                <div>
+                  <p className="text-sm font-bold text-white">PDF-чек</p>
+                  <p className="text-xs text-slate-500">
+                    Выберите файл после оплаты
+                  </p>
+                </div>
+              </div>
+              <label className="mt-4 flex min-h-24 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-slate-600 bg-white/[0.02] px-4 text-center">
+                <Upload className="h-5 w-5 text-slate-400" />
+                <span className="mt-2 text-sm font-semibold text-slate-200">
+                  {receiptFile ? receiptFile.name : "Выбрать PDF-файл"}
+                </span>
+                <input
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  className="sr-only"
+                  onChange={(event) => {
+                    setReceiptFile(event.target.files?.[0] || null);
+                    setReceiptError("");
+                    setReceiptSuccess(null);
+                  }}
+                />
+              </label>
 
-          {receiptError && (
-            <p className="mt-4 rounded-md bg-red-500/[0.08] px-3 py-2 text-sm text-red-200">
-              {receiptError}
-            </p>
+              {receiptError && (
+                <p className="mt-4 rounded-md bg-red-500/[0.08] px-3 py-2 text-sm text-red-200">
+                  {receiptError}
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={handleReceiptSubmit}
+                disabled={receiptLoading}
+                className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {receiptLoading ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Upload className="h-4 w-4" />
+                )}
+                {receiptLoading
+                  ? "Чек отправляется…"
+                  : "Отправить PDF-чек"}
+              </button>
+            </>
           )}
-          {receiptSuccess && (
-            <p className="mt-4 rounded-md bg-lime/[0.08] px-3 py-2 text-sm leading-5 text-lime">
-              {receiptSuccess.message}
-            </p>
-          )}
-
-          <button
-            type="button"
-            onClick={handleReceiptSubmit}
-            disabled={receiptLoading || Boolean(receiptSuccess)}
-            className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {receiptLoading ? (
-              <LoaderCircle className="h-4 w-4 animate-spin" />
-            ) : (
-              <Upload className="h-4 w-4" />
-            )}
-            {receiptLoading
-              ? "Чек отправляется…"
-              : "Отправить PDF-чек"}
-          </button>
         </section>
       </div>
     );
