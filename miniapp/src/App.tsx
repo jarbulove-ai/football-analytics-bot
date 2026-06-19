@@ -926,39 +926,143 @@ function StandingsTable({
   );
 }
 
+type BracketStage =
+  | "round-of-32"
+  | "round-of-16"
+  | "quarterfinal"
+  | "semifinal"
+  | "final";
+
+const bracketStages: Array<{ id: BracketStage; label: string }> = [
+  { id: "round-of-32", label: "1/16" },
+  { id: "round-of-16", label: "1/8" },
+  { id: "quarterfinal", label: "1/4" },
+  { id: "semifinal", label: "Полуфинал" },
+  { id: "final", label: "Финал" },
+];
+
+const bracketStageColumns: Record<BracketStage, [string, string, string]> = {
+  "round-of-32": ["1/16 финала", "1/8 финала", "1/4 финала"],
+  "round-of-16": ["1/8 финала", "1/4 финала", "1/2 финала"],
+  quarterfinal: ["1/4 финала", "Полуфинал", "Финал"],
+  semifinal: ["Полуфинал", "Финал", "Победитель"],
+  final: ["Финал", "Победитель", "Трофей"],
+};
+
+function BracketMatchPlaceholder({
+  labels,
+  className,
+}: {
+  labels: string[];
+  className: string;
+}) {
+  return (
+    <div
+      className={`absolute overflow-hidden rounded-lg border border-line bg-panelSoft shadow-card ${className}`}
+    >
+      {labels.map((label, index) => (
+        <div
+          key={`${label}-${index}`}
+          className="flex h-10 items-center gap-2 border-t border-line/80 px-3 first:border-t-0"
+        >
+          <span className="h-5 w-5 shrink-0 rounded-full border border-white/[0.06] bg-white/[0.04]" />
+          <span className="truncate text-xs font-semibold text-slate-300">
+            {label}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TournamentBracketPlaceholder() {
-  const stages = ["1/8 финала", "1/4 финала", "1/2 финала", "Финал"];
+  const [activeStage, setActiveStage] =
+    useState<BracketStage>("round-of-16");
+  const stageColumns = bracketStageColumns[activeStage];
 
   return (
-    <section className="animate-rise rounded-lg border border-line bg-panel p-4">
-      <div className="flex items-start gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-lime/10 text-lime">
-          <Trophy className="h-5 w-5" />
+    <section className="animate-rise">
+      <div className="flex items-start gap-3 px-1">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white/[0.04] text-slate-300">
+          <Trophy className="h-5 w-5" strokeWidth={1.8} />
         </div>
         <div>
           <h2 className="text-base font-bold text-white">Сетка плей-офф</h2>
           <p className="mt-1 text-sm leading-6 text-slate-400">
-            Сетка появится после формирования матчей на выбывание. Пока
-            доступны матчи и турнирная таблица.
+            Сетка появится после формирования матчей на выбывание. Сейчас
+            показан пример структуры.
           </p>
         </div>
       </div>
 
-      <div className="mt-5 grid grid-cols-2 overflow-hidden rounded-lg border border-line">
-        {stages.map((stage, index) => (
-          <div
-            key={stage}
-            className={`min-h-24 p-3 ${
-              index % 2 === 1 ? "border-l border-line" : ""
-            } ${index >= 2 ? "border-t border-line" : ""}`}
-          >
-            <p className="text-xs font-semibold text-slate-300">{stage}</p>
-            <div className="mt-3 space-y-2">
-              <span className="block h-2 rounded-full bg-white/[0.05]" />
-              <span className="block h-2 w-3/4 rounded-full bg-white/[0.035]" />
-            </div>
+      <div className="-mx-4 mt-5 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="flex min-w-max gap-2">
+          {bracketStages.map((stage) => (
+            <button
+              key={stage.id}
+              type="button"
+              onClick={() => setActiveStage(stage.id)}
+              aria-pressed={activeStage === stage.id}
+              className={`h-9 rounded-full px-4 text-xs font-semibold transition ${
+                activeStage === stage.id
+                  ? "bg-white text-slate-950"
+                  : "border border-line bg-panel text-slate-400 hover:text-white"
+              }`}
+            >
+              {stage.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="-mx-4 mt-4 overflow-x-auto px-4 pb-4 [scrollbar-width:thin] [scrollbar-color:rgba(148,163,184,0.25)_transparent]">
+        <div className="min-w-[752px] rounded-lg border border-line bg-panel/70 p-4">
+          <div className="grid w-[718px] grid-cols-[190px_190px_190px] gap-x-[74px]">
+            {stageColumns.map((stage) => (
+              <p
+                key={stage}
+                className="text-[10px] font-semibold uppercase text-slate-500"
+              >
+                {stage}
+              </p>
+            ))}
           </div>
-        ))}
+
+          <div className="relative mt-3 h-[274px] w-[718px]">
+            <BracketMatchPlaceholder
+              labels={["Участник 1", "Участник 2"]}
+              className="left-0 top-3 w-[190px]"
+            />
+            <BracketMatchPlaceholder
+              labels={["Участник 3", "Участник 4"]}
+              className="left-0 top-[175px] w-[190px]"
+            />
+            <BracketMatchPlaceholder
+              labels={["Победитель пары", "Победитель пары"]}
+              className="left-[264px] top-[94px] w-[190px]"
+            />
+            <BracketMatchPlaceholder
+              labels={["Финалист"]}
+              className="left-[528px] top-[114px] w-[190px]"
+            />
+
+            <span className="absolute left-[190px] top-[52px] w-9 border-t border-line" />
+            <span className="absolute left-[190px] top-[214px] w-9 border-t border-line" />
+            <span className="absolute left-[226px] top-[52px] h-[162px] border-l border-line" />
+            <span className="absolute left-[226px] top-[133px] w-[38px] border-t border-line" />
+            <span className="absolute left-[454px] top-[133px] w-[74px] border-t border-line" />
+            <span className="absolute left-[222px] top-[129px] h-2 w-2 rounded-full border border-line bg-panel" />
+            <span className="absolute left-[524px] top-[129px] h-2 w-2 rounded-full border border-line bg-panel" />
+          </div>
+
+          <div className="flex items-center gap-2 border-t border-line pt-3">
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-slate-600" />
+            <p className="text-[10px] leading-4 text-slate-500">
+              Структура демонстрационная, участники будут добавлены после
+              формирования этапа.
+            </p>
+          </div>
+        </div>
       </div>
     </section>
   );
