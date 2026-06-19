@@ -56,7 +56,7 @@ const matchTabs: Array<{ id: MatchListType; label: string }> = [
 
 type MatchDetailTab = "details" | "ai" | "table" | "matches";
 type MatchesView = "matches" | "leagues";
-type TournamentTab = "overview" | "matches" | "standings";
+type TournamentTab = "overview" | "matches" | "standings" | "bracket";
 
 interface TournamentSelection {
   league: string;
@@ -163,6 +163,25 @@ function getStandingZoneStyle(description: string) {
     rowClass: "",
     dotClass: "bg-slate-500",
   };
+}
+
+function isKnockoutLikeTournament(leagueName: string) {
+  const normalizedName = leagueName.trim().toLocaleLowerCase("ru-RU");
+  const knockoutTournamentTerms = [
+    "world cup",
+    "champions league",
+    "europa league",
+    "conference league",
+    "cup",
+    "кубок",
+    "лига чемпионов",
+    "лига европы",
+    "лига конференций",
+  ];
+
+  return knockoutTournamentTerms.some((term) =>
+    normalizedName.includes(term),
+  );
 }
 
 function getRelevantMatchStandings(
@@ -907,6 +926,44 @@ function StandingsTable({
   );
 }
 
+function TournamentBracketPlaceholder() {
+  const stages = ["1/8 финала", "1/4 финала", "1/2 финала", "Финал"];
+
+  return (
+    <section className="animate-rise rounded-lg border border-line bg-panel p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-lime/10 text-lime">
+          <Trophy className="h-5 w-5" />
+        </div>
+        <div>
+          <h2 className="text-base font-bold text-white">Сетка плей-офф</h2>
+          <p className="mt-1 text-sm leading-6 text-slate-400">
+            Сетка появится после формирования матчей на выбывание. Пока
+            доступны матчи и турнирная таблица.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-5 grid grid-cols-2 overflow-hidden rounded-lg border border-line">
+        {stages.map((stage, index) => (
+          <div
+            key={stage}
+            className={`min-h-24 p-3 ${
+              index % 2 === 1 ? "border-l border-line" : ""
+            } ${index >= 2 ? "border-t border-line" : ""}`}
+          >
+            <p className="text-xs font-semibold text-slate-300">{stage}</p>
+            <div className="mt-3 space-y-2">
+              <span className="block h-2 rounded-full bg-white/[0.05]" />
+              <span className="block h-2 w-3/4 rounded-full bg-white/[0.035]" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function TournamentDetails({
   tournament,
   onBack,
@@ -943,6 +1000,14 @@ function TournamentDetails({
           .filter(Boolean),
       ).size
     : 0;
+  const tournamentTabs: Array<{ id: TournamentTab; label: string }> = [
+    { id: "overview", label: "Обзор" },
+    { id: "matches", label: "Матчи" },
+    { id: "standings", label: "Турнирная таблица" },
+    ...(isKnockoutLikeTournament(tournament.league)
+      ? [{ id: "bracket" as TournamentTab, label: "Сетка" }]
+      : []),
+  ];
 
   useEffect(() => {
     let active = true;
@@ -1011,14 +1076,7 @@ function TournamentDetails({
 
       <div className="-mx-4 mb-5 overflow-x-auto border-y border-line px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div className="flex min-w-max gap-1">
-          {[
-            { id: "overview" as TournamentTab, label: "Обзор" },
-            { id: "matches" as TournamentTab, label: "Матчи" },
-            {
-              id: "standings" as TournamentTab,
-              label: "Турнирная таблица",
-            },
-          ].map((tab) => (
+          {tournamentTabs.map((tab) => (
             <button
               key={tab.id}
               type="button"
@@ -1181,6 +1239,8 @@ function TournamentDetails({
             )}
         </section>
       )}
+
+      {activeTab === "bracket" && <TournamentBracketPlaceholder />}
     </div>
   );
 }
