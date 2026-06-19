@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   Bot,
   CalendarDays,
+  ChevronRight,
   CircleUserRound,
   Clock3,
   Crown,
@@ -52,6 +53,14 @@ const matchTabs: Array<{ id: MatchListType; label: string }> = [
 ];
 
 type MatchDetailTab = "details" | "ai" | "table" | "matches";
+type TournamentTab = "matches" | "standings";
+
+interface TournamentSelection {
+  league: string;
+  country: string;
+  leagueLogo: string | null;
+  matches: MatchItem[];
+}
 
 const matchDetailTabs: Array<{ id: MatchDetailTab; label: string }> = [
   { id: "details", label: "Детали" },
@@ -151,6 +160,27 @@ function getStandingZoneStyle(description: string) {
     rowClass: "",
     dotClass: "bg-slate-500",
   };
+}
+
+function getRelevantMatchStandings(
+  rows: MatchStandingRow[],
+  matchGroup: string,
+) {
+  const groupNames = new Set(
+    rows.map((row) => row.group.trim()).filter(Boolean),
+  );
+  const normalizedMatchGroup = matchGroup.trim().toLocaleLowerCase("en-US");
+
+  if (groupNames.size <= 1 || !normalizedMatchGroup) {
+    return rows;
+  }
+
+  const filteredRows = rows.filter(
+    (row) =>
+      row.group.trim().toLocaleLowerCase("en-US") === normalizedMatchGroup,
+  );
+
+  return filteredRows.length > 0 ? filteredRows : rows;
 }
 
 function TeamLogo({
@@ -419,9 +449,11 @@ function CompactMatchRow({
 function MatchesScreen({
   initialType,
   onOpenMatch,
+  onOpenTournament,
 }: {
   initialType: MatchListType;
   onOpenMatch: (match: MatchItem) => void;
+  onOpenTournament: (tournament: TournamentSelection) => void;
 }) {
   const [activeType, setActiveType] = useState<MatchListType>(initialType);
   const [matches, setMatches] = useState<MatchItem[]>([]);
@@ -547,7 +579,19 @@ function MatchesScreen({
                 className="animate-rise overflow-hidden rounded-lg border border-line bg-panel shadow-card"
                 style={{ animationDelay: `${Math.min(index * 55, 220)}ms` }}
               >
-                <div className="flex items-center gap-3 px-4 py-3">
+                <button
+                  type="button"
+                  onClick={() =>
+                    onOpenTournament({
+                      league: leagueName,
+                      country:
+                        firstMatch.country || "Международный турнир",
+                      leagueLogo: firstMatch.league_logo,
+                      matches: leagueMatches,
+                    })
+                  }
+                  className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-white/[0.035] active:bg-white/[0.06]"
+                >
                   <LeagueLogo
                     logo={firstMatch.league_logo}
                     name={leagueName}
@@ -560,10 +604,13 @@ function MatchesScreen({
                       {firstMatch.country || "Международный турнир"}
                     </p>
                   </div>
-                  <span className="ml-auto text-xs font-semibold text-slate-500">
-                    {leagueMatches.length}
-                  </span>
-                </div>
+                  <div className="ml-auto flex items-center gap-2">
+                    <span className="text-xs font-semibold text-slate-500">
+                      {leagueMatches.length}
+                    </span>
+                    <ChevronRight className="h-4 w-4 text-slate-600" />
+                  </div>
+                </button>
                 {leagueMatches.map((match) => (
                   <CompactMatchRow
                     key={match.id}
@@ -646,6 +693,245 @@ function MatchContextGroup({
   );
 }
 
+function StandingsTable({
+  rows,
+  highlightedTeams = [],
+}: {
+  rows: MatchStandingRow[];
+  highlightedTeams?: string[];
+}) {
+  const normalizedHighlightedTeams = new Set(
+    highlightedTeams.map(normalizeTeamLabel),
+  );
+
+  return (
+    <div className="space-y-5">
+      {groupStandingsByGroup(rows).map(([groupName, groupRows]) => {
+        const descriptions = Array.from(
+          new Set(
+            groupRows
+              .map((row) => row.description.trim())
+              .filter(Boolean),
+          ),
+        );
+
+        return (
+          <section key={groupName}>
+            <h2 className="mb-2 text-sm font-bold text-white">{groupName}</h2>
+            <div className="overflow-hidden rounded-lg border border-line bg-panel">
+              <div className="grid grid-cols-[minmax(7rem,1fr)_1.5rem_1.5rem_1.5rem_1.5rem_3rem_2rem] items-center gap-1 border-b border-line px-2 py-2 text-[9px] font-semibold uppercase text-slate-500">
+                <span>Команда</span>
+                <span className="text-center">P</span>
+                <span className="text-center">W</span>
+                <span className="text-center">D</span>
+                <span className="text-center">L</span>
+                <span className="text-center">GLS</span>
+                <span className="text-center">PTS</span>
+              </div>
+              {groupRows.map((row) => {
+                const isSelectedTeam = normalizedHighlightedTeams.has(
+                  normalizeTeamLabel(row.team),
+                );
+                const zoneStyle = getStandingZoneStyle(row.description);
+
+                return (
+                  <div
+                    key={`${groupName}-${row.rank}-${row.team}`}
+                    className={`grid grid-cols-[minmax(7rem,1fr)_1.5rem_1.5rem_1.5rem_1.5rem_3rem_2rem] items-center gap-1 border-t border-line/70 px-2 py-2.5 text-[11px] first:border-t-0 ${zoneStyle.rowClass} ${
+                      isSelectedTeam ? "bg-accent/[0.09]" : ""
+                    }`}
+                  >
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="w-4 shrink-0 text-center font-semibold text-slate-500">
+                        {row.rank}
+                      </span>
+                      <span className="truncate font-semibold text-white">
+                        {row.team}
+                      </span>
+                    </div>
+                    <span className="text-center text-slate-300">
+                      {row.played ?? "—"}
+                    </span>
+                    <span className="text-center text-slate-300">
+                      {row.wins ?? "—"}
+                    </span>
+                    <span className="text-center text-slate-300">
+                      {row.draws ?? "—"}
+                    </span>
+                    <span className="text-center text-slate-300">
+                      {row.losses ?? "—"}
+                    </span>
+                    <span className="text-center text-slate-300">
+                      {row.goals_for ?? "—"}:{row.goals_against ?? "—"}
+                    </span>
+                    <span className="text-center font-bold text-white">
+                      {row.points ?? "—"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {descriptions.length > 0 && (
+              <div className="mt-2 space-y-1.5 px-1">
+                {descriptions.map((description) => {
+                  const zoneStyle = getStandingZoneStyle(description);
+                  return (
+                    <div
+                      key={description}
+                      className="flex items-start gap-2 text-[10px] leading-4 text-slate-500"
+                    >
+                      <span
+                        className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${zoneStyle.dotClass}`}
+                      />
+                      <span>{description}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function TournamentDetails({
+  tournament,
+  onBack,
+  onOpenMatch,
+}: {
+  tournament: TournamentSelection;
+  onBack: () => void;
+  onOpenMatch: (match: MatchItem) => void;
+}) {
+  const [activeTab, setActiveTab] = useState<TournamentTab>("matches");
+  const [context, setContext] = useState<MatchContextResponse | null>(null);
+  const [contextLoading, setContextLoading] = useState(true);
+  const [contextError, setContextError] = useState(false);
+  const firstMatch = tournament.matches[0];
+
+  useEffect(() => {
+    let active = true;
+    if (!firstMatch) {
+      setContextLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+
+    setContextLoading(true);
+    setContextError(false);
+    getMatchContext(firstMatch.id)
+      .then((response) => {
+        if (active) {
+          setContext(response);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setContextError(true);
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setContextLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [firstMatch?.id]);
+
+  return (
+    <div className="animate-rise">
+      <div className="mb-6 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onBack}
+          className="flex h-10 w-10 items-center justify-center rounded-lg bg-panel text-white"
+          aria-label="Назад"
+        >
+          <ArrowLeft className="h-5 w-5" />
+        </button>
+        <LeagueLogo logo={tournament.leagueLogo} name={tournament.league} />
+        <div className="min-w-0">
+          <h1 className="truncate text-base font-bold text-white">
+            {tournament.league}
+          </h1>
+          <p className="truncate text-xs text-slate-500">
+            {tournament.country}
+          </p>
+        </div>
+      </div>
+
+      <div className="mb-5 grid grid-cols-2 rounded-lg bg-panel p-1">
+        {[
+          { id: "matches" as TournamentTab, label: "Матчи" },
+          { id: "standings" as TournamentTab, label: "Таблицы" },
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            className={`h-10 rounded-md text-sm font-semibold transition ${
+              activeTab === tab.id
+                ? "bg-accent text-white"
+                : "text-slate-400"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "matches" && (
+        <section className="overflow-hidden rounded-lg border border-line bg-panel">
+          {tournament.matches.map((match) => (
+            <CompactMatchRow
+              key={match.id}
+              match={match}
+              onOpen={onOpenMatch}
+            />
+          ))}
+        </section>
+      )}
+
+      {activeTab === "standings" && (
+        <section>
+          {contextLoading && <MatchContextLoading />}
+          {!contextLoading && contextError && (
+            <div className="py-10 text-center">
+              <Trophy className="mx-auto h-7 w-7 text-slate-600" />
+              <p className="mt-4 text-sm font-semibold text-white">
+                Таблица турнира временно недоступна.
+              </p>
+            </div>
+          )}
+          {!contextLoading &&
+            !contextError &&
+            (!context || context.standings.length === 0) && (
+              <div className="py-10 text-center">
+                <Trophy className="mx-auto h-7 w-7 text-slate-600" />
+                <p className="mt-4 text-sm font-semibold text-white">
+                  Таблица турнира пока недоступна.
+                </p>
+              </div>
+            )}
+          {!contextLoading &&
+            !contextError &&
+            context &&
+            context.standings.length > 0 && (
+              <StandingsTable rows={context.standings} />
+            )}
+        </section>
+      )}
+    </div>
+  );
+}
+
 function MatchDetails({
   match,
   onBack,
@@ -665,6 +951,16 @@ function MatchDetails({
     useState<MatchContextResponse | null>(null);
   const [contextLoading, setContextLoading] = useState(true);
   const [contextError, setContextError] = useState(false);
+  const relevantStandings = useMemo(
+    () =>
+      matchContext
+        ? getRelevantMatchStandings(
+            matchContext.standings,
+            matchContext.match_group,
+          )
+        : [],
+    [matchContext],
+  );
 
   useEffect(() => {
     let active = true;
@@ -924,110 +1220,10 @@ function MatchDetails({
             !contextError &&
             matchContext &&
             matchContext.standings.length > 0 && (
-              <div className="space-y-5">
-                {groupStandingsByGroup(matchContext.standings).map(
-                  ([groupName, groupRows]) => {
-                    const descriptions = Array.from(
-                      new Set(
-                        groupRows
-                          .map((row) => row.description.trim())
-                          .filter(Boolean),
-                      ),
-                    );
-
-                    return (
-                      <section key={groupName}>
-                        <h2 className="mb-2 text-sm font-bold text-white">
-                          {groupName}
-                        </h2>
-                        <div className="overflow-hidden rounded-lg border border-line bg-panel">
-                          <div className="grid grid-cols-[minmax(7rem,1fr)_1.5rem_1.5rem_1.5rem_1.5rem_3rem_2rem] items-center gap-1 border-b border-line px-2 py-2 text-[9px] font-semibold uppercase text-slate-500">
-                            <span>Команда</span>
-                            <span className="text-center">P</span>
-                            <span className="text-center">W</span>
-                            <span className="text-center">D</span>
-                            <span className="text-center">L</span>
-                            <span className="text-center">GLS</span>
-                            <span className="text-center">PTS</span>
-                          </div>
-                          {groupRows.map((row) => {
-                            const normalizedTeam = normalizeTeamLabel(
-                              row.team,
-                            );
-                            const isSelectedTeam =
-                              normalizedTeam ===
-                                normalizeTeamLabel(match.home) ||
-                              normalizedTeam ===
-                                normalizeTeamLabel(match.away);
-                            const zoneStyle = getStandingZoneStyle(
-                              row.description,
-                            );
-
-                            return (
-                              <div
-                                key={`${groupName}-${row.rank}-${row.team}`}
-                                className={`grid grid-cols-[minmax(7rem,1fr)_1.5rem_1.5rem_1.5rem_1.5rem_3rem_2rem] items-center gap-1 border-t border-line/70 px-2 py-2.5 text-[11px] first:border-t-0 ${zoneStyle.rowClass} ${
-                                  isSelectedTeam
-                                    ? "bg-accent/[0.09]"
-                                    : ""
-                                }`}
-                              >
-                                <div className="flex min-w-0 items-center gap-1.5">
-                                  <span className="w-4 shrink-0 text-center font-semibold text-slate-500">
-                                    {row.rank}
-                                  </span>
-                                  <span className="truncate font-semibold text-white">
-                                    {row.team}
-                                  </span>
-                                </div>
-                                <span className="text-center text-slate-300">
-                                  {row.played ?? "—"}
-                                </span>
-                                <span className="text-center text-slate-300">
-                                  {row.wins ?? "—"}
-                                </span>
-                                <span className="text-center text-slate-300">
-                                  {row.draws ?? "—"}
-                                </span>
-                                <span className="text-center text-slate-300">
-                                  {row.losses ?? "—"}
-                                </span>
-                                <span className="text-center text-slate-300">
-                                  {row.goals_for ?? "—"}:
-                                  {row.goals_against ?? "—"}
-                                </span>
-                                <span className="text-center font-bold text-white">
-                                  {row.points ?? "—"}
-                                </span>
-                              </div>
-                            );
-                          })}
-                        </div>
-
-                        {descriptions.length > 0 && (
-                          <div className="mt-2 space-y-1.5 px-1">
-                            {descriptions.map((description) => {
-                              const zoneStyle =
-                                getStandingZoneStyle(description);
-                              return (
-                                <div
-                                  key={description}
-                                  className="flex items-start gap-2 text-[10px] leading-4 text-slate-500"
-                                >
-                                  <span
-                                    className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${zoneStyle.dotClass}`}
-                                  />
-                                  <span>{description}</span>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </section>
-                    );
-                  },
-                )}
-              </div>
+              <StandingsTable
+                rows={relevantStandings}
+                highlightedTeams={[match.home, match.away]}
+              />
             )}
         </section>
       )}
@@ -1618,6 +1814,8 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>(getInitialScreenFromUrl);
   const [matchType, setMatchType] = useState<MatchListType>("top");
   const [selectedMatch, setSelectedMatch] = useState<MatchItem | null>(null);
+  const [selectedTournament, setSelectedTournament] =
+    useState<TournamentSelection | null>(null);
 
   useEffect(() => {
     const telegramWebApp = window.Telegram?.WebApp;
@@ -1630,6 +1828,7 @@ export default function App() {
 
   function navigate(nextScreen: Screen) {
     setSelectedMatch(null);
+    setSelectedTournament(null);
     setScreen(nextScreen);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -1647,6 +1846,15 @@ export default function App() {
             match={selectedMatch}
             onBack={() => setSelectedMatch(null)}
           />
+        ) : selectedTournament ? (
+          <TournamentDetails
+            tournament={selectedTournament}
+            onBack={() => setSelectedTournament(null)}
+            onOpenMatch={(match) => {
+              setSelectedMatch(match);
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }}
+          />
         ) : (
           <>
             {screen === "home" && (
@@ -1660,6 +1868,10 @@ export default function App() {
                 initialType={matchType}
                 onOpenMatch={(match) => {
                   setSelectedMatch(match);
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+                onOpenTournament={(tournament) => {
+                  setSelectedTournament(tournament);
                   window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
               />

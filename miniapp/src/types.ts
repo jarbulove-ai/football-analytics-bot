@@ -56,6 +56,7 @@ export interface MatchContextResponse {
   league: string;
   country: string;
   kickoff: string | null;
+  match_group: string;
   standings: MatchStandingRow[];
   h2h: MatchContextMatch[];
   home_recent: MatchContextMatch[];

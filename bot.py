@@ -6959,6 +6959,47 @@ def format_miniapp_standing_row(row: dict) -> dict | None:
     }
 
 
+def get_miniapp_match_group(
+    standings: list[dict],
+    home_team_name: str,
+    away_team_name: str,
+    league_round: str | None,
+) -> str:
+    home_row = find_standings_row(standings, home_team_name)
+    away_row = find_standings_row(standings, away_team_name)
+    home_group = str((home_row or {}).get("group") or "").strip()
+    away_group = str((away_row or {}).get("group") or "").strip()
+
+    if (
+        home_group
+        and away_group
+        and normalize_standings_team_name(home_group)
+        == normalize_standings_team_name(away_group)
+    ):
+        return home_group
+
+    round_match = re.search(
+        r"\bgroup\s+[a-z0-9]+\b",
+        str(league_round or ""),
+        flags=re.IGNORECASE,
+    )
+    if not round_match:
+        return ""
+
+    round_group = round_match.group(0)
+    normalized_round_group = normalize_standings_team_name(round_group)
+    for row in standings:
+        group_name = str(row.get("group") or "").strip()
+        if (
+            group_name
+            and normalize_standings_team_name(group_name)
+            == normalized_round_group
+        ):
+            return group_name
+
+    return round_group
+
+
 def get_miniapp_match_context(match: dict) -> dict:
     match_id = str(match.get("id") or "")
     fixture_item = {}
@@ -6987,14 +7028,24 @@ def get_miniapp_match_context(match: dict) -> dict:
     home_team_id = home_team.get("id")
     away_team_id = away_team.get("id")
 
-    standings = []
-    for row in get_fixture_league_standings(
+    raw_standings = get_fixture_league_standings(
         league.get("id"),
         league.get("season"),
-    ):
+    )
+    standings = []
+    for row in raw_standings:
         formatted_row = format_miniapp_standing_row(row)
         if formatted_row:
             standings.append(formatted_row)
+
+    home_team_name = match.get("home") or home_team.get("name") or ""
+    away_team_name = match.get("away") or away_team.get("name") or ""
+    match_group = get_miniapp_match_group(
+        raw_standings,
+        home_team_name,
+        away_team_name,
+        league.get("round"),
+    )
 
     h2h_fixtures = []
     if home_team_id and away_team_id:
@@ -7073,11 +7124,12 @@ def get_miniapp_match_context(match: dict) -> dict:
     return {
         "ok": True,
         "match_id": match_id,
-        "home": match.get("home") or home_team.get("name") or "",
-        "away": match.get("away") or away_team.get("name") or "",
+        "home": home_team_name,
+        "away": away_team_name,
         "league": match.get("league") or league.get("name") or "",
         "country": match.get("country") or league.get("country") or "",
         "kickoff": match.get("kickoff"),
+        "match_group": match_group,
         "standings": standings,
         "h2h": format_fixture_list(h2h_fixtures),
         "home_recent": format_fixture_list(
