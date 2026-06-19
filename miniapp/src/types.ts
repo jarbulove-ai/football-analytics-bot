@@ -35,6 +35,7 @@ export interface MatchContextMatch {
 export interface MatchStandingRow {
   rank: number;
   team: string;
+  group: string;
   played: number | null;
   wins: number | null;
   draws: number | null;
@@ -43,6 +44,8 @@ export interface MatchStandingRow {
   goals_against: number | null;
   goal_diff: number | null;
   points: number | null;
+  description: string;
+  status: string;
 }
 
 export interface MatchContextResponse {

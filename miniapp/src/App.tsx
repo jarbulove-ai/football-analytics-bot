@@ -37,6 +37,7 @@ import type {
   MatchContextResponse,
   MatchItem,
   MatchListType,
+  MatchStandingRow,
   MiniAppPaymentPackageCode,
   PaymentPackage,
   PaymentReceiptResponse,
@@ -112,6 +113,44 @@ function formatContextMatchDate(value: string | null) {
 
 function normalizeTeamLabel(value: string) {
   return value.trim().toLocaleLowerCase("ru-RU");
+}
+
+function groupStandingsByGroup(rows: MatchStandingRow[]) {
+  const groups = new Map<string, MatchStandingRow[]>();
+
+  rows.forEach((row) => {
+    const groupName = row.group.trim() || "Турнирная таблица";
+    const groupRows = groups.get(groupName) || [];
+    groupRows.push(row);
+    groups.set(groupName, groupRows);
+  });
+
+  return Array.from(groups.entries());
+}
+
+function getStandingZoneStyle(description: string) {
+  const normalizedDescription = description.trim().toLocaleLowerCase("en-US");
+
+  if (
+    /promotion|play[\s-]?offs?|qualification/.test(normalizedDescription)
+  ) {
+    return {
+      rowClass: "border-l-2 border-l-lime bg-lime/[0.035]",
+      dotClass: "bg-lime",
+    };
+  }
+
+  if (/relegation/.test(normalizedDescription)) {
+    return {
+      rowClass: "border-l-2 border-l-red-400 bg-red-500/[0.035]",
+      dotClass: "bg-red-400",
+    };
+  }
+
+  return {
+    rowClass: "",
+    dotClass: "bg-slate-500",
+  };
 }
 
 function TeamLogo({
@@ -885,46 +924,109 @@ function MatchDetails({
             !contextError &&
             matchContext &&
             matchContext.standings.length > 0 && (
-              <div className="overflow-hidden rounded-lg border border-line bg-panel">
-                <div className="grid grid-cols-[minmax(0,1fr)_2.25rem_2.75rem_2.75rem] gap-2 border-b border-line px-3 py-2 text-[10px] font-semibold uppercase text-slate-500">
-                  <span>Команда</span>
-                  <span className="text-center">P</span>
-                  <span className="text-center">GD</span>
-                  <span className="text-center">PTS</span>
-                </div>
-                {matchContext.standings.map((row) => {
-                  const normalizedTeam = normalizeTeamLabel(row.team);
-                  const isSelectedTeam =
-                    normalizedTeam === normalizeTeamLabel(match.home) ||
-                    normalizedTeam === normalizeTeamLabel(match.away);
+              <div className="space-y-5">
+                {groupStandingsByGroup(matchContext.standings).map(
+                  ([groupName, groupRows]) => {
+                    const descriptions = Array.from(
+                      new Set(
+                        groupRows
+                          .map((row) => row.description.trim())
+                          .filter(Boolean),
+                      ),
+                    );
 
-                  return (
-                    <div
-                      key={`${row.rank}-${row.team}`}
-                      className={`grid grid-cols-[minmax(0,1fr)_2.25rem_2.75rem_2.75rem] items-center gap-2 border-t border-line/70 px-3 py-2.5 text-xs first:border-t-0 ${
-                        isSelectedTeam ? "bg-accent/[0.09]" : ""
-                      }`}
-                    >
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="w-5 shrink-0 text-center font-semibold text-slate-500">
-                          {row.rank}
-                        </span>
-                        <span className="truncate font-semibold text-white">
-                          {row.team}
-                        </span>
-                      </div>
-                      <span className="text-center text-slate-300">
-                        {row.played ?? "—"}
-                      </span>
-                      <span className="text-center text-slate-300">
-                        {row.goal_diff ?? "—"}
-                      </span>
-                      <span className="text-center font-bold text-white">
-                        {row.points ?? "—"}
-                      </span>
-                    </div>
-                  );
-                })}
+                    return (
+                      <section key={groupName}>
+                        <h2 className="mb-2 text-sm font-bold text-white">
+                          {groupName}
+                        </h2>
+                        <div className="overflow-hidden rounded-lg border border-line bg-panel">
+                          <div className="grid grid-cols-[minmax(7rem,1fr)_1.5rem_1.5rem_1.5rem_1.5rem_3rem_2rem] items-center gap-1 border-b border-line px-2 py-2 text-[9px] font-semibold uppercase text-slate-500">
+                            <span>Команда</span>
+                            <span className="text-center">P</span>
+                            <span className="text-center">W</span>
+                            <span className="text-center">D</span>
+                            <span className="text-center">L</span>
+                            <span className="text-center">GLS</span>
+                            <span className="text-center">PTS</span>
+                          </div>
+                          {groupRows.map((row) => {
+                            const normalizedTeam = normalizeTeamLabel(
+                              row.team,
+                            );
+                            const isSelectedTeam =
+                              normalizedTeam ===
+                                normalizeTeamLabel(match.home) ||
+                              normalizedTeam ===
+                                normalizeTeamLabel(match.away);
+                            const zoneStyle = getStandingZoneStyle(
+                              row.description,
+                            );
+
+                            return (
+                              <div
+                                key={`${groupName}-${row.rank}-${row.team}`}
+                                className={`grid grid-cols-[minmax(7rem,1fr)_1.5rem_1.5rem_1.5rem_1.5rem_3rem_2rem] items-center gap-1 border-t border-line/70 px-2 py-2.5 text-[11px] first:border-t-0 ${zoneStyle.rowClass} ${
+                                  isSelectedTeam
+                                    ? "bg-accent/[0.09]"
+                                    : ""
+                                }`}
+                              >
+                                <div className="flex min-w-0 items-center gap-1.5">
+                                  <span className="w-4 shrink-0 text-center font-semibold text-slate-500">
+                                    {row.rank}
+                                  </span>
+                                  <span className="truncate font-semibold text-white">
+                                    {row.team}
+                                  </span>
+                                </div>
+                                <span className="text-center text-slate-300">
+                                  {row.played ?? "—"}
+                                </span>
+                                <span className="text-center text-slate-300">
+                                  {row.wins ?? "—"}
+                                </span>
+                                <span className="text-center text-slate-300">
+                                  {row.draws ?? "—"}
+                                </span>
+                                <span className="text-center text-slate-300">
+                                  {row.losses ?? "—"}
+                                </span>
+                                <span className="text-center text-slate-300">
+                                  {row.goals_for ?? "—"}:
+                                  {row.goals_against ?? "—"}
+                                </span>
+                                <span className="text-center font-bold text-white">
+                                  {row.points ?? "—"}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {descriptions.length > 0 && (
+                          <div className="mt-2 space-y-1.5 px-1">
+                            {descriptions.map((description) => {
+                              const zoneStyle =
+                                getStandingZoneStyle(description);
+                              return (
+                                <div
+                                  key={description}
+                                  className="flex items-start gap-2 text-[10px] leading-4 text-slate-500"
+                                >
+                                  <span
+                                    className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${zoneStyle.dotClass}`}
+                                  />
+                                  <span>{description}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </section>
+                    );
+                  },
+                )}
               </div>
             )}
         </section>

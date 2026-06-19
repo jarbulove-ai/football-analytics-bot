@@ -6945,6 +6945,7 @@ def format_miniapp_standing_row(row: dict) -> dict | None:
     return {
         "rank": rank,
         "team": team_name,
+        "group": row.get("group") or "",
         "played": all_stats.get("played"),
         "wins": all_stats.get("win"),
         "draws": all_stats.get("draw"),
@@ -6953,6 +6954,8 @@ def format_miniapp_standing_row(row: dict) -> dict | None:
         "goals_against": goals_against,
         "goal_diff": goal_diff,
         "points": row.get("points"),
+        "description": row.get("description") or "",
+        "status": row.get("status") or "",
     }
 
 
