@@ -3,7 +3,9 @@ import {
   ArrowLeft,
   Bot,
   CalendarDays,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   CircleUserRound,
   Clock3,
   Crown,
@@ -460,6 +462,9 @@ function MatchesScreen({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [expandedLeagues, setExpandedLeagues] = useState<Set<string>>(
+    new Set(),
+  );
   const groupedMatches = useMemo(() => {
     const groups = new Map<string, MatchItem[]>();
     matches.forEach((match) => {
@@ -475,12 +480,20 @@ function MatchesScreen({
     let active = true;
     setLoading(true);
     setError(false);
+    setExpandedLeagues(new Set());
 
     getMatches(activeType)
       .then((response) => {
         if (!active) return;
         if (!response.ok) throw new Error(response.error || "Matches error");
-        setMatches(response.items || []);
+        const nextMatches = response.items || [];
+        const firstLeague = nextMatches[0]?.league || "Другие турниры";
+        setMatches(nextMatches);
+        setExpandedLeagues(
+          firstLeague && nextMatches.length > 0
+            ? new Set([firstLeague])
+            : new Set(),
+        );
       })
       .catch(() => {
         if (!active) return;
@@ -518,7 +531,10 @@ function MatchesScreen({
           <button
             key={tab.id}
             type="button"
-            onClick={() => setActiveType(tab.id)}
+            onClick={() => {
+              setExpandedLeagues(new Set());
+              setActiveType(tab.id);
+            }}
             className={`h-10 rounded-md text-sm font-semibold transition ${
               activeType === tab.id
                 ? "bg-accent text-white"
@@ -573,51 +589,75 @@ function MatchesScreen({
           !error &&
           groupedMatches.map(([leagueName, leagueMatches], index) => {
             const firstMatch = leagueMatches[0];
+            const isExpanded = expandedLeagues.has(leagueName);
             return (
               <section
                 key={leagueName}
                 className="animate-rise overflow-hidden rounded-lg border border-line bg-panel shadow-card"
                 style={{ animationDelay: `${Math.min(index * 55, 220)}ms` }}
               >
-                <button
-                  type="button"
-                  onClick={() =>
-                    onOpenTournament({
-                      league: leagueName,
-                      country:
-                        firstMatch.country || "Международный турнир",
-                      leagueLogo: firstMatch.league_logo,
-                      matches: leagueMatches,
-                    })
-                  }
-                  className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-white/[0.035] active:bg-white/[0.06]"
-                >
-                  <LeagueLogo
-                    logo={firstMatch.league_logo}
-                    name={leagueName}
-                  />
-                  <div className="min-w-0">
-                    <h2 className="truncate text-sm font-bold text-white">
-                      {leagueName}
-                    </h2>
-                    <p className="truncate text-[11px] text-slate-500">
-                      {firstMatch.country || "Международный турнир"}
-                    </p>
-                  </div>
-                  <div className="ml-auto flex items-center gap-2">
-                    <span className="text-xs font-semibold text-slate-500">
-                      {leagueMatches.length}
-                    </span>
-                    <ChevronRight className="h-4 w-4 text-slate-600" />
-                  </div>
-                </button>
-                {leagueMatches.map((match) => (
-                  <CompactMatchRow
-                    key={match.id}
-                    match={match}
-                    onOpen={onOpenMatch}
-                  />
-                ))}
+                <div className="flex items-center">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedLeagues((current) =>
+                        current.has(leagueName)
+                          ? new Set()
+                          : new Set([leagueName]),
+                      )
+                    }
+                    className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left transition hover:bg-white/[0.035] active:bg-white/[0.06]"
+                    aria-expanded={isExpanded}
+                  >
+                    <LeagueLogo
+                      logo={firstMatch.league_logo}
+                      name={leagueName}
+                    />
+                    <div className="min-w-0">
+                      <h2 className="truncate text-sm font-bold text-white">
+                        {leagueName}
+                      </h2>
+                      <p className="truncate text-[11px] text-slate-500">
+                        {firstMatch.country || "Международный турнир"}
+                      </p>
+                    </div>
+                    <div className="ml-auto flex items-center gap-2">
+                      <span className="text-xs font-semibold text-slate-500">
+                        {leagueMatches.length}
+                      </span>
+                      {isExpanded ? (
+                        <ChevronUp className="h-4 w-4 text-slate-500" />
+                      ) : (
+                        <ChevronDown className="h-4 w-4 text-slate-500" />
+                      )}
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onOpenTournament({
+                        league: leagueName,
+                        country:
+                          firstMatch.country || "Международный турнир",
+                        leagueLogo: firstMatch.league_logo,
+                        matches: leagueMatches,
+                      });
+                    }}
+                    className="mr-3 flex h-8 shrink-0 items-center gap-1 rounded-md bg-white/[0.05] px-2 text-[10px] font-semibold text-slate-300 transition hover:bg-white/[0.09] active:scale-[0.98]"
+                  >
+                    Турнир
+                    <ChevronRight className="h-3 w-3" />
+                  </button>
+                </div>
+                {isExpanded &&
+                  leagueMatches.map((match) => (
+                    <CompactMatchRow
+                      key={match.id}
+                      match={match}
+                      onOpen={onOpenMatch}
+                    />
+                  ))}
               </section>
             );
           })}
