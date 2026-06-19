@@ -55,7 +55,8 @@ const matchTabs: Array<{ id: MatchListType; label: string }> = [
 ];
 
 type MatchDetailTab = "details" | "ai" | "table" | "matches";
-type TournamentTab = "matches" | "standings";
+type MatchesView = "matches" | "leagues";
+type TournamentTab = "overview" | "matches" | "standings";
 
 interface TournamentSelection {
   league: string;
@@ -458,6 +459,7 @@ function MatchesScreen({
   onOpenTournament: (tournament: TournamentSelection) => void;
 }) {
   const [activeType, setActiveType] = useState<MatchListType>(initialType);
+  const [activeView, setActiveView] = useState<MatchesView>("matches");
   const [matches, setMatches] = useState<MatchItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -526,6 +528,30 @@ function MatchesScreen({
         )}
       </div>
 
+      <div className="relative mb-3 grid grid-cols-2 rounded-full bg-panel p-1">
+        <span
+          className={`absolute inset-y-1 left-1 w-[calc(50%-0.25rem)] rounded-full bg-accent shadow-card transition-transform duration-300 ease-out ${
+            activeView === "leagues" ? "translate-x-full" : "translate-x-0"
+          }`}
+          aria-hidden="true"
+        />
+        {[
+          { id: "matches" as MatchesView, label: "Матчи" },
+          { id: "leagues" as MatchesView, label: "Лиги" },
+        ].map((view) => (
+          <button
+            key={view.id}
+            type="button"
+            onClick={() => setActiveView(view.id)}
+            className={`relative z-10 h-9 rounded-full text-sm font-semibold transition-colors duration-300 ${
+              activeView === view.id ? "text-white" : "text-slate-400"
+            }`}
+          >
+            {view.label}
+          </button>
+        ))}
+      </div>
+
       <div className="mb-5 grid grid-cols-3 rounded-lg bg-panel p-1">
         {matchTabs.map((tab) => (
           <button
@@ -587,6 +613,7 @@ function MatchesScreen({
 
         {!loading &&
           !error &&
+          activeView === "matches" &&
           groupedMatches.map(([leagueName, leagueMatches], index) => {
             const firstMatch = leagueMatches[0];
             const isExpanded = expandedLeagues.has(leagueName);
@@ -659,6 +686,49 @@ function MatchesScreen({
                     />
                   ))}
               </section>
+            );
+          })}
+
+        {!loading &&
+          !error &&
+          activeView === "leagues" &&
+          groupedMatches.map(([leagueName, leagueMatches], index) => {
+            const firstMatch = leagueMatches[0];
+            return (
+              <button
+                key={leagueName}
+                type="button"
+                onClick={() =>
+                  onOpenTournament({
+                    league: leagueName,
+                    country:
+                      firstMatch.country || "Международный турнир",
+                    leagueLogo: firstMatch.league_logo,
+                    matches: leagueMatches,
+                  })
+                }
+                className="animate-rise flex w-full items-center gap-3 rounded-lg border border-line bg-panel px-4 py-3 text-left shadow-card transition hover:bg-white/[0.035] active:scale-[0.99]"
+                style={{ animationDelay: `${Math.min(index * 45, 180)}ms` }}
+              >
+                <LeagueLogo
+                  logo={firstMatch.league_logo}
+                  name={leagueName}
+                />
+                <div className="min-w-0">
+                  <h2 className="truncate text-sm font-bold text-white">
+                    {leagueName}
+                  </h2>
+                  <p className="truncate text-[11px] text-slate-500">
+                    {firstMatch.country || "Международный турнир"}
+                  </p>
+                </div>
+                <div className="ml-auto flex items-center gap-2">
+                  <span className="rounded-full bg-white/[0.05] px-2 py-1 text-[10px] font-semibold text-slate-400">
+                    {leagueMatches.length}
+                  </span>
+                  <ChevronRight className="h-4 w-4 text-slate-500" />
+                </div>
+              </button>
             );
           })}
       </div>
@@ -846,11 +916,33 @@ function TournamentDetails({
   onBack: () => void;
   onOpenMatch: (match: MatchItem) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<TournamentTab>("matches");
+  const [activeTab, setActiveTab] = useState<TournamentTab>("overview");
   const [context, setContext] = useState<MatchContextResponse | null>(null);
   const [contextLoading, setContextLoading] = useState(true);
   const [contextError, setContextError] = useState(false);
   const firstMatch = tournament.matches[0];
+  const nearestMatch = useMemo(
+    () =>
+      [...tournament.matches].sort((left, right) => {
+        const leftTime = left.kickoff
+          ? new Date(left.kickoff).getTime()
+          : Number.POSITIVE_INFINITY;
+        const rightTime = right.kickoff
+          ? new Date(right.kickoff).getTime()
+          : Number.POSITIVE_INFINITY;
+        return leftTime - rightTime;
+      })[0],
+    [tournament.matches],
+  );
+  const nearestKickoff = formatKickoff(nearestMatch?.kickoff || null);
+  const standingsTeamCount = context?.standings.length || 0;
+  const standingsGroupCount = context
+    ? new Set(
+        context.standings
+          .map((row) => row.group.trim())
+          .filter(Boolean),
+      ).size
+    : 0;
 
   useEffect(() => {
     let active = true;
@@ -896,47 +988,168 @@ function TournamentDetails({
         >
           <ArrowLeft className="h-5 w-5" />
         </button>
-        <LeagueLogo logo={tournament.leagueLogo} name={tournament.league} />
-        <div className="min-w-0">
-          <h1 className="truncate text-base font-bold text-white">
-            {tournament.league}
-          </h1>
-          <p className="truncate text-xs text-slate-500">
-            {tournament.country}
-          </p>
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-panel">
+            <LeagueLogo
+              logo={tournament.leagueLogo}
+              name={tournament.league}
+            />
+          </div>
+          <div className="min-w-0">
+            <h1 className="truncate text-lg font-extrabold text-white">
+              {tournament.league}
+            </h1>
+            <p className="truncate text-xs text-slate-500">
+              {tournament.country}
+            </p>
+          </div>
+        </div>
+        <span className="rounded-full bg-panelSoft px-2.5 py-1 text-xs font-semibold text-slate-300">
+          {tournament.matches.length}
+        </span>
+      </div>
+
+      <div className="-mx-4 mb-5 overflow-x-auto border-y border-line px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="flex min-w-max gap-1">
+          {[
+            { id: "overview" as TournamentTab, label: "Обзор" },
+            { id: "matches" as TournamentTab, label: "Матчи" },
+            {
+              id: "standings" as TournamentTab,
+              label: "Турнирная таблица",
+            },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className={`relative h-12 px-4 text-sm font-semibold transition ${
+                activeTab === tab.id ? "text-white" : "text-slate-500"
+              }`}
+            >
+              {tab.label}
+              {activeTab === tab.id && (
+                <span className="absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-lime" />
+              )}
+            </button>
+          ))}
         </div>
       </div>
 
-      <div className="mb-5 grid grid-cols-2 rounded-lg bg-panel p-1">
-        {[
-          { id: "matches" as TournamentTab, label: "Матчи" },
-          { id: "standings" as TournamentTab, label: "Таблицы" },
-        ].map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setActiveTab(tab.id)}
-            className={`h-10 rounded-md text-sm font-semibold transition ${
-              activeTab === tab.id
-                ? "bg-accent text-white"
-                : "text-slate-400"
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+      {activeTab === "overview" && (
+        <section className="space-y-4">
+          <div className="rounded-lg border border-line bg-panel p-4">
+            <div className="flex items-start gap-3">
+              <LeagueLogo
+                logo={tournament.leagueLogo}
+                name={tournament.league}
+              />
+              <div className="min-w-0">
+                <h2 className="truncate text-base font-bold text-white">
+                  {tournament.league}
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {tournament.country}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-4">
+              <div>
+                <p className="text-[10px] uppercase text-slate-500">
+                  Матчей в списке
+                </p>
+                <p className="mt-1 text-lg font-bold text-white">
+                  {tournament.matches.length}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase text-slate-500">
+                  Статус данных
+                </p>
+                <p className="mt-1 text-sm font-semibold text-lime">
+                  Данные MatchLab
+                </p>
+              </div>
+              {standingsTeamCount > 0 && (
+                <div>
+                  <p className="text-[10px] uppercase text-slate-500">
+                    Команд в таблице
+                  </p>
+                  <p className="mt-1 text-lg font-bold text-white">
+                    {standingsTeamCount}
+                  </p>
+                </div>
+              )}
+              {standingsGroupCount > 0 && (
+                <div>
+                  <p className="text-[10px] uppercase text-slate-500">
+                    Групп
+                  </p>
+                  <p className="mt-1 text-lg font-bold text-white">
+                    {standingsGroupCount}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {nearestMatch && (
+            <div className="rounded-lg border border-line bg-panel p-4">
+              <p className="text-xs font-semibold uppercase text-slate-500">
+                Ближайший матч
+              </p>
+              <div className="mt-3 flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-bold text-white">
+                    {nearestMatch.home} — {nearestMatch.away}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-400">
+                    {nearestKickoff.time}, {nearestKickoff.date}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onOpenMatch(nearestMatch)}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-white/[0.05] text-slate-300"
+                  aria-label="Открыть ближайший матч"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!contextLoading &&
+            (contextError || !context || context.standings.length === 0) && (
+              <p className="rounded-lg border border-line bg-panel px-4 py-3 text-sm leading-6 text-slate-400">
+                Расширенная информация по турниру пока недоступна.
+              </p>
+            )}
+        </section>
+      )}
 
       {activeTab === "matches" && (
-        <section className="overflow-hidden rounded-lg border border-line bg-panel">
-          {tournament.matches.map((match) => (
-            <CompactMatchRow
-              key={match.id}
-              match={match}
-              onOpen={onOpenMatch}
-            />
-          ))}
-        </section>
+        <>
+          {tournament.matches.length > 0 ? (
+            <section className="overflow-hidden rounded-lg border border-line bg-panel">
+              {tournament.matches.map((match) => (
+                <CompactMatchRow
+                  key={match.id}
+                  match={match}
+                  onOpen={onOpenMatch}
+                />
+              ))}
+            </section>
+          ) : (
+            <div className="py-10 text-center">
+              <CalendarDays className="mx-auto h-7 w-7 text-slate-600" />
+              <p className="mt-4 text-sm font-semibold text-white">
+                Матчи турнира пока недоступны.
+              </p>
+            </div>
+          )}
+        </>
       )}
 
       {activeTab === "standings" && (
@@ -946,7 +1159,7 @@ function TournamentDetails({
             <div className="py-10 text-center">
               <Trophy className="mx-auto h-7 w-7 text-slate-600" />
               <p className="mt-4 text-sm font-semibold text-white">
-                Таблица турнира временно недоступна.
+                Турнирная таблица временно недоступна.
               </p>
             </div>
           )}
@@ -956,7 +1169,7 @@ function TournamentDetails({
               <div className="py-10 text-center">
                 <Trophy className="mx-auto h-7 w-7 text-slate-600" />
                 <p className="mt-4 text-sm font-semibold text-white">
-                  Таблица турнира пока недоступна.
+                  Турнирная таблица пока недоступна.
                 </p>
               </div>
             )}
