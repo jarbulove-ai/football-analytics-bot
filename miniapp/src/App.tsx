@@ -215,6 +215,37 @@ function getRelevantMatchStandings(
   return filteredRows.length > 0 ? filteredRows : rows;
 }
 
+function getTeamRelevantStandingsRows(
+  rows: MatchStandingRow[],
+  teamId: number | undefined,
+  teamName: string,
+) {
+  const selectedRow =
+    (typeof teamId === "number"
+      ? rows.find((row) => row.team_id === teamId)
+      : undefined) ||
+    rows.find(
+      (row) =>
+        normalizeTeamLabel(row.team) === normalizeTeamLabel(teamName),
+    );
+  const groupName = selectedRow?.group.trim() || "";
+
+  if (!groupName) {
+    return { rows, groupName: "" };
+  }
+
+  const normalizedGroupName = groupName.toLocaleLowerCase("ru-RU");
+  const groupRows = rows.filter(
+    (row) =>
+      row.group.trim().toLocaleLowerCase("ru-RU") === normalizedGroupName,
+  );
+
+  return {
+    rows: groupRows.length > 0 ? groupRows : rows,
+    groupName: groupRows.length > 0 ? groupName : "",
+  };
+}
+
 function TeamLogo({
   logo,
   name,
@@ -1530,6 +1561,15 @@ function TeamDetails({
   const [standingsError, setStandingsError] = useState(false);
   const nearestMatch = matches?.upcoming[0] || null;
   const nearestKickoff = formatKickoff(nearestMatch?.kickoff || null);
+  const relevantTeamStandings = useMemo(
+    () =>
+      getTeamRelevantStandingsRows(
+        standings?.standings || [],
+        standings?.team_id || team.id,
+        standings?.team_name || team.name,
+      ),
+    [standings, team.id, team.name],
+  );
 
   useEffect(() => {
     let active = true;
@@ -1841,11 +1881,16 @@ function TeamDetails({
                       Сезон {standings.league.season}
                     </p>
                   )}
+                  {relevantTeamStandings.groupName && (
+                    <p className="mt-0.5 text-xs text-slate-400">
+                      Группа команды: {relevantTeamStandings.groupName}
+                    </p>
+                  )}
                 </div>
               </div>
             )}
             <StandingsTable
-              rows={standings.standings}
+              rows={relevantTeamStandings.rows}
               highlightTeamId={standings.team_id || team.id}
               highlightTeamName={standings.team_name || team.name}
             />
