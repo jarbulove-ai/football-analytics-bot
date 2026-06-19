@@ -6818,8 +6818,11 @@ def format_miniapp_fixture_item(fixture_item: dict) -> dict | None:
         "home_logo": home_team.get("logo") or None,
         "away_logo": away_team.get("logo") or None,
         "league": league.get("name") or "",
+        "league_id": league.get("id"),
         "league_logo": league.get("logo") or None,
         "country": league.get("country") or "",
+        "season": league.get("season"),
+        "round": league.get("round") or "",
         "kickoff": kickoff,
         "status": (fixture.get("status") or {}).get("short") or "",
         "score": {
@@ -6973,6 +6976,7 @@ def format_miniapp_standing_row(row: dict) -> dict | None:
 
     return {
         "rank": rank,
+        "team_id": team.get("id"),
         "team": team_name,
         "group": row.get("group") or "",
         "played": all_stats.get("played"),
@@ -6986,6 +6990,121 @@ def format_miniapp_standing_row(row: dict) -> dict | None:
         "description": row.get("description") or "",
         "status": row.get("status") or "",
     }
+
+
+def get_miniapp_team_standings_data(team_id: int) -> dict | None:
+    fixtures = []
+    for fixture_loader, label in (
+        (get_api_football_next_fixtures, "upcoming"),
+        (get_api_football_finished_fixtures, "recent"),
+    ):
+        try:
+            fixtures.extend(fixture_loader(team_id))
+        except Exception:
+            logger.warning(
+                "Mini App team standings fixture lookup failed: "
+                "team_id=%s source=%s",
+                team_id,
+                label,
+                exc_info=True,
+            )
+
+    candidates = []
+    seen_candidates = set()
+    for fixture_item in fixtures:
+        league = fixture_item.get("league") or {}
+        league_id = league.get("id")
+        season = league.get("season")
+        candidate_key = (league_id, season)
+        if not league_id or not season or candidate_key in seen_candidates:
+            continue
+
+        seen_candidates.add(candidate_key)
+        candidates.append(
+            {
+                "id": league_id,
+                "name": league.get("name") or "",
+                "country": league.get("country") or "",
+                "logo": league.get("logo") or None,
+                "season": season,
+                "type": league.get("type") or "",
+            }
+        )
+
+    for candidate in candidates[:6]:
+        if candidate["type"]:
+            continue
+        try:
+            league_response = request_api_football(
+                "/leagues",
+                {
+                    "id": candidate["id"],
+                    "season": candidate["season"],
+                },
+            )
+            if league_response:
+                league_details = league_response[0].get("league") or {}
+                candidate["type"] = league_details.get("type") or ""
+        except Exception:
+            logger.warning(
+                "Mini App team league type lookup failed: "
+                "team_id=%s league_id=%s season=%s",
+                team_id,
+                candidate["id"],
+                candidate["season"],
+                exc_info=True,
+            )
+
+    candidates.sort(
+        key=lambda candidate: (
+            str(candidate.get("type") or "").lower() != "league",
+        )
+    )
+
+    for candidate in candidates:
+        raw_standings = get_fixture_league_standings(
+            candidate["id"],
+            candidate["season"],
+        )
+        if not raw_standings:
+            continue
+
+        selected_row = next(
+            (
+                row
+                for row in raw_standings
+                if (row.get("team") or {}).get("id") == team_id
+            ),
+            None,
+        )
+        if not selected_row:
+            continue
+
+        standings = []
+        for row in raw_standings:
+            formatted_row = format_miniapp_standing_row(row)
+            if formatted_row:
+                standings.append(formatted_row)
+
+        if not standings:
+            continue
+
+        return {
+            "league": {
+                "id": candidate["id"],
+                "name": candidate["name"],
+                "country": candidate["country"],
+                "logo": candidate["logo"],
+                "season": candidate["season"],
+            },
+            "team_id": team_id,
+            "team_name": (
+                (selected_row.get("team") or {}).get("name") or ""
+            ),
+            "standings": standings,
+        }
+
+    return None
 
 
 def get_miniapp_match_group(
@@ -7666,6 +7785,27 @@ def miniapp_team_matches(team_id: int):
             "upcoming": upcoming,
         }
     )
+
+
+@miniapp_api.get("/api/teams/<int:team_id>/standings")
+def miniapp_team_standings(team_id: int):
+    try:
+        standings_data = get_miniapp_team_standings_data(team_id)
+        if standings_data:
+            return jsonify({"ok": True, **standings_data})
+    except Exception:
+        logger.exception(
+            "Mini App team standings request failed: team_id=%s",
+            team_id,
+        )
+
+    return jsonify(
+        {
+            "ok": False,
+            "error": "team_standings_unavailable",
+            "message": "Турнирная таблица команды пока недоступна.",
+        }
+    ), 404
 
 
 @miniapp_api.route(

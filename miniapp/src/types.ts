@@ -11,8 +11,11 @@ export interface MatchItem {
   home_logo: string | null;
   away_logo: string | null;
   league: string;
+  league_id: number | null;
   league_logo: string | null;
   country: string;
+  season: number | null;
+  round: string;
   kickoff: string | null;
   status: string;
   score: {
@@ -41,6 +44,7 @@ export interface MatchContextMatch {
 
 export interface MatchStandingRow {
   rank: number;
+  team_id: number | null;
   team: string;
   group: string;
   played: number | null;
@@ -115,6 +119,22 @@ export interface TeamMatchesResponse {
   ok: true;
   recent: MatchItem[];
   upcoming: MatchItem[];
+}
+
+export interface TeamStandingsResponse {
+  ok: boolean;
+  league?: {
+    id: number | null;
+    name: string;
+    country: string;
+    logo: string | null;
+    season: number | null;
+  };
+  team_id?: number;
+  team_name?: string;
+  standings?: MatchStandingRow[];
+  error?: string;
+  message?: string;
 }
 
 export type MiniAppPaymentPackageCode =

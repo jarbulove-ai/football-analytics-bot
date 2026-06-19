@@ -13,6 +13,7 @@ import type {
   TeamMatchesResponse,
   TeamProfileResponse,
   TeamSearchResponse,
+  TeamStandingsResponse,
 } from "./types";
 
 export class MatchAiAnalysisError extends Error {
@@ -96,6 +97,14 @@ export function getTeamMatches(
 ): Promise<TeamMatchesResponse> {
   return apiRequest<TeamMatchesResponse>(
     `/api/teams/${encodeURIComponent(teamId)}/matches`,
+  );
+}
+
+export function getTeamStandings(
+  teamId: number,
+): Promise<TeamStandingsResponse> {
+  return apiRequest<TeamStandingsResponse>(
+    `/api/teams/${encodeURIComponent(teamId)}/standings`,
   );
 }
 

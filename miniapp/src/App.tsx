@@ -31,6 +31,7 @@ import {
   getSubscription,
   getTeamMatches,
   getTeamProfile,
+  getTeamStandings,
   MatchAiAnalysisError,
   PaymentReceiptError,
   requestMatchAiAnalysis,
@@ -53,6 +54,7 @@ import type {
   SubscriptionData,
   TeamMatchesResponse,
   TeamSearchItem,
+  TeamStandingsResponse,
 } from "./types";
 
 const matchTabs: Array<{ id: MatchListType; label: string }> = [
@@ -944,12 +946,18 @@ function MatchContextGroup({
 function StandingsTable({
   rows,
   highlightedTeams = [],
+  highlightTeamId,
+  highlightTeamName,
 }: {
   rows: MatchStandingRow[];
   highlightedTeams?: string[];
+  highlightTeamId?: number;
+  highlightTeamName?: string;
 }) {
   const normalizedHighlightedTeams = new Set(
-    highlightedTeams.map(normalizeTeamLabel),
+    [...highlightedTeams, highlightTeamName || ""]
+      .filter(Boolean)
+      .map(normalizeTeamLabel),
   );
 
   return (
@@ -977,23 +985,32 @@ function StandingsTable({
                 <span className="text-center">PTS</span>
               </div>
               {groupRows.map((row) => {
-                const isSelectedTeam = normalizedHighlightedTeams.has(
-                  normalizeTeamLabel(row.team),
-                );
+                const isSelectedTeam =
+                  (typeof highlightTeamId === "number" &&
+                    row.team_id === highlightTeamId) ||
+                  normalizedHighlightedTeams.has(
+                    normalizeTeamLabel(row.team),
+                  );
                 const zoneStyle = getStandingZoneStyle(row.description);
 
                 return (
                   <div
                     key={`${groupName}-${row.rank}-${row.team}`}
                     className={`grid grid-cols-[minmax(7rem,1fr)_1.5rem_1.5rem_1.5rem_1.5rem_3rem_2rem] items-center gap-1 border-t border-line/70 px-2 py-2.5 text-[11px] first:border-t-0 ${zoneStyle.rowClass} ${
-                      isSelectedTeam ? "bg-accent/[0.09]" : ""
+                      isSelectedTeam
+                        ? "bg-accent/[0.12] shadow-[inset_3px_0_0_rgba(99,102,241,0.95)] ring-1 ring-inset ring-accent/30"
+                        : ""
                     }`}
                   >
                     <div className="flex min-w-0 items-center gap-1.5">
                       <span className="w-4 shrink-0 text-center font-semibold text-slate-500">
                         {row.rank}
                       </span>
-                      <span className="truncate font-semibold text-white">
+                      <span
+                        className={`truncate font-semibold ${
+                          isSelectedTeam ? "text-lime" : "text-white"
+                        }`}
+                      >
                         {row.team}
                       </span>
                     </div>
@@ -1503,31 +1520,65 @@ function TeamDetails({
   const [activeTab, setActiveTab] = useState<TeamDetailTab>("details");
   const [team, setTeam] = useState<TeamSearchItem>(initialTeam);
   const [matches, setMatches] = useState<TeamMatchesResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [profileError, setProfileError] = useState(false);
+  const [matchesLoading, setMatchesLoading] = useState(true);
+  const [matchesError, setMatchesError] = useState(false);
+  const [standings, setStandings] =
+    useState<TeamStandingsResponse | null>(null);
+  const [standingsLoading, setStandingsLoading] = useState(true);
+  const [standingsError, setStandingsError] = useState(false);
   const nearestMatch = matches?.upcoming[0] || null;
   const nearestKickoff = formatKickoff(nearestMatch?.kickoff || null);
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    setError(false);
+    setTeam(initialTeam);
+    setMatches(null);
+    setStandings(null);
+    setProfileLoading(true);
+    setProfileError(false);
+    setMatchesLoading(true);
+    setMatchesError(false);
+    setStandingsLoading(true);
+    setStandingsError(false);
 
-    Promise.all([
-      getTeamProfile(initialTeam.id),
-      getTeamMatches(initialTeam.id),
-    ])
-      .then(([profileResponse, matchesResponse]) => {
-        if (!active) return;
-        setTeam(profileResponse.team);
-        setMatches(matchesResponse);
+    getTeamProfile(initialTeam.id)
+      .then((response) => {
+        if (active) setTeam(response.team);
       })
       .catch(() => {
-        if (!active) return;
-        setError(true);
+        if (active) setProfileError(true);
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (active) setProfileLoading(false);
+      });
+
+    getTeamMatches(initialTeam.id)
+      .then((response) => {
+        if (active) setMatches(response);
+      })
+      .catch(() => {
+        if (active) setMatchesError(true);
+      })
+      .finally(() => {
+        if (active) setMatchesLoading(false);
+      });
+
+    getTeamStandings(initialTeam.id)
+      .then((response) => {
+        if (!active) return;
+        if (!response.ok || !response.standings?.length) {
+          setStandingsError(true);
+          return;
+        }
+        setStandings(response);
+      })
+      .catch(() => {
+        if (active) setStandingsError(true);
+      })
+      .finally(() => {
+        if (active) setStandingsLoading(false);
       });
 
     return () => {
@@ -1593,9 +1644,9 @@ function TeamDetails({
         </div>
       </div>
 
-      {loading && <MatchContextLoading />}
+      {activeTab === "details" && profileLoading && <MatchContextLoading />}
 
-      {!loading && error && (
+      {activeTab === "details" && !profileLoading && profileError && (
         <div className="py-12 text-center">
           <RefreshCw className="mx-auto h-7 w-7 text-slate-600" />
           <p className="mt-4 text-sm font-semibold text-white">
@@ -1604,7 +1655,7 @@ function TeamDetails({
         </div>
       )}
 
-      {!loading && !error && activeTab === "details" && (
+      {activeTab === "details" && !profileLoading && !profileError && (
         <section className="space-y-4">
           <div className="rounded-lg border border-line bg-panel p-4">
             <div className="grid grid-cols-2 gap-x-4 gap-y-5">
@@ -1694,7 +1745,18 @@ function TeamDetails({
         </section>
       )}
 
-      {!loading && !error && activeTab === "matches" && (
+      {activeTab === "matches" && matchesLoading && <MatchContextLoading />}
+
+      {activeTab === "matches" && !matchesLoading && matchesError && (
+        <div className="py-12 text-center">
+          <CalendarDays className="mx-auto h-7 w-7 text-slate-600" />
+          <p className="mt-4 text-sm font-semibold text-white">
+            Матчи команды пока недоступны.
+          </p>
+        </div>
+      )}
+
+      {activeTab === "matches" && !matchesLoading && !matchesError && (
         <div className="space-y-6">
           {matches && matches.upcoming.length > 0 && (
             <section>
@@ -1740,14 +1802,55 @@ function TeamDetails({
         </div>
       )}
 
-      {!loading && !error && activeTab === "standings" && (
-        <div className="py-12 text-center">
-          <Trophy className="mx-auto h-7 w-7 text-slate-600" />
-          <p className="mt-4 text-sm font-semibold text-white">
-            Турнирная таблица команды появится на следующем этапе.
-          </p>
-        </div>
+      {activeTab === "standings" && standingsLoading && (
+        <MatchContextLoading />
       )}
+
+      {activeTab === "standings" &&
+        !standingsLoading &&
+        (standingsError || !standings?.standings?.length) && (
+          <div className="py-12 text-center">
+            <Trophy className="mx-auto h-7 w-7 text-slate-600" />
+            <p className="mt-4 text-sm font-semibold text-white">
+              Турнирная таблица команды пока недоступна.
+            </p>
+          </div>
+        )}
+
+      {activeTab === "standings" &&
+        !standingsLoading &&
+        !standingsError &&
+        standings?.standings &&
+        standings.standings.length > 0 && (
+          <section className="space-y-4">
+            {standings.league && (
+              <div className="flex items-center gap-3 rounded-lg border border-line bg-panel px-4 py-3">
+                <LeagueLogo
+                  logo={standings.league.logo}
+                  name={standings.league.name}
+                />
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-bold text-white">
+                    {standings.league.name}
+                    {standings.league.country
+                      ? ` · ${standings.league.country}`
+                      : ""}
+                  </p>
+                  {standings.league.season && (
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Сезон {standings.league.season}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+            <StandingsTable
+              rows={standings.standings}
+              highlightTeamId={standings.team_id || team.id}
+              highlightTeamName={standings.team_name || team.name}
+            />
+          </section>
+        )}
     </div>
   );
 }
