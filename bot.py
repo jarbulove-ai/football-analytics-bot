@@ -6793,6 +6793,7 @@ def format_miniapp_fixture_item(fixture_item: dict) -> dict | None:
     fixture = fixture_item.get("fixture") or {}
     teams = fixture_item.get("teams") or {}
     league = fixture_item.get("league") or {}
+    goals = fixture_item.get("goals") or {}
     home_team = teams.get("home") or {}
     away_team = teams.get("away") or {}
     fixture_id = fixture.get("id")
@@ -6810,6 +6811,8 @@ def format_miniapp_fixture_item(fixture_item: dict) -> dict | None:
 
     return {
         "id": str(fixture_id),
+        "home_id": home_team.get("id"),
+        "away_id": away_team.get("id"),
         "home": home_team.get("name") or "",
         "away": away_team.get("name") or "",
         "home_logo": home_team.get("logo") or None,
@@ -6818,7 +6821,33 @@ def format_miniapp_fixture_item(fixture_item: dict) -> dict | None:
         "league_logo": league.get("logo") or None,
         "country": league.get("country") or "",
         "kickoff": kickoff,
+        "status": (fixture.get("status") or {}).get("short") or "",
+        "score": {
+            "home": goals.get("home"),
+            "away": goals.get("away"),
+        },
         "source": "api_football",
+    }
+
+
+def format_miniapp_team_item(team_item: dict) -> dict | None:
+    team = team_item.get("team") or {}
+    venue = team_item.get("venue") or {}
+    team_id = team.get("id")
+
+    if team_id is None:
+        return None
+
+    return {
+        "id": int(team_id),
+        "name": team.get("name") or "",
+        "country": team.get("country") or "",
+        "logo": team.get("logo") or None,
+        "founded": team.get("founded"),
+        "national": bool(team.get("national")),
+        "venue_name": venue.get("name") or "",
+        "venue_city": venue.get("city") or "",
+        "venue_capacity": venue.get("capacity"),
     }
 
 
@@ -7533,6 +7562,110 @@ def miniapp_matches_tomorrow():
 @miniapp_api.get("/api/matches/top")
 def miniapp_matches_top():
     return build_miniapp_matches_response("top")
+
+
+@miniapp_api.get("/api/teams/search")
+def miniapp_teams_search():
+    query = (flask_request.args.get("q") or "").strip()
+    if len(query) < 2:
+        return jsonify({"ok": True, "items": []})
+
+    try:
+        normalized_query = normalize_team_name(query)
+        response = request_api_football(
+            "/teams",
+            {"search": normalized_query},
+        )
+        items = []
+        for team_item in response[:10]:
+            formatted_team = format_miniapp_team_item(team_item)
+            if formatted_team:
+                items.append(formatted_team)
+        return jsonify({"ok": True, "items": items})
+    except Exception:
+        logger.exception("Mini App team search failed: query=%s", query)
+        return jsonify(
+            {
+                "ok": False,
+                "items": [],
+                "error": "team_search_unavailable",
+            }
+        ), 503
+
+
+@miniapp_api.get("/api/teams/<int:team_id>")
+def miniapp_team_profile(team_id: int):
+    try:
+        response = request_api_football("/teams", {"id": team_id})
+        team = (
+            format_miniapp_team_item(response[0])
+            if response
+            else None
+        )
+        if not team:
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "team_not_found",
+                    "message": "Команда не найдена.",
+                }
+            ), 404
+        return jsonify({"ok": True, "team": team})
+    except Exception:
+        logger.exception(
+            "Mini App team profile request failed: team_id=%s",
+            team_id,
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "error": "team_profile_unavailable",
+                "message": "Профиль команды временно недоступен.",
+            }
+        ), 503
+
+
+@miniapp_api.get("/api/teams/<int:team_id>/matches")
+def miniapp_team_matches(team_id: int):
+    recent_fixtures = []
+    upcoming_fixtures = []
+
+    try:
+        recent_fixtures = get_api_football_finished_fixtures(team_id)
+    except Exception:
+        logger.warning(
+            "Mini App recent team fixtures unavailable: team_id=%s",
+            team_id,
+            exc_info=True,
+        )
+
+    try:
+        upcoming_fixtures = get_api_football_next_fixtures(team_id)
+    except Exception:
+        logger.warning(
+            "Mini App upcoming team fixtures unavailable: team_id=%s",
+            team_id,
+            exc_info=True,
+        )
+
+    recent = [
+        formatted
+        for fixture_item in recent_fixtures[:5]
+        if (formatted := format_miniapp_fixture_item(fixture_item))
+    ]
+    upcoming = [
+        formatted
+        for fixture_item in upcoming_fixtures[:5]
+        if (formatted := format_miniapp_fixture_item(fixture_item))
+    ]
+
+    return jsonify(
+        {
+            "ok": True,
+            "recent": recent,
+            "upcoming": upcoming,
+        }
+    )
 
 
 @miniapp_api.route(

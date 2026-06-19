@@ -10,6 +10,9 @@ import type {
   PaymentReceiptErrorResponse,
   PaymentReceiptResponse,
   SubscriptionData,
+  TeamMatchesResponse,
+  TeamProfileResponse,
+  TeamSearchResponse,
 } from "./types";
 
 export class MatchAiAnalysisError extends Error {
@@ -72,6 +75,28 @@ export function getSubscription(
 
 export function getAppConfig(): Promise<AppConfig> {
   return apiRequest<AppConfig>("/api/config");
+}
+
+export function searchTeams(query: string): Promise<TeamSearchResponse> {
+  return apiRequest<TeamSearchResponse>(
+    `/api/teams/search?q=${encodeURIComponent(query.trim())}`,
+  );
+}
+
+export function getTeamProfile(
+  teamId: number,
+): Promise<TeamProfileResponse> {
+  return apiRequest<TeamProfileResponse>(
+    `/api/teams/${encodeURIComponent(teamId)}`,
+  );
+}
+
+export function getTeamMatches(
+  teamId: number,
+): Promise<TeamMatchesResponse> {
+  return apiRequest<TeamMatchesResponse>(
+    `/api/teams/${encodeURIComponent(teamId)}/matches`,
+  );
 }
 
 export async function requestMatchAiAnalysis(

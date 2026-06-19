@@ -4,6 +4,8 @@ export type Screen = "home" | "matches" | "subscription" | "profile";
 
 export interface MatchItem {
   id: string;
+  home_id: number | null;
+  away_id: number | null;
   home: string;
   away: string;
   home_logo: string | null;
@@ -12,6 +14,11 @@ export interface MatchItem {
   league_logo: string | null;
   country: string;
   kickoff: string | null;
+  status: string;
+  score: {
+    home: number | null;
+    away: number | null;
+  };
   source: string;
 }
 
@@ -79,6 +86,35 @@ export interface MatchAiAnalysisErrorResponse {
   ok: false;
   error: string;
   message: string;
+}
+
+export interface TeamSearchItem {
+  id: number;
+  name: string;
+  country: string;
+  logo: string | null;
+  founded: number | null;
+  national: boolean;
+  venue_name: string;
+  venue_city: string;
+  venue_capacity: number | null;
+}
+
+export interface TeamSearchResponse {
+  ok: boolean;
+  items: TeamSearchItem[];
+  error?: string;
+}
+
+export interface TeamProfileResponse {
+  ok: true;
+  team: TeamSearchItem;
+}
+
+export interface TeamMatchesResponse {
+  ok: true;
+  recent: MatchItem[];
+  upcoming: MatchItem[];
 }
 
 export type MiniAppPaymentPackageCode =
