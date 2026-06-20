@@ -288,7 +288,9 @@ def add_miniapp_cors_headers(response):
     response.headers[
         "Access-Control-Allow-Headers"
     ] = "Content-Type, X-Telegram-Init-Data"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = (
+        "GET, POST, DELETE, OPTIONS"
+    )
     return response
 
 
@@ -388,6 +390,20 @@ def init_db() -> None:
                     receipt_file_name TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS miniapp_favorite_teams (
+                    id BIGSERIAL PRIMARY KEY,
+                    telegram_user_id BIGINT NOT NULL,
+                    team_id BIGINT NOT NULL,
+                    team_name TEXT NOT NULL,
+                    team_logo TEXT,
+                    team_country TEXT,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (telegram_user_id, team_id)
                 );
                 """
             )
@@ -1954,6 +1970,113 @@ def save_favorite_team_to_db(user_id: int, team_name: str) -> None:
         connection.commit()
     except Exception:
         logger.exception("Failed to save favorite team to database")
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def get_miniapp_favorite_teams(telegram_user_id: int) -> list[dict]:
+    database_url = get_database_url()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    team_id,
+                    team_name,
+                    team_logo,
+                    team_country,
+                    created_at
+                FROM miniapp_favorite_teams
+                WHERE telegram_user_id = %s
+                ORDER BY created_at DESC, team_name ASC;
+                """,
+                (telegram_user_id,),
+            )
+            rows = cursor.fetchall()
+    finally:
+        if connection is not None:
+            connection.close()
+
+    return [
+        {
+            "team_id": int(row["team_id"]),
+            "team_name": row["team_name"],
+            "team_logo": row.get("team_logo"),
+            "team_country": row.get("team_country") or "",
+            "created_at": serialize_api_datetime(row.get("created_at")),
+        }
+        for row in rows
+    ]
+
+
+def add_miniapp_favorite_team(
+    telegram_user_id: int,
+    team: dict,
+) -> None:
+    database_url = get_database_url()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO miniapp_favorite_teams (
+                    telegram_user_id,
+                    team_id,
+                    team_name,
+                    team_logo,
+                    team_country
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (telegram_user_id, team_id)
+                DO UPDATE SET
+                    team_name = EXCLUDED.team_name,
+                    team_logo = EXCLUDED.team_logo,
+                    team_country = EXCLUDED.team_country;
+                """,
+                (
+                    telegram_user_id,
+                    team["id"],
+                    team["name"],
+                    team.get("logo"),
+                    team.get("country") or "",
+                ),
+            )
+        connection.commit()
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def remove_miniapp_favorite_team(
+    telegram_user_id: int,
+    team_id: int,
+) -> None:
+    database_url = get_database_url()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM miniapp_favorite_teams
+                WHERE telegram_user_id = %s AND team_id = %s;
+                """,
+                (telegram_user_id, team_id),
+            )
+        connection.commit()
     finally:
         if connection is not None:
             connection.close()
@@ -7806,6 +7929,126 @@ def miniapp_team_standings(team_id: int):
             "message": "Турнирная таблица команды пока недоступна.",
         }
     ), 404
+
+
+@miniapp_api.route(
+    "/api/favorites/teams",
+    methods=["GET", "POST", "OPTIONS"],
+)
+def miniapp_favorite_teams():
+    if flask_request.method == "OPTIONS":
+        return "", 204
+
+    telegram_user = get_api_telegram_user(flask_request)
+    if not telegram_user:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "telegram_user_id_required",
+                "message": "Не удалось определить пользователя Telegram.",
+            }
+        ), 400
+
+    telegram_user_id = int(telegram_user["id"])
+
+    try:
+        if flask_request.method == "GET":
+            return jsonify(
+                {
+                    "ok": True,
+                    "items": get_miniapp_favorite_teams(telegram_user_id),
+                }
+            )
+
+        request_data = flask_request.get_json(silent=True) or {}
+        team = request_data.get("team")
+        if not isinstance(team, dict):
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "invalid_team",
+                    "message": "Не удалось сохранить команду.",
+                }
+            ), 400
+
+        team_id = team.get("id")
+        team_name = str(team.get("name") or "").strip()
+        try:
+            team_id = int(team_id)
+        except (TypeError, ValueError):
+            team_id = 0
+
+        if team_id <= 0 or not team_name:
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "invalid_team",
+                    "message": "Не удалось сохранить команду.",
+                }
+            ), 400
+
+        add_miniapp_favorite_team(
+            telegram_user_id,
+            {
+                "id": team_id,
+                "name": team_name,
+                "logo": team.get("logo"),
+                "country": str(team.get("country") or "").strip(),
+            },
+        )
+        return jsonify({"ok": True})
+    except Exception:
+        logger.exception(
+            "Mini App favorite teams request failed: "
+            "method=%s user_id=%s",
+            flask_request.method,
+            telegram_user_id,
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "error": "favorite_teams_unavailable",
+                "message": "Избранные команды временно недоступны.",
+            }
+        ), 503
+
+
+@miniapp_api.route(
+    "/api/favorites/teams/<int:team_id>",
+    methods=["DELETE", "OPTIONS"],
+)
+def miniapp_favorite_team_delete(team_id: int):
+    if flask_request.method == "OPTIONS":
+        return "", 204
+
+    telegram_user = get_api_telegram_user(flask_request)
+    if not telegram_user:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "telegram_user_id_required",
+                "message": "Не удалось определить пользователя Telegram.",
+            }
+        ), 400
+
+    telegram_user_id = int(telegram_user["id"])
+    try:
+        remove_miniapp_favorite_team(telegram_user_id, team_id)
+        return jsonify({"ok": True})
+    except Exception:
+        logger.exception(
+            "Mini App favorite team delete failed: "
+            "user_id=%s team_id=%s",
+            telegram_user_id,
+            team_id,
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "error": "favorite_teams_unavailable",
+                "message": "Избранные команды временно недоступны.",
+            }
+        ), 503
 
 
 @miniapp_api.route(

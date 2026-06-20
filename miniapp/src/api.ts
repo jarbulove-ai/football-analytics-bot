@@ -1,6 +1,7 @@
 import { API_BASE_URL } from "./config";
 import type {
   AppConfig,
+  FavoriteTeamsResponse,
   MatchAiAnalysisErrorResponse,
   MatchAiAnalysisResponse,
   MatchContextResponse,
@@ -14,6 +15,7 @@ import type {
   TeamProfileResponse,
   TeamSearchResponse,
   TeamStandingsResponse,
+  TeamSearchItem,
 } from "./types";
 
 export class MatchAiAnalysisError extends Error {
@@ -108,6 +110,78 @@ export function getTeamStandings(
   );
 }
 
+function getTelegramInitDataHeader() {
+  return window.Telegram?.WebApp?.initData || "";
+}
+
+export async function getFavoriteTeams(
+  telegramUserId: number,
+): Promise<FavoriteTeamsResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/favorites/teams?telegram_user_id=${telegramUserId}`,
+    {
+      headers: {
+        Accept: "application/json",
+        "X-Telegram-Init-Data": getTelegramInitDataHeader(),
+      },
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(`Favorite teams request failed: ${response.status}`);
+  }
+
+  return response.json() as Promise<FavoriteTeamsResponse>;
+}
+
+export async function addFavoriteTeam(
+  telegramUserId: number,
+  team: TeamSearchItem,
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/favorites/teams`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Telegram-Init-Data": getTelegramInitDataHeader(),
+    },
+    body: JSON.stringify({
+      telegram_user_id: telegramUserId,
+      team: {
+        id: team.id,
+        name: team.name,
+        logo: team.logo,
+        country: team.country,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Favorite team request failed: ${response.status}`);
+  }
+}
+
+export async function removeFavoriteTeam(
+  telegramUserId: number,
+  teamId: number,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/favorites/teams/${encodeURIComponent(teamId)}` +
+      `?telegram_user_id=${telegramUserId}`,
+    {
+      method: "DELETE",
+      headers: {
+        Accept: "application/json",
+        "X-Telegram-Init-Data": getTelegramInitDataHeader(),
+      },
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(`Favorite team request failed: ${response.status}`);
+  }
+}
+
 export async function requestMatchAiAnalysis(
   matchId: string,
   telegramUserId: number,
@@ -119,8 +193,7 @@ export async function requestMatchAiAnalysis(
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        "X-Telegram-Init-Data":
-          window.Telegram?.WebApp?.initData || "",
+        "X-Telegram-Init-Data": getTelegramInitDataHeader(),
       },
       body: JSON.stringify({
         telegram_user_id: telegramUserId,
@@ -154,8 +227,7 @@ export async function submitPaymentReceipt(
   const response = await fetch(`${API_BASE_URL}/api/payments/request`, {
     method: "POST",
     headers: {
-      "X-Telegram-Init-Data":
-        window.Telegram?.WebApp?.initData || "",
+      "X-Telegram-Init-Data": getTelegramInitDataHeader(),
     },
     body: formData,
   });

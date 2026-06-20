@@ -25,7 +25,9 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
+  addFavoriteTeam,
   getAppConfig,
+  getFavoriteTeams,
   getMatchContext,
   getMatches,
   getSubscription,
@@ -35,12 +37,14 @@ import {
   MatchAiAnalysisError,
   PaymentReceiptError,
   requestMatchAiAnalysis,
+  removeFavoriteTeam,
   searchTeams,
   submitPaymentReceipt,
 } from "./api";
 import { getTelegramUserIdentity } from "./telegramUser";
 import type {
   AppConfig,
+  FavoriteTeamItem,
   MatchAiAnalysisResponse,
   MatchContextMatch,
   MatchContextResponse,
@@ -85,6 +89,7 @@ const matchDetailTabs: Array<{ id: MatchDetailTab; label: string }> = [
 const navigation = [
   { id: "home" as Screen, label: "Главная", icon: Home },
   { id: "matches" as Screen, label: "Матчи", icon: Activity },
+  { id: "favorites" as Screen, label: "Избранное", icon: Star },
   { id: "subscription" as Screen, label: "Подписка", icon: Crown },
   { id: "profile" as Screen, label: "Профиль", icon: CircleUserRound },
 ];
@@ -1543,10 +1548,18 @@ function TeamDetails({
   team: initialTeam,
   onBack,
   onOpenMatch,
+  isFavorite,
+  favoriteLoading,
+  favoriteError,
+  onToggleFavorite,
 }: {
   team: TeamSearchItem;
   onBack: () => void;
   onOpenMatch: (match: MatchItem) => void;
+  isFavorite: boolean;
+  favoriteLoading: boolean;
+  favoriteError: string;
+  onToggleFavorite: (team: TeamSearchItem) => void;
 }) {
   const [activeTab, setActiveTab] = useState<TeamDetailTab>("details");
   const [team, setTeam] = useState<TeamSearchItem>(initialTeam);
@@ -1656,13 +1669,35 @@ function TeamDetails({
         </div>
         <button
           type="button"
-          disabled
-          className="flex h-10 w-10 items-center justify-center rounded-lg border border-line bg-panel text-slate-600"
-          aria-label="Избранное появится позже"
+          onClick={() => onToggleFavorite(team)}
+          disabled={favoriteLoading}
+          className={`flex h-10 w-10 items-center justify-center rounded-lg border transition disabled:cursor-wait disabled:opacity-60 ${
+            isFavorite
+              ? "border-gold/30 bg-gold/10 text-gold"
+              : "border-line bg-panel text-slate-500 hover:text-white"
+          }`}
+          aria-label={
+            isFavorite
+              ? "Удалить команду из избранного"
+              : "Добавить команду в избранное"
+          }
         >
-          <Star className="h-5 w-5" />
+          {favoriteLoading ? (
+            <LoaderCircle className="h-4 w-4 animate-spin" />
+          ) : (
+            <Star
+              className="h-5 w-5"
+              fill={isFavorite ? "currentColor" : "none"}
+            />
+          )}
         </button>
       </div>
+
+      {favoriteError && (
+        <p className="mb-4 rounded-md bg-red-500/[0.08] px-3 py-2 text-xs text-red-200">
+          {favoriteError}
+        </p>
+      )}
 
       <div className="-mx-4 mb-5 overflow-x-auto border-y border-line px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div className="flex min-w-max gap-1">
@@ -2288,6 +2323,134 @@ function MatchDetails({
   );
 }
 
+function favoriteTeamToSearchItem(
+  favoriteTeam: FavoriteTeamItem,
+): TeamSearchItem {
+  return {
+    id: favoriteTeam.team_id,
+    name: favoriteTeam.team_name,
+    logo: favoriteTeam.team_logo,
+    country: favoriteTeam.team_country,
+    founded: null,
+    national: false,
+    venue_name: "",
+    venue_city: "",
+    venue_capacity: null,
+  };
+}
+
+function FavoritesScreen({
+  teams,
+  loading,
+  loadError,
+  actionError,
+  removingTeamIds,
+  onOpenTeam,
+  onRemoveTeam,
+}: {
+  teams: FavoriteTeamItem[];
+  loading: boolean;
+  loadError: string;
+  actionError: string;
+  removingTeamIds: Set<number>;
+  onOpenTeam: (team: TeamSearchItem) => void;
+  onRemoveTeam: (team: TeamSearchItem) => void;
+}) {
+  return (
+    <div className="animate-rise">
+      <AppHeader compact />
+      <p className="text-xs font-semibold uppercase text-slate-500">
+        Ваши команды
+      </p>
+      <h1 className="mt-1 text-2xl font-extrabold text-white">
+        Избранные команды
+      </h1>
+
+      {loading && (
+        <div className="mt-7 flex min-h-40 items-center justify-center">
+          <LoaderCircle className="h-6 w-6 animate-spin text-accent" />
+        </div>
+      )}
+
+      {!loading && loadError && (
+        <div className="mt-7 rounded-lg border border-line bg-panel px-4 py-8 text-center">
+          <Star className="mx-auto h-7 w-7 text-slate-600" />
+          <p className="mt-4 text-sm font-semibold text-white">
+            {loadError}
+          </p>
+        </div>
+      )}
+
+      {!loading && !loadError && actionError && (
+        <p className="mt-5 rounded-md bg-red-500/[0.08] px-3 py-2 text-sm text-red-200">
+          {actionError}
+        </p>
+      )}
+
+      {!loading && !loadError && teams.length === 0 && (
+        <div className="mt-7 rounded-lg border border-line bg-panel px-5 py-10 text-center">
+          <Star className="mx-auto h-8 w-8 text-slate-600" />
+          <p className="mt-4 text-sm font-semibold text-white">
+            Избранных команд пока нет
+          </p>
+          <p className="mx-auto mt-2 max-w-64 text-xs leading-5 text-slate-400">
+            Добавьте команду через поиск или профиль команды.
+          </p>
+        </div>
+      )}
+
+      {!loading && !loadError && teams.length > 0 && (
+        <div className="mt-6 overflow-hidden rounded-lg border border-line bg-panel">
+          {teams.map((favoriteTeam) => {
+            const team = favoriteTeamToSearchItem(favoriteTeam);
+            const removing = removingTeamIds.has(team.id);
+
+            return (
+              <div
+                key={team.id}
+                className="flex items-center border-t border-line/80 first:border-t-0"
+              >
+                <button
+                  type="button"
+                  onClick={() => onOpenTeam(team)}
+                  className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left transition hover:bg-white/[0.035]"
+                >
+                  <TeamLogo logo={team.logo} name={team.name} size="sm" />
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-white">
+                      {team.name}
+                    </p>
+                    <p className="truncate text-xs text-slate-500">
+                      {team.country || "Страна не указана"}
+                    </p>
+                  </div>
+                  <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-slate-500" />
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRemoveTeam(team);
+                  }}
+                  disabled={removing}
+                  className="mr-3 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-gold/10 text-gold transition active:scale-95 disabled:cursor-wait disabled:opacity-60"
+                  aria-label={`Удалить ${team.name} из избранного`}
+                >
+                  {removing ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Star className="h-4 w-4" fill="currentColor" />
+                  )}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProfileScreen() {
   const telegramIdentity = useMemo(getTelegramUserIdentity, []);
   const [profile, setProfile] = useState<SubscriptionData | null>(null);
@@ -2786,7 +2949,7 @@ function BottomNavigation({
 }) {
   return (
     <nav className="fixed inset-x-0 bottom-0 z-30 mx-auto max-w-lg border-t border-line bg-[#0b0f15]/95 px-2 pb-[max(0.55rem,env(safe-area-inset-bottom))] pt-2 shadow-nav backdrop-blur-xl">
-      <div className="grid grid-cols-4">
+      <div className="grid grid-cols-5">
         {navigation.map(({ id, label, icon: Icon }) => {
           const active = activeScreen === id;
           return (
@@ -2817,6 +2980,7 @@ function getInitialScreenFromUrl(): Screen {
 }
 
 export default function App() {
+  const telegramIdentity = useMemo(getTelegramUserIdentity, []);
   const [screen, setScreen] = useState<Screen>(getInitialScreenFromUrl);
   const [matchType, setMatchType] = useState<MatchListType>("top");
   const [selectedMatch, setSelectedMatch] = useState<MatchItem | null>(null);
@@ -2826,6 +2990,13 @@ export default function App() {
     useState<TeamSearchItem | null>(null);
   const [teamBeforeMatch, setTeamBeforeMatch] =
     useState<TeamSearchItem | null>(null);
+  const [favoriteTeams, setFavoriteTeams] = useState<FavoriteTeamItem[]>([]);
+  const [favoritesLoading, setFavoritesLoading] = useState(true);
+  const [favoritesLoadError, setFavoritesLoadError] = useState("");
+  const [favoriteActionError, setFavoriteActionError] = useState("");
+  const [favoriteLoadingIds, setFavoriteLoadingIds] = useState<Set<number>>(
+    new Set(),
+  );
 
   useEffect(() => {
     const telegramWebApp = window.Telegram?.WebApp;
@@ -2835,6 +3006,35 @@ export default function App() {
     document.documentElement.dataset.telegramTheme =
       telegramWebApp?.colorScheme || "dark";
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    setFavoritesLoading(true);
+    setFavoritesLoadError("");
+
+    getFavoriteTeams(telegramIdentity.id)
+      .then((response) => {
+        if (!active) return;
+        if (!response.ok) {
+          throw new Error(response.error || "Favorites error");
+        }
+        setFavoriteTeams(response.items || []);
+      })
+      .catch(() => {
+        if (active) {
+          setFavoritesLoadError(
+            "Избранные команды временно недоступны.",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setFavoritesLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [telegramIdentity.id]);
 
   function navigate(nextScreen: Screen) {
     setSelectedMatch(null);
@@ -2850,6 +3050,60 @@ export default function App() {
     navigate("matches");
   }
 
+  async function toggleFavoriteTeam(team: TeamSearchItem) {
+    if (favoriteLoadingIds.has(team.id)) {
+      return;
+    }
+
+    const previousFavorite = favoriteTeams.find(
+      (favoriteTeam) => favoriteTeam.team_id === team.id,
+    );
+    const isFavorite = Boolean(previousFavorite);
+    const optimisticTeam: FavoriteTeamItem = {
+      team_id: team.id,
+      team_name: team.name,
+      team_logo: team.logo,
+      team_country: team.country,
+      created_at: new Date().toISOString(),
+    };
+
+    setFavoriteActionError("");
+    setFavoriteLoadingIds((current) => new Set(current).add(team.id));
+    setFavoriteTeams((current) =>
+      isFavorite
+        ? current.filter(
+            (favoriteTeam) => favoriteTeam.team_id !== team.id,
+          )
+        : [optimisticTeam, ...current],
+    );
+
+    try {
+      if (isFavorite) {
+        await removeFavoriteTeam(telegramIdentity.id, team.id);
+      } else {
+        await addFavoriteTeam(telegramIdentity.id, team);
+      }
+    } catch {
+      setFavoriteTeams((current) => {
+        const withoutTeam = current.filter(
+          (favoriteTeam) => favoriteTeam.team_id !== team.id,
+        );
+        return previousFavorite
+          ? [previousFavorite, ...withoutTeam]
+          : withoutTeam;
+      });
+      setFavoriteActionError(
+        "Не удалось обновить избранное. Попробуйте позже.",
+      );
+    } finally {
+      setFavoriteLoadingIds((current) => {
+        const next = new Set(current);
+        next.delete(team.id);
+        return next;
+      });
+    }
+  }
+
   return (
     <div className="min-h-dvh bg-canvas text-white">
       <main className="mx-auto min-h-dvh max-w-lg px-4 pb-28 pt-[max(1rem,env(safe-area-inset-top))]">
@@ -2857,6 +3111,13 @@ export default function App() {
           <TeamDetails
             team={selectedTeam}
             onBack={() => setSelectedTeam(null)}
+            isFavorite={favoriteTeams.some(
+              (favoriteTeam) =>
+                favoriteTeam.team_id === selectedTeam.id,
+            )}
+            favoriteLoading={favoriteLoadingIds.has(selectedTeam.id)}
+            favoriteError={favoriteActionError}
+            onToggleFavorite={toggleFavoriteTeam}
             onOpenMatch={(match) => {
               setTeamBeforeMatch(selectedTeam);
               setSelectedTeam(null);
@@ -2913,6 +3174,20 @@ export default function App() {
                   setSelectedTeam(team);
                   window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
+              />
+            )}
+            {screen === "favorites" && (
+              <FavoritesScreen
+                teams={favoriteTeams}
+                loading={favoritesLoading}
+                loadError={favoritesLoadError}
+                actionError={favoriteActionError}
+                removingTeamIds={favoriteLoadingIds}
+                onOpenTeam={(team) => {
+                  setSelectedTeam(team);
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+                onRemoveTeam={toggleFavoriteTeam}
               />
             )}
             {screen === "subscription" && (

@@ -1,6 +1,11 @@
 export type MatchListType = "top" | "today" | "tomorrow";
 
-export type Screen = "home" | "matches" | "subscription" | "profile";
+export type Screen =
+  | "home"
+  | "matches"
+  | "favorites"
+  | "subscription"
+  | "profile";
 
 export interface MatchItem {
   id: string;
@@ -133,6 +138,21 @@ export interface TeamStandingsResponse {
   team_id?: number;
   team_name?: string;
   standings?: MatchStandingRow[];
+  error?: string;
+  message?: string;
+}
+
+export interface FavoriteTeamItem {
+  team_id: number;
+  team_name: string;
+  team_logo: string | null;
+  team_country: string;
+  created_at?: string;
+}
+
+export interface FavoriteTeamsResponse {
+  ok: boolean;
+  items: FavoriteTeamItem[];
   error?: string;
   message?: string;
 }
