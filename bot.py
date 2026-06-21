@@ -2229,6 +2229,191 @@ def remove_miniapp_match_reminder(
             connection.close()
 
 
+def get_pending_miniapp_match_reminders(limit: int = 20) -> list[dict]:
+    database_url = get_database_url()
+    if not database_url:
+        logger.warning(
+            "DATABASE_URL is not configured; match reminders were not checked"
+        )
+        return []
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    telegram_user_id,
+                    match_id,
+                    home_team,
+                    away_team,
+                    league,
+                    kickoff
+                FROM miniapp_match_reminders
+                WHERE is_sent = FALSE
+                  AND notify_at <= CURRENT_TIMESTAMP
+                  AND kickoff > CURRENT_TIMESTAMP
+                ORDER BY notify_at ASC
+                LIMIT %s;
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+    finally:
+        if connection is not None:
+            connection.close()
+
+    return [dict(row) for row in rows]
+
+
+def mark_miniapp_match_reminder_sent(reminder_id: int) -> None:
+    database_url = get_database_url()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE miniapp_match_reminders
+                SET is_sent = TRUE
+                WHERE id = %s AND is_sent = FALSE;
+                """,
+                (reminder_id,),
+            )
+        connection.commit()
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def format_match_reminder_kickoff(kickoff) -> str:
+    if not isinstance(kickoff, datetime):
+        return "время уточняется"
+
+    if kickoff.tzinfo is None:
+        kickoff = kickoff.replace(tzinfo=timezone.utc)
+
+    kickoff_almaty = kickoff.astimezone(ALMATY_TZ)
+    month_names = (
+        "января",
+        "февраля",
+        "марта",
+        "апреля",
+        "мая",
+        "июня",
+        "июля",
+        "августа",
+        "сентября",
+        "октября",
+        "ноября",
+        "декабря",
+    )
+    return (
+        f"{kickoff_almaty.day} "
+        f"{month_names[kickoff_almaty.month - 1]}, "
+        f"{kickoff_almaty.strftime('%H:%M')}"
+    )
+
+
+def build_miniapp_match_reminder_message(reminder: dict) -> str:
+    home_team = reminder.get("home_team") or "Хозяева"
+    away_team = reminder.get("away_team") or "Гости"
+    league = reminder.get("league") or "Турнир не указан"
+    kickoff_text = format_match_reminder_kickoff(reminder.get("kickoff"))
+    return (
+        "🔔 Напоминание MatchLab\n\n"
+        "Через 1 час матч:\n"
+        f"{home_team} — {away_team}\n\n"
+        f"Турнир: {league}\n"
+        f"Начало: {kickoff_text}\n\n"
+        "Открыть MatchLab 👇"
+    )
+
+
+async def check_and_send_miniapp_match_reminders(bot) -> None:
+    try:
+        reminders = get_pending_miniapp_match_reminders(limit=20)
+    except Exception:
+        logger.exception("Failed to load pending Mini App match reminders")
+        return
+
+    logger.info("Pending Mini App match reminders found: %s", len(reminders))
+
+    for reminder in reminders:
+        telegram_user_id = int(reminder["telegram_user_id"])
+        match_id = str(reminder["match_id"])
+        try:
+            await bot.send_message(
+                chat_id=telegram_user_id,
+                text=build_miniapp_match_reminder_message(reminder),
+                reply_markup=build_miniapp_inline_keyboard(),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to send Mini App match reminder: "
+                "user_id=%s match_id=%s",
+                telegram_user_id,
+                match_id,
+                exc_info=True,
+            )
+            continue
+
+        try:
+            mark_miniapp_match_reminder_sent(int(reminder["id"]))
+        except Exception:
+            logger.exception(
+                "Failed to mark Mini App match reminder as sent: "
+                "user_id=%s match_id=%s",
+                telegram_user_id,
+                match_id,
+            )
+            continue
+
+        logger.info(
+            "Mini App match reminder sent: user_id=%s match_id=%s",
+            telegram_user_id,
+            match_id,
+        )
+
+
+async def miniapp_match_reminders_loop(bot) -> None:
+    try:
+        await asyncio.sleep(10)
+        while True:
+            await check_and_send_miniapp_match_reminders(bot)
+            await asyncio.sleep(60)
+    except asyncio.CancelledError:
+        logger.info("Mini App match reminders background loop stopped")
+        raise
+
+
+async def start_miniapp_match_reminders_loop(application: Application) -> None:
+    application.bot_data["miniapp_match_reminders_task"] = (
+        asyncio.create_task(
+            miniapp_match_reminders_loop(application.bot),
+            name="miniapp-match-reminders",
+        )
+    )
+    logger.info("Mini App match reminders background loop started")
+
+
+async def stop_miniapp_match_reminders_loop(application: Application) -> None:
+    task = application.bot_data.pop("miniapp_match_reminders_task", None)
+    if not task:
+        return
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 def get_current_favorite_team(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -8624,7 +8809,13 @@ def main() -> None:
     telegram_token = get_required_env("TELEGRAM_BOT_TOKEN")
     #football_api_key = os.getenv("FOOTBALL_API_KEY", "")
 
-    application = Application.builder().token(telegram_token).build()
+    application = (
+        Application.builder()
+        .token(telegram_token)
+        .post_init(start_miniapp_match_reminders_loop)
+        .post_shutdown(stop_miniapp_match_reminders_loop)
+        .build()
+    )
     #application.bot_data["football_api_key"] = football_api_key
 
     from telegram import BotCommand
