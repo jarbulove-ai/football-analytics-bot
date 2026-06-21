@@ -1,6 +1,7 @@
 import {
   Activity,
   ArrowLeft,
+  Bell,
   Bot,
   CalendarDays,
   ChevronDown,
@@ -25,10 +26,12 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
+  addMatchReminder,
   addFavoriteTeam,
   getAppConfig,
   getFavoriteTeams,
   getMatchContext,
+  getMatchReminders,
   getMatches,
   getSubscription,
   getTeamMatches,
@@ -38,6 +41,7 @@ import {
   PaymentReceiptError,
   requestMatchAiAnalysis,
   removeFavoriteTeam,
+  removeMatchReminder,
   searchTeams,
   submitPaymentReceipt,
 } from "./api";
@@ -50,6 +54,7 @@ import type {
   MatchContextResponse,
   MatchItem,
   MatchListType,
+  MatchReminderItem,
   MatchStandingRow,
   MiniAppPaymentPackageCode,
   PaymentPackage,
@@ -118,6 +123,27 @@ function formatKickoff(value: string | null) {
 
 function formatPrice(value: number) {
   return new Intl.NumberFormat("ru-RU").format(value);
+}
+
+function canSetMatchReminder(match: MatchItem) {
+  if (!match.kickoff) return false;
+  const kickoffTime = new Date(match.kickoff).getTime();
+  return Number.isFinite(kickoffTime) && kickoffTime > Date.now();
+}
+
+function buildOptimisticMatchReminder(match: MatchItem): MatchReminderItem {
+  const kickoff = match.kickoff || "";
+  const kickoffTime = new Date(kickoff).getTime();
+
+  return {
+    match_id: match.id,
+    home_team: match.home,
+    away_team: match.away,
+    league: match.league,
+    kickoff,
+    notify_at: new Date(kickoffTime - 60 * 60 * 1000).toISOString(),
+    is_sent: false,
+  };
 }
 
 function formatContextMatchDate(value: string | null) {
@@ -477,43 +503,81 @@ function MatchSkeleton() {
 function CompactMatchRow({
   match,
   onOpen,
+  reminderActive,
+  reminderLoading,
+  onToggleReminder,
 }: {
   match: MatchItem;
   onOpen: (match: MatchItem) => void;
+  reminderActive: boolean;
+  reminderLoading: boolean;
+  onToggleReminder: (match: MatchItem) => void;
 }) {
   const kickoff = formatKickoff(match.kickoff);
   const hasScore =
     typeof match.score?.home === "number" &&
     typeof match.score?.away === "number";
+  const reminderAvailable = canSetMatchReminder(match);
 
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(match)}
-      className="grid w-full grid-cols-[3.25rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-line/80 px-4 py-3 text-left transition hover:bg-white/[0.035] active:bg-white/[0.06]"
-    >
-      <div>
-        <p className="text-sm font-bold text-white">{kickoff.time}</p>
-        <p className="mt-0.5 text-[10px] text-slate-500">{kickoff.date}</p>
-      </div>
-      <div className="min-w-0 space-y-2">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <TeamLogo logo={match.home_logo} name={match.home} size="xs" />
-          <p className="truncate text-sm font-semibold text-white">
-            {match.home || "Хозяева"}
-          </p>
+    <div className="flex items-stretch border-t border-line/80 transition hover:bg-white/[0.035]">
+      <button
+        type="button"
+        onClick={() => onOpen(match)}
+        className="grid min-w-0 flex-1 grid-cols-[3.25rem_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 text-left active:bg-white/[0.06]"
+      >
+        <div>
+          <p className="text-sm font-bold text-white">{kickoff.time}</p>
+          <p className="mt-0.5 text-[10px] text-slate-500">{kickoff.date}</p>
         </div>
-        <div className="flex min-w-0 items-center gap-2.5">
-          <TeamLogo logo={match.away_logo} name={match.away} size="xs" />
-          <p className="truncate text-sm font-semibold text-white">
-            {match.away || "Гости"}
-          </p>
+        <div className="min-w-0 space-y-2">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <TeamLogo logo={match.home_logo} name={match.home} size="xs" />
+            <p className="truncate text-sm font-semibold text-white">
+              {match.home || "Хозяева"}
+            </p>
+          </div>
+          <div className="flex min-w-0 items-center gap-2.5">
+            <TeamLogo logo={match.away_logo} name={match.away} size="xs" />
+            <p className="truncate text-sm font-semibold text-white">
+              {match.away || "Гости"}
+            </p>
+          </div>
         </div>
-      </div>
-      <span className="rounded-full bg-white/[0.05] px-2 py-1 text-[10px] font-semibold text-slate-400">
-        {hasScore ? `${match.score.home}:${match.score.away}` : "Детали"}
-      </span>
-    </button>
+        <span className="rounded-full bg-white/[0.05] px-2 py-1 text-[10px] font-semibold text-slate-400">
+          {hasScore ? `${match.score.home}:${match.score.away}` : "Детали"}
+        </span>
+      </button>
+      {reminderAvailable && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleReminder(match);
+          }}
+          disabled={reminderLoading}
+          className={`mr-3 self-center flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition active:scale-95 disabled:cursor-wait disabled:opacity-60 ${
+            reminderActive
+              ? "bg-lime/15 text-lime"
+              : "bg-white/[0.05] text-slate-500 hover:text-white"
+          }`}
+          aria-label={
+            reminderActive
+              ? "Удалить напоминание о матче"
+              : "Напомнить за 1 час до матча"
+          }
+        >
+          {reminderLoading ? (
+            <LoaderCircle className="h-4 w-4 animate-spin" />
+          ) : (
+            <Bell
+              className="h-4 w-4"
+              fill={reminderActive ? "currentColor" : "none"}
+            />
+          )}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -522,11 +586,21 @@ function MatchesScreen({
   onOpenMatch,
   onOpenTournament,
   onOpenTeam,
+  reminderMatchIds,
+  remindersLoading,
+  reminderLoadingIds,
+  reminderActionError,
+  onToggleReminder,
 }: {
   initialType: MatchListType;
   onOpenMatch: (match: MatchItem) => void;
   onOpenTournament: (tournament: TournamentSelection) => void;
   onOpenTeam: (team: TeamSearchItem) => void;
+  reminderMatchIds: Set<string>;
+  remindersLoading: boolean;
+  reminderLoadingIds: Set<string>;
+  reminderActionError: string;
+  onToggleReminder: (match: MatchItem) => void;
 }) {
   const [activeType, setActiveType] = useState<MatchListType>(initialType);
   const [activeView, setActiveView] = useState<MatchesView>("matches");
@@ -702,6 +776,11 @@ function MatchesScreen({
 
       {!isTeamSearchActive && (
         <>
+      {reminderActionError && (
+        <p className="mb-4 rounded-md bg-red-500/[0.08] px-3 py-2 text-xs text-red-200">
+          {reminderActionError}
+        </p>
+      )}
       <div className="relative mb-3 grid grid-cols-2 rounded-full bg-panel p-1">
         <span
           className={`absolute inset-y-1 left-1 w-[calc(50%-0.25rem)] rounded-full bg-accent shadow-card transition-transform duration-300 ease-out ${
@@ -857,6 +936,11 @@ function MatchesScreen({
                       key={match.id}
                       match={match}
                       onOpen={onOpenMatch}
+                      reminderActive={reminderMatchIds.has(match.id)}
+                      reminderLoading={
+                        remindersLoading || reminderLoadingIds.has(match.id)
+                      }
+                      onToggleReminder={onToggleReminder}
                     />
                   ))}
               </section>
@@ -1244,10 +1328,18 @@ function TournamentDetails({
   tournament,
   onBack,
   onOpenMatch,
+  reminderMatchIds,
+  remindersLoading,
+  reminderLoadingIds,
+  onToggleReminder,
 }: {
   tournament: TournamentSelection;
   onBack: () => void;
   onOpenMatch: (match: MatchItem) => void;
+  reminderMatchIds: Set<string>;
+  remindersLoading: boolean;
+  reminderLoadingIds: Set<string>;
+  onToggleReminder: (match: MatchItem) => void;
 }) {
   const [activeTab, setActiveTab] = useState<TournamentTab>("overview");
   const [context, setContext] = useState<MatchContextResponse | null>(null);
@@ -1472,6 +1564,11 @@ function TournamentDetails({
                   key={match.id}
                   match={match}
                   onOpen={onOpenMatch}
+                  reminderActive={reminderMatchIds.has(match.id)}
+                  reminderLoading={
+                    remindersLoading || reminderLoadingIds.has(match.id)
+                  }
+                  onToggleReminder={onToggleReminder}
                 />
               ))}
             </section>
@@ -1552,6 +1649,10 @@ function TeamDetails({
   favoriteLoading,
   favoriteError,
   onToggleFavorite,
+  reminderMatchIds,
+  remindersLoading,
+  reminderLoadingIds,
+  onToggleReminder,
 }: {
   team: TeamSearchItem;
   onBack: () => void;
@@ -1560,6 +1661,10 @@ function TeamDetails({
   favoriteLoading: boolean;
   favoriteError: string;
   onToggleFavorite: (team: TeamSearchItem) => void;
+  reminderMatchIds: Set<string>;
+  remindersLoading: boolean;
+  reminderLoadingIds: Set<string>;
+  onToggleReminder: (match: MatchItem) => void;
 }) {
   const [activeTab, setActiveTab] = useState<TeamDetailTab>("details");
   const [team, setTeam] = useState<TeamSearchItem>(initialTeam);
@@ -1844,6 +1949,11 @@ function TeamDetails({
                     key={match.id}
                     match={match}
                     onOpen={onOpenMatch}
+                    reminderActive={reminderMatchIds.has(match.id)}
+                    reminderLoading={
+                      remindersLoading || reminderLoadingIds.has(match.id)
+                    }
+                    onToggleReminder={onToggleReminder}
                   />
                 ))}
               </div>
@@ -1861,6 +1971,11 @@ function TeamDetails({
                     key={match.id}
                     match={match}
                     onOpen={onOpenMatch}
+                    reminderActive={reminderMatchIds.has(match.id)}
+                    reminderLoading={
+                      remindersLoading || reminderLoadingIds.has(match.id)
+                    }
+                    onToggleReminder={onToggleReminder}
                   />
                 ))}
               </div>
@@ -1939,10 +2054,18 @@ function MatchDetails({
   match,
   onBack,
   onOpenTeam,
+  reminderActive,
+  reminderLoading,
+  reminderActionError,
+  onToggleReminder,
 }: {
   match: MatchItem;
   onBack: () => void;
   onOpenTeam: (team: TeamSearchItem) => void;
+  reminderActive: boolean;
+  reminderLoading: boolean;
+  reminderActionError: string;
+  onToggleReminder: (match: MatchItem) => void;
 }) {
   const kickoff = formatKickoff(match.kickoff);
   const telegramIdentity = useMemo(getTelegramUserIdentity, []);
@@ -2076,6 +2199,28 @@ function MatchDetails({
           <div className="pt-3">
             <p className="text-2xl font-black text-white">{kickoff.time}</p>
             <p className="mt-1 text-xs text-slate-500">{kickoff.date}</p>
+            {canSetMatchReminder(match) && (
+              <button
+                type="button"
+                onClick={() => onToggleReminder(match)}
+                disabled={reminderLoading}
+                className={`mx-auto mt-3 flex h-9 items-center justify-center gap-1.5 rounded-md px-3 text-xs font-semibold transition disabled:cursor-wait disabled:opacity-60 ${
+                  reminderActive
+                    ? "bg-lime/15 text-lime"
+                    : "bg-panel text-slate-400"
+                }`}
+              >
+                {reminderLoading ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Bell
+                    className="h-4 w-4"
+                    fill={reminderActive ? "currentColor" : "none"}
+                  />
+                )}
+                {reminderActive ? "Включено" : "За 1 час"}
+              </button>
+            )}
           </div>
           <button
             type="button"
@@ -2103,6 +2248,12 @@ function MatchDetails({
           </button>
         </div>
       </section>
+
+      {reminderActionError && (
+        <p className="mb-4 rounded-md bg-red-500/[0.08] px-3 py-2 text-center text-xs text-red-200">
+          {reminderActionError}
+        </p>
+      )}
 
       <div className="-mx-4 overflow-x-auto border-y border-line px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div className="flex min-w-max gap-1">
@@ -2997,6 +3148,16 @@ export default function App() {
   const [favoriteLoadingIds, setFavoriteLoadingIds] = useState<Set<number>>(
     new Set(),
   );
+  const [matchReminders, setMatchReminders] = useState<MatchReminderItem[]>([]);
+  const [remindersLoading, setRemindersLoading] = useState(true);
+  const [reminderLoadingIds, setReminderLoadingIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [reminderActionError, setReminderActionError] = useState("");
+  const reminderMatchIds = useMemo(
+    () => new Set(matchReminders.map((reminder) => reminder.match_id)),
+    [matchReminders],
+  );
 
   useEffect(() => {
     const telegramWebApp = window.Telegram?.WebApp;
@@ -3029,6 +3190,32 @@ export default function App() {
       })
       .finally(() => {
         if (active) setFavoritesLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [telegramIdentity.id]);
+
+  useEffect(() => {
+    let active = true;
+    setRemindersLoading(true);
+
+    getMatchReminders(telegramIdentity.id)
+      .then((response) => {
+        if (!active) return;
+        if (!response.ok) {
+          throw new Error(response.error || "Reminders error");
+        }
+        setMatchReminders(response.items || []);
+      })
+      .catch(() => {
+        if (active) {
+          setReminderActionError("Напоминания временно недоступны.");
+        }
+      })
+      .finally(() => {
+        if (active) setRemindersLoading(false);
       });
 
     return () => {
@@ -3104,6 +3291,55 @@ export default function App() {
     }
   }
 
+  async function toggleMatchReminder(match: MatchItem) {
+    if (
+      remindersLoading ||
+      reminderLoadingIds.has(match.id) ||
+      !canSetMatchReminder(match)
+    ) {
+      return;
+    }
+
+    const previousReminder = matchReminders.find(
+      (reminder) => reminder.match_id === match.id,
+    );
+    const reminderActive = Boolean(previousReminder);
+
+    setReminderActionError("");
+    setReminderLoadingIds((current) => new Set(current).add(match.id));
+    setMatchReminders((current) =>
+      reminderActive
+        ? current.filter((reminder) => reminder.match_id !== match.id)
+        : [buildOptimisticMatchReminder(match), ...current],
+    );
+
+    try {
+      if (reminderActive) {
+        await removeMatchReminder(telegramIdentity.id, match.id);
+      } else {
+        await addMatchReminder(telegramIdentity.id, match);
+      }
+    } catch {
+      setMatchReminders((current) => {
+        const withoutMatch = current.filter(
+          (reminder) => reminder.match_id !== match.id,
+        );
+        return previousReminder
+          ? [previousReminder, ...withoutMatch]
+          : withoutMatch;
+      });
+      setReminderActionError(
+        "Не удалось обновить напоминание. Попробуйте позже.",
+      );
+    } finally {
+      setReminderLoadingIds((current) => {
+        const next = new Set(current);
+        next.delete(match.id);
+        return next;
+      });
+    }
+  }
+
   return (
     <div className="min-h-dvh bg-canvas text-white">
       <main className="mx-auto min-h-dvh max-w-lg px-4 pb-28 pt-[max(1rem,env(safe-area-inset-top))]">
@@ -3118,6 +3354,10 @@ export default function App() {
             favoriteLoading={favoriteLoadingIds.has(selectedTeam.id)}
             favoriteError={favoriteActionError}
             onToggleFavorite={toggleFavoriteTeam}
+            reminderMatchIds={reminderMatchIds}
+            remindersLoading={remindersLoading}
+            reminderLoadingIds={reminderLoadingIds}
+            onToggleReminder={toggleMatchReminder}
             onOpenMatch={(match) => {
               setTeamBeforeMatch(selectedTeam);
               setSelectedTeam(null);
@@ -3139,6 +3379,12 @@ export default function App() {
               setSelectedTeam(team);
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
+            reminderActive={reminderMatchIds.has(selectedMatch.id)}
+            reminderLoading={
+              remindersLoading || reminderLoadingIds.has(selectedMatch.id)
+            }
+            reminderActionError={reminderActionError}
+            onToggleReminder={toggleMatchReminder}
           />
         ) : selectedTournament ? (
           <TournamentDetails
@@ -3149,6 +3395,10 @@ export default function App() {
               setSelectedMatch(match);
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
+            reminderMatchIds={reminderMatchIds}
+            remindersLoading={remindersLoading}
+            reminderLoadingIds={reminderLoadingIds}
+            onToggleReminder={toggleMatchReminder}
           />
         ) : (
           <>
@@ -3174,6 +3424,11 @@ export default function App() {
                   setSelectedTeam(team);
                   window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
+                reminderMatchIds={reminderMatchIds}
+                remindersLoading={remindersLoading}
+                reminderLoadingIds={reminderLoadingIds}
+                reminderActionError={reminderActionError}
+                onToggleReminder={toggleMatchReminder}
               />
             )}
             {screen === "favorites" && (

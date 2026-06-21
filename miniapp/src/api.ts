@@ -5,7 +5,9 @@ import type {
   MatchAiAnalysisErrorResponse,
   MatchAiAnalysisResponse,
   MatchContextResponse,
+  MatchItem,
   MatchListType,
+  MatchRemindersResponse,
   MatchResponse,
   MiniAppPaymentPackageCode,
   PaymentReceiptErrorResponse,
@@ -14,8 +16,8 @@ import type {
   TeamMatchesResponse,
   TeamProfileResponse,
   TeamSearchResponse,
-  TeamStandingsResponse,
   TeamSearchItem,
+  TeamStandingsResponse,
 } from "./types";
 
 export class MatchAiAnalysisError extends Error {
@@ -179,6 +181,75 @@ export async function removeFavoriteTeam(
 
   if (!response.ok) {
     throw new Error(`Favorite team request failed: ${response.status}`);
+  }
+}
+
+export async function getMatchReminders(
+  telegramUserId: number,
+): Promise<MatchRemindersResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/reminders/matches?telegram_user_id=${telegramUserId}`,
+    {
+      headers: {
+        Accept: "application/json",
+        "X-Telegram-Init-Data": getTelegramInitDataHeader(),
+      },
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(`Match reminders request failed: ${response.status}`);
+  }
+
+  return response.json() as Promise<MatchRemindersResponse>;
+}
+
+export async function addMatchReminder(
+  telegramUserId: number,
+  match: MatchItem,
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/reminders/matches`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Telegram-Init-Data": getTelegramInitDataHeader(),
+    },
+    body: JSON.stringify({
+      telegram_user_id: telegramUserId,
+      match: {
+        id: match.id,
+        home: match.home,
+        away: match.away,
+        league: match.league,
+        kickoff: match.kickoff,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Match reminder request failed: ${response.status}`);
+  }
+}
+
+export async function removeMatchReminder(
+  telegramUserId: number,
+  matchId: string,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/reminders/matches/${encodeURIComponent(matchId)}` +
+      `?telegram_user_id=${telegramUserId}`,
+    {
+      method: "DELETE",
+      headers: {
+        Accept: "application/json",
+        "X-Telegram-Init-Data": getTelegramInitDataHeader(),
+      },
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(`Match reminder request failed: ${response.status}`);
   }
 }
 

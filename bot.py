@@ -407,6 +407,23 @@ def init_db() -> None:
                 );
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS miniapp_match_reminders (
+                    id BIGSERIAL PRIMARY KEY,
+                    telegram_user_id BIGINT NOT NULL,
+                    match_id TEXT NOT NULL,
+                    home_team TEXT,
+                    away_team TEXT,
+                    league TEXT,
+                    kickoff TIMESTAMPTZ NOT NULL,
+                    notify_at TIMESTAMPTZ NOT NULL,
+                    is_sent BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (telegram_user_id, match_id)
+                );
+                """
+            )
         connection.commit()
     except Exception:
         logger.exception("Failed to initialize database")
@@ -2075,6 +2092,136 @@ def remove_miniapp_favorite_team(
                 WHERE telegram_user_id = %s AND team_id = %s;
                 """,
                 (telegram_user_id, team_id),
+            )
+        connection.commit()
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def get_miniapp_match_reminders(telegram_user_id: int) -> list[dict]:
+    database_url = get_database_url()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    match_id,
+                    home_team,
+                    away_team,
+                    league,
+                    kickoff,
+                    notify_at,
+                    is_sent
+                FROM miniapp_match_reminders
+                WHERE telegram_user_id = %s
+                  AND is_sent = FALSE
+                  AND kickoff > CURRENT_TIMESTAMP
+                ORDER BY kickoff ASC;
+                """,
+                (telegram_user_id,),
+            )
+            rows = cursor.fetchall()
+    finally:
+        if connection is not None:
+            connection.close()
+
+    return [
+        {
+            "match_id": row["match_id"],
+            "home_team": row.get("home_team") or "",
+            "away_team": row.get("away_team") or "",
+            "league": row.get("league") or "",
+            "kickoff": serialize_api_datetime(row.get("kickoff")),
+            "notify_at": serialize_api_datetime(row.get("notify_at")),
+            "is_sent": bool(row.get("is_sent")),
+        }
+        for row in rows
+    ]
+
+
+def add_miniapp_match_reminder(
+    telegram_user_id: int,
+    match: dict,
+) -> None:
+    database_url = get_database_url()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO miniapp_match_reminders (
+                    telegram_user_id,
+                    match_id,
+                    home_team,
+                    away_team,
+                    league,
+                    kickoff,
+                    notify_at,
+                    is_sent
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s::timestamptz,
+                    %s::timestamptz - INTERVAL '1 hour',
+                    FALSE
+                )
+                ON CONFLICT (telegram_user_id, match_id)
+                DO UPDATE SET
+                    home_team = EXCLUDED.home_team,
+                    away_team = EXCLUDED.away_team,
+                    league = EXCLUDED.league,
+                    kickoff = EXCLUDED.kickoff,
+                    notify_at = EXCLUDED.notify_at,
+                    is_sent = FALSE;
+                """,
+                (
+                    telegram_user_id,
+                    match["id"],
+                    match.get("home") or "",
+                    match.get("away") or "",
+                    match.get("league") or "",
+                    match["kickoff"],
+                    match["kickoff"],
+                ),
+            )
+        connection.commit()
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def remove_miniapp_match_reminder(
+    telegram_user_id: int,
+    match_id: str,
+) -> None:
+    database_url = get_database_url()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM miniapp_match_reminders
+                WHERE telegram_user_id = %s AND match_id = %s;
+                """,
+                (telegram_user_id, match_id),
             )
         connection.commit()
     finally:
@@ -8047,6 +8194,147 @@ def miniapp_favorite_team_delete(team_id: int):
                 "ok": False,
                 "error": "favorite_teams_unavailable",
                 "message": "Избранные команды временно недоступны.",
+            }
+        ), 503
+
+
+@miniapp_api.route(
+    "/api/reminders/matches",
+    methods=["GET", "POST", "OPTIONS"],
+)
+def miniapp_match_reminders():
+    if flask_request.method == "OPTIONS":
+        return "", 204
+
+    telegram_user = get_api_telegram_user(flask_request)
+    if not telegram_user:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "telegram_user_id_required",
+                "message": "Не удалось определить пользователя Telegram.",
+            }
+        ), 400
+
+    telegram_user_id = int(telegram_user["id"])
+
+    try:
+        if flask_request.method == "GET":
+            return jsonify(
+                {
+                    "ok": True,
+                    "items": get_miniapp_match_reminders(telegram_user_id),
+                }
+            )
+
+        request_data = flask_request.get_json(silent=True) or {}
+        match = request_data.get("match")
+        if not isinstance(match, dict):
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "invalid_match",
+                    "message": "Не удалось сохранить напоминание.",
+                }
+            ), 400
+
+        match_id = str(match.get("id") or "").strip()
+        kickoff = str(match.get("kickoff") or "").strip()
+        if not match_id or not kickoff:
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "match_kickoff_required",
+                    "message": "Для матча не указано время начала.",
+                }
+            ), 400
+
+        try:
+            parsed_kickoff = datetime.fromisoformat(
+                kickoff.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "invalid_match_kickoff",
+                    "message": "Не удалось определить время начала матча.",
+                }
+            ), 400
+
+        if parsed_kickoff.tzinfo is None:
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "invalid_match_kickoff",
+                    "message": "Не удалось определить часовой пояс матча.",
+                }
+            ), 400
+
+        add_miniapp_match_reminder(
+            telegram_user_id,
+            {
+                "id": match_id,
+                "home": str(match.get("home") or "").strip(),
+                "away": str(match.get("away") or "").strip(),
+                "league": str(match.get("league") or "").strip(),
+                "kickoff": parsed_kickoff.isoformat(),
+            },
+        )
+        return jsonify({"ok": True})
+    except Exception:
+        logger.exception(
+            "Mini App match reminders request failed: "
+            "method=%s user_id=%s",
+            flask_request.method,
+            telegram_user_id,
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "error": "match_reminders_unavailable",
+                "message": "Напоминания временно недоступны.",
+            }
+        ), 503
+
+
+@miniapp_api.route(
+    "/api/reminders/matches/<path:match_id>",
+    methods=["DELETE", "OPTIONS"],
+)
+def miniapp_match_reminder_delete(match_id: str):
+    if flask_request.method == "OPTIONS":
+        return "", 204
+
+    telegram_user = get_api_telegram_user(flask_request)
+    if not telegram_user:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "telegram_user_id_required",
+                "message": "Не удалось определить пользователя Telegram.",
+            }
+        ), 400
+
+    telegram_user_id = int(telegram_user["id"])
+    try:
+        remove_miniapp_match_reminder(
+            telegram_user_id,
+            match_id.strip(),
+        )
+        return jsonify({"ok": True})
+    except Exception:
+        logger.exception(
+            "Mini App match reminder delete failed: "
+            "user_id=%s match_id=%s",
+            telegram_user_id,
+            match_id,
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "error": "match_reminders_unavailable",
+                "message": "Напоминания временно недоступны.",
             }
         ), 503
 

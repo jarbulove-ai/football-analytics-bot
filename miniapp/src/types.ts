@@ -157,6 +157,23 @@ export interface FavoriteTeamsResponse {
   message?: string;
 }
 
+export interface MatchReminderItem {
+  match_id: string;
+  home_team: string;
+  away_team: string;
+  league: string;
+  kickoff: string;
+  notify_at: string;
+  is_sent: boolean;
+}
+
+export interface MatchRemindersResponse {
+  ok: boolean;
+  items: MatchReminderItem[];
+  error?: string;
+  message?: string;
+}
+
 export type MiniAppPaymentPackageCode =
   | "ai_30"
   | "month_1"
