@@ -3634,7 +3634,16 @@ def build_injuries_block(
 
 def get_fixture_statistics(fixture_id: int | str) -> list[dict]:
     try:
-        return request_api_football("/fixtures/statistics", {"fixture": fixture_id})
+        statistics = request_api_football(
+            "/fixtures/statistics",
+            {"fixture": fixture_id},
+        )
+        logger.debug(
+            "Fixture statistics loaded: fixture_id=%s teams=%s",
+            fixture_id,
+            len(statistics),
+        )
+        return statistics
     except Exception:
         logger.warning(
             "Failed to get fixture statistics for fixture_id=%s",
@@ -7419,6 +7428,20 @@ def serialize_api_datetime(value) -> str | None:
     return str(value)
 
 
+def format_miniapp_score_value(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lstrip("-").isdigit():
+            return int(text)
+    return None
+
+
 def format_miniapp_fixture_item(fixture_item: dict) -> dict | None:
     fixture = fixture_item.get("fixture") or {}
     teams = fixture_item.get("teams") or {}
@@ -7438,6 +7461,16 @@ def format_miniapp_fixture_item(fixture_item: dict) -> dict | None:
             timestamp,
             tz=timezone.utc,
         ).astimezone(ALMATY_TZ).isoformat()
+    elif fixture.get("date"):
+        try:
+            fixture_date = datetime.fromisoformat(
+                str(fixture["date"]).replace("Z", "+00:00")
+            )
+            if fixture_date.tzinfo is None:
+                fixture_date = fixture_date.replace(tzinfo=timezone.utc)
+            kickoff = fixture_date.astimezone(ALMATY_TZ).isoformat()
+        except (TypeError, ValueError):
+            kickoff = str(fixture["date"])
 
     return {
         "id": str(fixture_id),
@@ -7456,8 +7489,8 @@ def format_miniapp_fixture_item(fixture_item: dict) -> dict | None:
         "kickoff": kickoff,
         "status": (fixture.get("status") or {}).get("short") or "",
         "score": {
-            "home": goals.get("home"),
-            "away": goals.get("away"),
+            "home": format_miniapp_score_value(goals.get("home")),
+            "away": format_miniapp_score_value(goals.get("away")),
         },
         "source": "api_football",
     }
@@ -7534,6 +7567,24 @@ def find_miniapp_match(match_id: str) -> dict | None:
     if not normalized_match_id:
         return None
 
+    if normalized_match_id.isdigit():
+        try:
+            fixture_response = request_api_football(
+                "/fixtures",
+                {
+                    "id": normalized_match_id,
+                    "timezone": "UTC",
+                },
+            )
+            if fixture_response:
+                return format_miniapp_fixture_item(fixture_response[0])
+        except Exception:
+            logger.warning(
+                "Mini App direct fixture lookup failed: match_id=%s",
+                normalized_match_id,
+                exc_info=True,
+            )
+
     for match_type in ("top", "today", "tomorrow"):
         try:
             matches = get_miniapp_matches(match_type)
@@ -7578,8 +7629,8 @@ def format_miniapp_context_fixture(fixture_item: dict) -> dict | None:
         "league": league.get("name") or "",
         "home": (teams.get("home") or {}).get("name") or "",
         "away": (teams.get("away") or {}).get("name") or "",
-        "home_score": goals.get("home"),
-        "away_score": goals.get("away"),
+        "home_score": format_miniapp_score_value(goals.get("home")),
+        "away_score": format_miniapp_score_value(goals.get("away")),
         "status": (fixture.get("status") or {}).get("short") or "",
     }
 
@@ -7809,6 +7860,11 @@ def get_miniapp_match_context(match: dict) -> dict:
         get_fixture_statistics(match_id),
         home_team_id,
         away_team_id,
+    )
+    logger.debug(
+        "Mini App match statistics formatted: fixture_id=%s items=%s",
+        match_id,
+        len(statistics.get("items") or []),
     )
 
     raw_standings = get_fixture_league_standings(

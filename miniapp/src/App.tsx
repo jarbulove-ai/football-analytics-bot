@@ -193,6 +193,61 @@ function formatContextMatchDate(value: string | null) {
   }).format(date);
 }
 
+function hasNumericMatchScore(
+  homeScore: number | null,
+  awayScore: number | null,
+) {
+  return typeof homeScore === "number" && typeof awayScore === "number";
+}
+
+function formatMatchStatus(status: string, hasScore: boolean) {
+  const normalizedStatus = status.trim().toLocaleUpperCase("en-US");
+
+  if (
+    ["FT", "AET", "PEN"].includes(normalizedStatus) ||
+    /FINISHED|MATCH FINISHED/.test(normalizedStatus)
+  ) {
+    return "Матч завершён";
+  }
+
+  if (
+    ["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "INT"].includes(
+      normalizedStatus,
+    ) ||
+    /LIVE|IN PROGRESS/.test(normalizedStatus)
+  ) {
+    return "Идёт матч";
+  }
+
+  if (["PST", "POSTPONED"].includes(normalizedStatus)) {
+    return "Матч перенесён";
+  }
+
+  if (["CANC", "CANCELLED"].includes(normalizedStatus)) {
+    return "Матч отменён";
+  }
+
+  if (["SUSP", "SUSPENDED"].includes(normalizedStatus)) {
+    return "Матч приостановлен";
+  }
+
+  if (["ABD", "ABANDONED"].includes(normalizedStatus)) {
+    return "Матч прерван";
+  }
+
+  if (
+    ["NS", "TBD", "SCHEDULED", "NOT STARTED"].includes(normalizedStatus)
+  ) {
+    return "Матч ожидается";
+  }
+
+  if (status.trim()) {
+    return status.trim();
+  }
+
+  return hasScore ? "Счёт матча" : "Матч ожидается";
+}
+
 function normalizeTeamLabel(value: string) {
   return value.trim().toLocaleLowerCase("ru-RU");
 }
@@ -1301,35 +1356,69 @@ function MatchContextLoading() {
   );
 }
 
-function ContextMatchRow({ match }: { match: MatchContextMatch }) {
+function ContextMatchRow({
+  match,
+  onOpen,
+}: {
+  match: MatchContextMatch;
+  onOpen: (match: MatchContextMatch) => Promise<void>;
+}) {
   const hasScore =
-    typeof match.home_score === "number" &&
-    typeof match.away_score === "number";
+    hasNumericMatchScore(match.home_score, match.away_score);
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState("");
+
+  async function handleOpen() {
+    if (opening) return;
+    setOpening(true);
+    setOpenError("");
+
+    try {
+      await onOpen(match);
+    } catch {
+      setOpenError("Не удалось открыть матч.");
+    } finally {
+      setOpening(false);
+    }
+  }
 
   return (
-    <div className="grid grid-cols-[4.75rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-line/80 px-3 py-3 first:border-t-0">
-      <div>
-        <p className="text-[10px] leading-4 text-slate-500">
-          {formatContextMatchDate(match.date)}
-        </p>
-        {match.status && (
-          <p className="mt-0.5 text-[10px] font-semibold text-slate-400">
-            {match.status}
+    <div className="border-t border-line/80 first:border-t-0">
+      <button
+        type="button"
+        onClick={handleOpen}
+        disabled={opening}
+        className="grid w-full grid-cols-[4.75rem_minmax(0,1fr)_auto_1.25rem] items-center gap-3 px-3 py-3 text-left transition hover:bg-white/[0.035] disabled:cursor-wait disabled:opacity-70"
+      >
+        <div>
+          <p className="text-[10px] leading-4 text-slate-500">
+            {formatContextMatchDate(match.date)}
           </p>
+          <p className="mt-0.5 text-[10px] font-semibold text-slate-400">
+            {formatMatchStatus(match.status, hasScore)}
+          </p>
+        </div>
+        <div className="min-w-0 space-y-1.5">
+          <p className="truncate text-xs font-semibold text-white">
+            {match.home || "Хозяева"}
+          </p>
+          <p className="truncate text-xs font-semibold text-white">
+            {match.away || "Гости"}
+          </p>
+        </div>
+        <div className="space-y-1.5 text-right text-xs font-bold text-white">
+          <p>{hasScore ? match.home_score : "—"}</p>
+          <p>{hasScore ? match.away_score : "—"}</p>
+        </div>
+        {opening ? (
+          <LoaderCircle className="h-4 w-4 animate-spin text-accent" />
+        ) : (
+          <ChevronRight className="h-4 w-4 text-slate-600" />
         )}
-      </div>
-      <div className="min-w-0 space-y-1.5">
-        <p className="truncate text-xs font-semibold text-white">
-          {match.home || "Хозяева"}
-        </p>
-        <p className="truncate text-xs font-semibold text-white">
-          {match.away || "Гости"}
-        </p>
-      </div>
-      <div className="space-y-1.5 text-right text-xs font-bold text-white">
-        <p>{hasScore ? match.home_score : "—"}</p>
-        <p>{hasScore ? match.away_score : "—"}</p>
-      </div>
+      </button>
+      {openError && (
+        <p className="px-3 pb-2 text-[10px] text-red-200">{openError}</p>
+      )}
     </div>
   );
 }
@@ -1337,9 +1426,11 @@ function ContextMatchRow({ match }: { match: MatchContextMatch }) {
 function MatchContextGroup({
   title,
   matches,
+  onOpenMatch,
 }: {
   title: string;
   matches: MatchContextMatch[];
+  onOpenMatch: (match: MatchContextMatch) => Promise<void>;
 }) {
   if (matches.length === 0) {
     return null;
@@ -1353,6 +1444,7 @@ function MatchContextGroup({
           <ContextMatchRow
             key={`${title}-${contextMatch.id}-${index}`}
             match={contextMatch}
+            onOpen={onOpenMatch}
           />
         ))}
       </div>
@@ -2452,6 +2544,7 @@ function MatchDetails({
   match,
   onBack,
   onOpenTeam,
+  onOpenContextMatch,
   reminderActive,
   reminderLoading,
   reminderActionError,
@@ -2460,12 +2553,18 @@ function MatchDetails({
   match: MatchItem;
   onBack: () => void;
   onOpenTeam: (team: TeamSearchItem) => void;
+  onOpenContextMatch: (match: MatchContextMatch) => Promise<void>;
   reminderActive: boolean;
   reminderLoading: boolean;
   reminderActionError: string;
   onToggleReminder: (match: MatchItem) => void;
 }) {
   const kickoff = formatKickoff(match.kickoff);
+  const hasScore = hasNumericMatchScore(
+    match.score.home,
+    match.score.away,
+  );
+  const matchStatus = formatMatchStatus(match.status, hasScore);
   const telegramIdentity = useMemo(getTelegramUserIdentity, []);
   const [aiAnalysis, setAiAnalysis] =
     useState<MatchAiAnalysisResponse | null>(null);
@@ -2595,8 +2694,14 @@ function MatchDetails({
             </p>
           </button>
           <div className="pt-3">
-            <p className="text-2xl font-black text-white">{kickoff.time}</p>
-            <p className="mt-1 text-xs text-slate-500">{kickoff.date}</p>
+            <p className="text-2xl font-black text-white">
+              {hasScore
+                ? `${match.score.home}:${match.score.away}`
+                : kickoff.time}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              {hasScore ? matchStatus : kickoff.date}
+            </p>
             {canSetMatchReminder(match) && (
               <button
                 type="button"
@@ -2706,7 +2811,7 @@ function MatchDetails({
                   Статус
                 </p>
                 <p className="mt-1 text-sm font-semibold text-white">
-                  Матч ожидается
+                  {matchStatus}
                 </p>
               </div>
             </div>
@@ -2879,18 +2984,22 @@ function MatchDetails({
               <MatchContextGroup
                 title="Очные встречи"
                 matches={matchContext.h2h}
+                onOpenMatch={onOpenContextMatch}
               />
               <MatchContextGroup
                 title={`Последние матчи: ${match.home}`}
                 matches={matchContext.home_recent}
+                onOpenMatch={onOpenContextMatch}
               />
               <MatchContextGroup
                 title={`Последние матчи: ${match.away}`}
                 matches={matchContext.away_recent}
+                onOpenMatch={onOpenContextMatch}
               />
               <MatchContextGroup
                 title="Ближайшие матчи"
                 matches={matchContext.upcoming}
+                onOpenMatch={onOpenContextMatch}
               />
             </div>
           )}
@@ -4250,6 +4359,7 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>(getInitialScreenFromUrl);
   const [matchType, setMatchType] = useState<MatchListType>("top");
   const [selectedMatch, setSelectedMatch] = useState<MatchItem | null>(null);
+  const [matchHistory, setMatchHistory] = useState<MatchItem[]>([]);
   const [selectedTournament, setSelectedTournament] =
     useState<TournamentSelection | null>(null);
   const [selectedTeam, setSelectedTeam] =
@@ -4313,6 +4423,7 @@ export default function App() {
       .then((response) => {
         if (!active) return;
         setScreen("matches");
+        setMatchHistory([]);
         setSelectedMatch(response.match);
       })
       .catch(() => {
@@ -4386,6 +4497,7 @@ export default function App() {
 
   function navigate(nextScreen: Screen) {
     setSelectedMatch(null);
+    setMatchHistory([]);
     setSelectedTournament(null);
     setSelectedTeam(null);
     setTeamBeforeMatch(null);
@@ -4522,6 +4634,7 @@ export default function App() {
     try {
       const response = await getMatch(reminder.match_id);
       setTeamBeforeMatch(null);
+      setMatchHistory([]);
       setSelectedMatch(response.match);
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch {
@@ -4573,6 +4686,15 @@ export default function App() {
     }
   }
 
+  async function openContextMatch(contextMatch: MatchContextMatch) {
+    const response = await getMatch(contextMatch.id);
+    if (selectedMatch) {
+      setMatchHistory((current) => [...current, selectedMatch]);
+    }
+    setSelectedMatch(response.match);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   return (
     <div className="min-h-dvh bg-canvas text-white">
       <main className="mx-auto min-h-dvh max-w-lg px-4 pb-28 pt-[max(1rem,env(safe-area-inset-top))]">
@@ -4601,14 +4723,23 @@ export default function App() {
             onOpenMatch={(match) => {
               setTeamBeforeMatch(selectedTeam);
               setSelectedTeam(null);
+              setMatchHistory([]);
               setSelectedMatch(match);
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
           />
         ) : selectedMatch ? (
           <MatchDetails
+            key={selectedMatch.id}
             match={selectedMatch}
             onBack={() => {
+              const previousMatch = matchHistory[matchHistory.length - 1];
+              if (previousMatch) {
+                setMatchHistory((current) => current.slice(0, -1));
+                setSelectedMatch(previousMatch);
+                window.scrollTo({ top: 0, behavior: "smooth" });
+                return;
+              }
               setSelectedMatch(null);
               if (teamBeforeMatch) {
                 setSelectedTeam(teamBeforeMatch);
@@ -4619,6 +4750,7 @@ export default function App() {
               setSelectedTeam(team);
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
+            onOpenContextMatch={openContextMatch}
             reminderActive={reminderMatchIds.has(selectedMatch.id)}
             reminderLoading={
               remindersLoading || reminderLoadingIds.has(selectedMatch.id)
@@ -4632,6 +4764,7 @@ export default function App() {
             onBack={() => setSelectedTournament(null)}
             onOpenMatch={(match) => {
               setTeamBeforeMatch(null);
+              setMatchHistory([]);
               setSelectedMatch(match);
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
@@ -4653,6 +4786,7 @@ export default function App() {
                 onToggleReminder={toggleMatchReminder}
                 onOpenMatch={(match) => {
                   setTeamBeforeMatch(null);
+                  setMatchHistory([]);
                   setSelectedMatch(match);
                   window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
@@ -4664,6 +4798,7 @@ export default function App() {
                 initialType={matchType}
                 onOpenMatch={(match) => {
                   setTeamBeforeMatch(null);
+                  setMatchHistory([]);
                   setSelectedMatch(match);
                   window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
@@ -4701,6 +4836,7 @@ export default function App() {
                 onRemoveTeam={toggleFavoriteTeam}
                 onOpenMatch={(match) => {
                   setTeamBeforeMatch(null);
+                  setMatchHistory([]);
                   setSelectedMatch(match);
                   window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
