@@ -77,11 +77,17 @@ type MatchDetailTab = "details" | "ai" | "table" | "matches";
 type MatchesView = "matches" | "leagues";
 type TournamentTab = "overview" | "matches" | "standings" | "bracket";
 type TeamDetailTab = "details" | "matches" | "standings";
+type FavoriteTab = "teams" | "matches" | "reminders";
 
 interface TournamentSelection {
   league: string;
   country: string;
   leagueLogo: string | null;
+  matches: MatchItem[];
+}
+
+interface FavoriteTeamMatchesGroup {
+  team: FavoriteTeamItem;
   matches: MatchItem[];
 }
 
@@ -2524,6 +2530,9 @@ function FavoritesScreen({
   reminderActionError,
   onOpenTeam,
   onRemoveTeam,
+  onOpenMatch,
+  reminderMatchIds,
+  onToggleReminder,
   onOpenReminder,
   onRemoveReminder,
 }: {
@@ -2538,193 +2547,375 @@ function FavoritesScreen({
   reminderActionError: string;
   onOpenTeam: (team: TeamSearchItem) => void;
   onRemoveTeam: (team: TeamSearchItem) => void;
+  onOpenMatch: (match: MatchItem) => void;
+  reminderMatchIds: Set<string>;
+  onToggleReminder: (match: MatchItem) => void;
   onOpenReminder: (reminder: MatchReminderItem) => void;
   onRemoveReminder: (reminder: MatchReminderItem) => void;
 }) {
+  const [activeFavoriteTab, setActiveFavoriteTab] =
+    useState<FavoriteTab>("teams");
+  const [favoriteTeamMatches, setFavoriteTeamMatches] = useState<
+    FavoriteTeamMatchesGroup[]
+  >([]);
+  const [favoriteTeamMatchesLoading, setFavoriteTeamMatchesLoading] =
+    useState(false);
+  const [favoriteTeamMatchesError, setFavoriteTeamMatchesError] =
+    useState("");
+  const [loadedFavoriteTeamsKey, setLoadedFavoriteTeamsKey] = useState("");
+  const favoriteTeamsToLoad = teams.slice(0, 10);
+  const favoriteTeamsKey = favoriteTeamsToLoad
+    .map((team) => team.team_id)
+    .join(",");
+  const visibleFavoriteTeamMatches = favoriteTeamMatches.filter((group) =>
+    teams.some((team) => team.team_id === group.team.team_id),
+  );
+
+  useEffect(() => {
+    if (
+      activeFavoriteTab !== "matches" ||
+      favoriteTeamsKey === loadedFavoriteTeamsKey
+    ) {
+      return;
+    }
+
+    if (!favoriteTeamsKey) {
+      setFavoriteTeamMatches([]);
+      setFavoriteTeamMatchesError("");
+      setFavoriteTeamMatchesLoading(false);
+      setLoadedFavoriteTeamsKey("");
+      return;
+    }
+
+    let active = true;
+    setFavoriteTeamMatchesLoading(true);
+    setFavoriteTeamMatchesError("");
+
+    Promise.allSettled(
+      favoriteTeamsToLoad.map(async (team) => {
+        const response = await getTeamMatches(team.team_id);
+        return {
+          team,
+          matches: response.upcoming.slice(0, 2),
+        };
+      }),
+    )
+      .then((results) => {
+        if (!active) return;
+
+        const loadedGroups = results.flatMap((result) =>
+          result.status === "fulfilled" ? [result.value] : [],
+        );
+        const failedRequests = results.length - loadedGroups.length;
+
+        setFavoriteTeamMatches(
+          loadedGroups.filter((group) => group.matches.length > 0),
+        );
+        setLoadedFavoriteTeamsKey(favoriteTeamsKey);
+
+        if (failedRequests === results.length) {
+          setFavoriteTeamMatchesError(
+            "Не удалось загрузить ближайшие матчи.",
+          );
+        } else if (failedRequests > 0) {
+          setFavoriteTeamMatchesError(
+            "Часть ближайших матчей временно недоступна.",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setFavoriteTeamMatchesLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [
+    activeFavoriteTab,
+    favoriteTeamsKey,
+    loadedFavoriteTeamsKey,
+  ]);
+
+  const favoriteTabs: Array<{ id: FavoriteTab; label: string }> = [
+    { id: "teams", label: "Команды" },
+    { id: "matches", label: "Матчи" },
+    { id: "reminders", label: "Напоминания" },
+  ];
+
   return (
     <div className="animate-rise">
       <AppHeader compact />
       <p className="text-xs font-semibold uppercase text-slate-500">
-        Ваши команды
+        Личное пространство
       </p>
-      <h1 className="mt-1 text-2xl font-extrabold text-white">
-        Избранные команды
-      </h1>
+      <h1 className="mt-1 text-2xl font-extrabold text-white">Избранное</h1>
 
-      {loading && (
-        <div className="mt-7 flex min-h-40 items-center justify-center">
-          <LoaderCircle className="h-6 w-6 animate-spin text-accent" />
-        </div>
-      )}
+      <div className="mt-6 grid grid-cols-3 rounded-lg border border-line bg-panel p-1">
+        {favoriteTabs.map((tab) => {
+          const active = activeFavoriteTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveFavoriteTab(tab.id)}
+              className={`min-w-0 rounded-md px-2 py-2.5 text-xs font-bold transition ${
+                active
+                  ? "bg-accent text-white shadow-card"
+                  : "text-slate-500 hover:text-slate-200"
+              }`}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
 
-      {!loading && loadError && (
-        <div className="mt-7 rounded-lg border border-line bg-panel px-4 py-8 text-center">
-          <Star className="mx-auto h-7 w-7 text-slate-600" />
-          <p className="mt-4 text-sm font-semibold text-white">
-            {loadError}
-          </p>
-        </div>
-      )}
-
-      {!loading && !loadError && actionError && (
-        <p className="mt-5 rounded-md bg-red-500/[0.08] px-3 py-2 text-sm text-red-200">
-          {actionError}
-        </p>
-      )}
-
-      {!loading && !loadError && teams.length === 0 && (
-        <div className="mt-7 rounded-lg border border-line bg-panel px-5 py-10 text-center">
-          <Star className="mx-auto h-8 w-8 text-slate-600" />
-          <p className="mt-4 text-sm font-semibold text-white">
-            Избранных команд пока нет
-          </p>
-          <p className="mx-auto mt-2 max-w-64 text-xs leading-5 text-slate-400">
-            Добавьте команду через поиск или профиль команды.
-          </p>
-        </div>
-      )}
-
-      {!loading && !loadError && teams.length > 0 && (
-        <div className="mt-6 overflow-hidden rounded-lg border border-line bg-panel">
-          {teams.map((favoriteTeam) => {
-            const team = favoriteTeamToSearchItem(favoriteTeam);
-            const removing = removingTeamIds.has(team.id);
-
-            return (
-              <div
-                key={team.id}
-                className="flex items-center border-t border-line/80 first:border-t-0"
-              >
-                <button
-                  type="button"
-                  onClick={() => onOpenTeam(team)}
-                  className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left transition hover:bg-white/[0.035]"
-                >
-                  <TeamLogo logo={team.logo} name={team.name} size="sm" />
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-white">
-                      {team.name}
-                    </p>
-                    <p className="truncate text-xs text-slate-500">
-                      {team.country || "Страна не указана"}
-                    </p>
-                  </div>
-                  <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-slate-500" />
-                </button>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onRemoveTeam(team);
-                  }}
-                  disabled={removing}
-                  className="mr-3 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-gold/10 text-gold transition active:scale-95 disabled:cursor-wait disabled:opacity-60"
-                  aria-label={`Удалить ${team.name} из избранного`}
-                >
-                  {removing ? (
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Star className="h-4 w-4" fill="currentColor" />
-                  )}
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <section className="mt-9">
-        <div className="flex items-center gap-2">
-          <Bell className="h-4 w-4 text-lime" />
-          <h2 className="text-lg font-extrabold text-white">
-            Мои напоминания
-          </h2>
-          {!remindersLoading && reminders.length > 0 && (
-            <span className="ml-auto rounded-full bg-lime/10 px-2 py-1 text-[10px] font-bold text-lime">
-              {reminders.length}
-            </span>
+      {activeFavoriteTab === "teams" && (
+        <>
+          {loading && (
+            <div className="mt-7 flex min-h-40 items-center justify-center">
+              <LoaderCircle className="h-6 w-6 animate-spin text-accent" />
+            </div>
           )}
-        </div>
 
-        {reminderActionError && (
-          <p className="mt-4 rounded-md bg-red-500/[0.08] px-3 py-2 text-sm text-red-200">
-            {reminderActionError}
-          </p>
-        )}
+          {!loading && loadError && (
+            <div className="mt-7 rounded-lg border border-line bg-panel px-4 py-8 text-center">
+              <Star className="mx-auto h-7 w-7 text-slate-600" />
+              <p className="mt-4 text-sm font-semibold text-white">
+                {loadError}
+              </p>
+            </div>
+          )}
 
-        {remindersLoading && (
-          <div className="mt-4 flex min-h-28 items-center justify-center rounded-lg border border-line bg-panel">
-            <LoaderCircle className="h-5 w-5 animate-spin text-accent" />
-          </div>
-        )}
-
-        {!remindersLoading && reminders.length === 0 && (
-          <div className="mt-4 rounded-lg border border-line bg-panel px-4 py-5">
-            <p className="text-sm leading-6 text-slate-400">
-              Нажмите 🔔 на будущем матче, чтобы получить уведомление за 1 час.
+          {!loading && !loadError && actionError && (
+            <p className="mt-5 rounded-md bg-red-500/[0.08] px-3 py-2 text-sm text-red-200">
+              {actionError}
             </p>
-          </div>
-        )}
+          )}
 
-        {!remindersLoading && reminders.length > 0 && (
-          <div className="mt-4 overflow-hidden rounded-lg border border-line bg-panel">
-            {reminders.map((reminder) => {
-              const reminderLoading = reminderLoadingIds.has(
-                reminder.match_id,
-              );
+          {!loading && !loadError && teams.length === 0 && (
+            <div className="mt-7 rounded-lg border border-line bg-panel px-5 py-10 text-center">
+              <Star className="mx-auto h-8 w-8 text-slate-600" />
+              <p className="mx-auto mt-4 max-w-64 text-sm leading-6 text-slate-400">
+                Добавьте команду через поиск или профиль команды.
+              </p>
+            </div>
+          )}
 
-              return (
-                <div
-                  key={reminder.match_id}
-                  className="flex items-center border-t border-line/80 first:border-t-0"
-                >
-                  <button
-                    type="button"
-                    onClick={() => onOpenReminder(reminder)}
-                    disabled={reminderLoading}
-                    className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left transition hover:bg-white/[0.035] disabled:cursor-wait disabled:opacity-60"
+          {!loading && !loadError && teams.length > 0 && (
+            <div className="mt-6 overflow-hidden rounded-lg border border-line bg-panel">
+              {teams.map((favoriteTeam) => {
+                const team = favoriteTeamToSearchItem(favoriteTeam);
+                const removing = removingTeamIds.has(team.id);
+
+                return (
+                  <div
+                    key={team.id}
+                    className="flex items-center border-t border-line/80 first:border-t-0"
                   >
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-lime/10 text-lime">
-                      <Bell className="h-4 w-4" fill="currentColor" />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-white">
-                        {reminder.home_team} — {reminder.away_team}
-                      </p>
-                      <p className="mt-0.5 truncate text-xs text-slate-500">
-                        {reminder.league || "Турнир не указан"}
-                      </p>
-                      <p className="mt-1 text-[11px] font-semibold text-slate-300">
-                        {formatReminderKickoff(reminder.kickoff)}
-                      </p>
-                      <p className="mt-0.5 text-[10px] text-slate-500">
-                        Уведомление за 1 час до матча
-                      </p>
-                    </div>
-                    <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-slate-500" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onRemoveReminder(reminder);
-                    }}
-                    disabled={reminderLoading}
-                    className="mr-3 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-lime/10 text-lime transition active:scale-95 disabled:cursor-wait disabled:opacity-60"
-                    aria-label={`Удалить напоминание ${reminder.home_team} — ${reminder.away_team}`}
+                    <button
+                      type="button"
+                      onClick={() => onOpenTeam(team)}
+                      className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left transition hover:bg-white/[0.035]"
+                    >
+                      <TeamLogo logo={team.logo} name={team.name} size="sm" />
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-white">
+                          {team.name}
+                        </p>
+                        <p className="truncate text-xs text-slate-500">
+                          {team.country || "Страна не указана"}
+                        </p>
+                      </div>
+                      <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-slate-500" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onRemoveTeam(team);
+                      }}
+                      disabled={removing}
+                      className="mr-3 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-gold/10 text-gold transition active:scale-95 disabled:cursor-wait disabled:opacity-60"
+                      aria-label={`Удалить ${team.name} из избранного`}
+                    >
+                      {removing ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Star className="h-4 w-4" fill="currentColor" />
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+
+      {activeFavoriteTab === "matches" && (
+        <section className="mt-6">
+          {favoriteTeamMatchesError && (
+            <p className="mb-4 rounded-md bg-red-500/[0.08] px-3 py-2 text-sm text-red-200">
+              {favoriteTeamMatchesError}
+            </p>
+          )}
+
+          {favoriteTeamMatchesLoading && (
+            <div className="flex min-h-40 items-center justify-center rounded-lg border border-line bg-panel">
+              <LoaderCircle className="h-6 w-6 animate-spin text-accent" />
+            </div>
+          )}
+
+          {!favoriteTeamMatchesLoading && teams.length === 0 && (
+            <div className="rounded-lg border border-line bg-panel px-5 py-8 text-center">
+              <Activity className="mx-auto h-8 w-8 text-slate-600" />
+              <p className="mx-auto mt-4 max-w-64 text-sm leading-6 text-slate-400">
+                Добавьте команду в избранное, чтобы видеть её ближайшие матчи.
+              </p>
+            </div>
+          )}
+
+          {!favoriteTeamMatchesLoading &&
+            teams.length > 0 &&
+            visibleFavoriteTeamMatches.length === 0 &&
+            !favoriteTeamMatchesError && (
+              <div className="rounded-lg border border-line bg-panel px-5 py-8 text-center">
+                <CalendarDays className="mx-auto h-8 w-8 text-slate-600" />
+                <p className="mt-4 text-sm text-slate-400">
+                  Пока нет ближайших матчей избранных команд.
+                </p>
+              </div>
+            )}
+
+          {!favoriteTeamMatchesLoading &&
+            visibleFavoriteTeamMatches.length > 0 && (
+              <div className="space-y-5">
+                {visibleFavoriteTeamMatches.map((group) => (
+                  <section
+                    key={group.team.team_id}
+                    className="overflow-hidden rounded-lg border border-line bg-panel"
                   >
-                    {reminderLoading ? (
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Bell className="h-4 w-4" fill="currentColor" />
-                    )}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+                    <div className="flex items-center gap-3 px-4 py-3">
+                      <TeamLogo
+                        logo={group.team.team_logo}
+                        name={group.team.team_name}
+                        size="xs"
+                      />
+                      <div className="min-w-0">
+                        <h2 className="truncate text-sm font-bold text-white">
+                          {group.team.team_name}
+                        </h2>
+                        <p className="truncate text-[11px] text-slate-500">
+                          {group.team.team_country || "Страна не указана"}
+                        </p>
+                      </div>
+                      <span className="ml-auto rounded-full bg-white/[0.05] px-2 py-1 text-[10px] font-semibold text-slate-400">
+                        {group.matches.length}
+                      </span>
+                    </div>
+                    {group.matches.map((match) => (
+                      <CompactMatchRow
+                        key={match.id}
+                        match={match}
+                        onOpen={onOpenMatch}
+                        reminderActive={reminderMatchIds.has(match.id)}
+                        reminderLoading={
+                          remindersLoading ||
+                          reminderLoadingIds.has(match.id)
+                        }
+                        onToggleReminder={onToggleReminder}
+                      />
+                    ))}
+                  </section>
+                ))}
+              </div>
+            )}
+        </section>
+      )}
+
+      {activeFavoriteTab === "reminders" && (
+        <section className="mt-6">
+          {reminderActionError && (
+            <p className="mb-4 rounded-md bg-red-500/[0.08] px-3 py-2 text-sm text-red-200">
+              {reminderActionError}
+            </p>
+          )}
+
+          {remindersLoading && (
+            <div className="flex min-h-28 items-center justify-center rounded-lg border border-line bg-panel">
+              <LoaderCircle className="h-5 w-5 animate-spin text-accent" />
+            </div>
+          )}
+
+          {!remindersLoading && reminders.length === 0 && (
+            <div className="rounded-lg border border-line bg-panel px-4 py-5">
+              <p className="text-sm leading-6 text-slate-400">
+                Нажмите 🔔 на будущем матче, чтобы получить уведомление за 1 час.
+              </p>
+            </div>
+          )}
+
+          {!remindersLoading && reminders.length > 0 && (
+            <div className="overflow-hidden rounded-lg border border-line bg-panel">
+              {reminders.map((reminder) => {
+                const reminderLoading = reminderLoadingIds.has(
+                  reminder.match_id,
+                );
+
+                return (
+                  <div
+                    key={reminder.match_id}
+                    className="flex items-center border-t border-line/80 first:border-t-0"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onOpenReminder(reminder)}
+                      disabled={reminderLoading}
+                      className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left transition hover:bg-white/[0.035] disabled:cursor-wait disabled:opacity-60"
+                    >
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-lime/10 text-lime">
+                        <Bell className="h-4 w-4" fill="currentColor" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-white">
+                          {reminder.home_team} — {reminder.away_team}
+                        </p>
+                        <p className="mt-0.5 truncate text-xs text-slate-500">
+                          {reminder.league || "Турнир не указан"}
+                        </p>
+                        <p className="mt-1 text-[11px] font-semibold text-slate-300">
+                          {formatReminderKickoff(reminder.kickoff)}
+                        </p>
+                        <p className="mt-0.5 text-[10px] text-slate-500">
+                          Уведомление за 1 час до матча
+                        </p>
+                      </div>
+                      <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-slate-500" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onRemoveReminder(reminder);
+                      }}
+                      disabled={reminderLoading}
+                      className="mr-3 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-lime/10 text-lime transition active:scale-95 disabled:cursor-wait disabled:opacity-60"
+                      aria-label={`Удалить напоминание ${reminder.home_team} — ${reminder.away_team}`}
+                    >
+                      {reminderLoading ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Bell className="h-4 w-4" fill="currentColor" />
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 }
@@ -3685,6 +3876,13 @@ export default function App() {
                   window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
                 onRemoveTeam={toggleFavoriteTeam}
+                onOpenMatch={(match) => {
+                  setTeamBeforeMatch(null);
+                  setSelectedMatch(match);
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+                reminderMatchIds={reminderMatchIds}
+                onToggleReminder={toggleMatchReminder}
                 onOpenReminder={openSavedReminder}
                 onRemoveReminder={removeSavedReminder}
               />
