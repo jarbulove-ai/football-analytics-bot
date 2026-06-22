@@ -22,6 +22,7 @@ import {
   Trophy,
   Upload,
   WalletCards,
+  X,
   Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -2900,13 +2901,13 @@ function FavoritesScreen({
                         onRemoveReminder(reminder);
                       }}
                       disabled={reminderLoading}
-                      className="mr-3 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-lime/10 text-lime transition active:scale-95 disabled:cursor-wait disabled:opacity-60"
+                      className="mr-3 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-white/[0.05] text-slate-500 transition hover:text-red-200 active:scale-95 disabled:cursor-wait disabled:opacity-60"
                       aria-label={`Удалить напоминание ${reminder.home_team} — ${reminder.away_team}`}
                     >
                       {reminderLoading ? (
                         <LoaderCircle className="h-4 w-4 animate-spin" />
                       ) : (
-                        <Bell className="h-4 w-4" fill="currentColor" />
+                        <X className="h-4 w-4" />
                       )}
                     </button>
                   </div>
