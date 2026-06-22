@@ -69,6 +69,28 @@ export interface MatchStandingRow {
   status: string;
 }
 
+export interface MatchStatisticTeam {
+  team_id: number | null;
+  team_name: string;
+  team_logo: string | null;
+}
+
+export interface MatchStatisticItem {
+  type: string;
+  label: string;
+  home: string | null;
+  away: string | null;
+  home_value: number | null;
+  away_value: number | null;
+}
+
+export interface MatchStatisticsBlock {
+  available: boolean;
+  home: MatchStatisticTeam | null;
+  away: MatchStatisticTeam | null;
+  items: MatchStatisticItem[];
+}
+
 export interface MatchContextResponse {
   ok: true;
   match_id: string;
@@ -78,6 +100,7 @@ export interface MatchContextResponse {
   country: string;
   kickoff: string | null;
   match_group: string;
+  statistics: MatchStatisticsBlock;
   standings: MatchStandingRow[];
   h2h: MatchContextMatch[];
   home_recent: MatchContextMatch[];

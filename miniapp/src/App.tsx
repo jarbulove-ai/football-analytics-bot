@@ -55,6 +55,7 @@ import type {
   MatchItem,
   MatchListType,
   MatchReminderItem,
+  MatchStatisticItem,
   MatchStandingRow,
   MiniAppPaymentPackageCode,
   PaymentPackage,
@@ -74,7 +75,12 @@ const matchTabs: Array<{ id: MatchListType; label: string }> = [
 
 const ONBOARDING_STORAGE_KEY = "matchlab_onboarding_seen";
 
-type MatchDetailTab = "details" | "ai" | "table" | "matches";
+type MatchDetailTab =
+  | "details"
+  | "statistics"
+  | "ai"
+  | "table"
+  | "matches";
 type MatchesView = "matches" | "leagues";
 type TournamentTab = "overview" | "matches" | "standings" | "bracket";
 type TeamDetailTab = "details" | "matches" | "standings";
@@ -94,6 +100,7 @@ interface FavoriteTeamMatchesGroup {
 
 const matchDetailTabs: Array<{ id: MatchDetailTab; label: string }> = [
   { id: "details", label: "Детали" },
+  { id: "statistics", label: "Статистика" },
   { id: "ai", label: "AI-разбор" },
   { id: "table", label: "Таблица" },
   { id: "matches", label: "Матчи" },
@@ -2340,6 +2347,107 @@ function TeamDetails({
   );
 }
 
+function MatchStatisticRow({ item }: { item: MatchStatisticItem }) {
+  const homeValue =
+    typeof item.home_value === "number" && item.home_value >= 0
+      ? item.home_value
+      : null;
+  const awayValue =
+    typeof item.away_value === "number" && item.away_value >= 0
+      ? item.away_value
+      : null;
+  const total =
+    homeValue !== null && awayValue !== null
+      ? homeValue + awayValue
+      : 0;
+  const homeWidth = total > 0 ? ((homeValue ?? 0) / total) * 100 : 50;
+  const awayWidth = total > 0 ? ((awayValue ?? 0) / total) * 100 : 50;
+  const hasComparableValues =
+    homeValue !== null && awayValue !== null && total > 0;
+
+  return (
+    <div className="border-t border-line/80 px-4 py-3.5 first:border-t-0">
+      <div className="grid grid-cols-[3rem_minmax(0,1fr)_3rem] items-center gap-3">
+        <p className="text-left text-sm font-bold text-white">
+          {item.home ?? "—"}
+        </p>
+        <p className="text-center text-xs font-semibold text-slate-300">
+          {item.label}
+        </p>
+        <p className="text-right text-sm font-bold text-white">
+          {item.away ?? "—"}
+        </p>
+      </div>
+      {hasComparableValues && (
+        <div className="mt-2.5 flex h-1.5 gap-1 overflow-hidden rounded-full bg-white/[0.04]">
+          <div
+            className="h-full rounded-full bg-lime"
+            style={{ width: `${homeWidth}%` }}
+          />
+          <div
+            className="h-full rounded-full bg-accent"
+            style={{ width: `${awayWidth}%` }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MatchStatisticsPanel({
+  match,
+  statistics,
+}: {
+  match: MatchItem;
+  statistics: MatchContextResponse["statistics"];
+}) {
+  const homeTeam = statistics.home;
+  const awayTeam = statistics.away;
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-line bg-panel">
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 border-b border-line px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <TeamLogo
+            logo={homeTeam?.team_logo || match.home_logo}
+            name={homeTeam?.team_name || match.home}
+            size="xs"
+          />
+          <p className="truncate text-xs font-bold text-white">
+            {homeTeam?.team_name || match.home}
+          </p>
+        </div>
+        <Activity className="h-4 w-4 text-slate-600" />
+        <div className="flex min-w-0 items-center justify-end gap-2">
+          <p className="truncate text-right text-xs font-bold text-white">
+            {awayTeam?.team_name || match.away}
+          </p>
+          <TeamLogo
+            logo={awayTeam?.team_logo || match.away_logo}
+            name={awayTeam?.team_name || match.away}
+            size="xs"
+          />
+        </div>
+      </div>
+      <div>
+        {statistics.items.map((item) => (
+          <MatchStatisticRow key={item.type} item={item} />
+        ))}
+      </div>
+      <div className="flex items-center justify-center gap-4 border-t border-line px-4 py-3 text-[10px] text-slate-500">
+        <span className="flex items-center gap-1.5">
+          <span className="h-1.5 w-3 rounded-full bg-lime" />
+          {match.home}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-1.5 w-3 rounded-full bg-accent" />
+          {match.away}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function MatchDetails({
   match,
   onBack,
@@ -2613,6 +2721,34 @@ function MatchDetails({
               </div>
             )}
           </div>
+        </section>
+      )}
+
+      {activeTab === "statistics" && (
+        <section className="animate-rise py-6">
+          {contextLoading && <MatchContextLoading />}
+
+          {!contextLoading &&
+            (contextError ||
+              !matchContext?.statistics?.available ||
+              matchContext.statistics.items.length === 0) && (
+              <div className="py-10 text-center">
+                <Activity className="mx-auto h-7 w-7 text-slate-600" />
+                <p className="mt-4 text-sm font-semibold text-white">
+                  Статистика матча пока недоступна.
+                </p>
+              </div>
+            )}
+
+          {!contextLoading &&
+            !contextError &&
+            matchContext?.statistics?.available &&
+            matchContext.statistics.items.length > 0 && (
+              <MatchStatisticsPanel
+                match={match}
+                statistics={matchContext.statistics}
+              />
+            )}
         </section>
       )}
 

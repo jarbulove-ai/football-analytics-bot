@@ -3632,7 +3632,7 @@ def build_injuries_block(
     return "\n".join(lines)
 
 
-def get_fixture_statistics(fixture_id: int) -> list[dict]:
+def get_fixture_statistics(fixture_id: int | str) -> list[dict]:
     try:
         return request_api_football("/fixtures/statistics", {"fixture": fixture_id})
     except Exception:
@@ -3642,6 +3642,146 @@ def get_fixture_statistics(fixture_id: int) -> list[dict]:
             exc_info=True,
         )
         return []
+
+
+MINIAPP_STATISTIC_LABELS = {
+    "Ball Possession": "Владение мячом",
+    "Expected Goals": "Ожидаемые голы (xG)",
+    "Total Shots": "Удары",
+    "Shots on Goal": "Удары в створ",
+    "Shots off Goal": "Удары мимо",
+    "Blocked Shots": "Заблокированные удары",
+    "Corner Kicks": "Угловые",
+    "Fouls": "Фолы",
+    "Offsides": "Офсайды",
+    "Yellow Cards": "Жёлтые карточки",
+    "Red Cards": "Красные карточки",
+    "Goalkeeper Saves": "Сейвы",
+    "Total passes": "Пасы",
+    "Passes accurate": "Точные пасы",
+    "Passes %": "Точность пасов",
+}
+
+MINIAPP_STATISTIC_ORDER = {
+    statistic_type: index
+    for index, statistic_type in enumerate(MINIAPP_STATISTIC_LABELS)
+}
+
+
+def format_miniapp_statistic_display_value(value) -> str | None:
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return str(value)
+
+    if isinstance(value, int):
+        return str(value)
+
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+
+    text = str(value).strip()
+    if not text or text == "-":
+        return None
+
+    return text
+
+
+def format_miniapp_match_statistics(
+    raw_statistics: list[dict],
+    home_team_id: int | None = None,
+    away_team_id: int | None = None,
+) -> dict:
+    empty_result = {
+        "available": False,
+        "home": None,
+        "away": None,
+        "items": [],
+    }
+    if not raw_statistics:
+        return empty_result
+
+    entries_by_id = {
+        (entry.get("team") or {}).get("id"): entry
+        for entry in raw_statistics
+        if (entry.get("team") or {}).get("id") is not None
+    }
+    home_entry = entries_by_id.get(home_team_id)
+    away_entry = entries_by_id.get(away_team_id)
+
+    if home_entry is None and raw_statistics:
+        home_entry = raw_statistics[0]
+    if away_entry is None:
+        away_entry = next(
+            (entry for entry in raw_statistics if entry is not home_entry),
+            None,
+        )
+    if home_entry is None or away_entry is None:
+        return empty_result
+
+    def format_team(entry: dict) -> dict:
+        team = entry.get("team") or {}
+        return {
+            "team_id": team.get("id"),
+            "team_name": team.get("name") or "",
+            "team_logo": team.get("logo") or None,
+        }
+
+    def statistics_by_type(entry: dict) -> dict:
+        result = {}
+        for statistic in entry.get("statistics") or []:
+            statistic_type = str(statistic.get("type") or "").strip()
+            if statistic_type:
+                result[statistic_type] = statistic.get("value")
+        return result
+
+    home_statistics = statistics_by_type(home_entry)
+    away_statistics = statistics_by_type(away_entry)
+    statistic_types = list(
+        dict.fromkeys([*home_statistics.keys(), *away_statistics.keys()])
+    )
+    statistic_types.sort(
+        key=lambda statistic_type: (
+            MINIAPP_STATISTIC_ORDER.get(
+                statistic_type,
+                len(MINIAPP_STATISTIC_ORDER),
+            ),
+            statistic_type.lower(),
+        )
+    )
+
+    items = []
+    for statistic_type in statistic_types:
+        raw_home_value = home_statistics.get(statistic_type)
+        raw_away_value = away_statistics.get(statistic_type)
+        home_display = format_miniapp_statistic_display_value(raw_home_value)
+        away_display = format_miniapp_statistic_display_value(raw_away_value)
+        if home_display is None and away_display is None:
+            continue
+
+        items.append(
+            {
+                "type": statistic_type,
+                "label": MINIAPP_STATISTIC_LABELS.get(
+                    statistic_type,
+                    statistic_type,
+                ),
+                "home": home_display,
+                "away": away_display,
+                "home_value": parse_stat_number(raw_home_value),
+                "away_value": parse_stat_number(raw_away_value),
+            }
+        )
+
+    return {
+        "available": bool(items),
+        "home": format_team(home_entry),
+        "away": format_team(away_entry),
+        "items": items,
+    }
 
 
 def parse_stat_number(value) -> float | None:
@@ -7665,6 +7805,11 @@ def get_miniapp_match_context(match: dict) -> dict:
     away_team = teams.get("away") or {}
     home_team_id = home_team.get("id")
     away_team_id = away_team.get("id")
+    statistics = format_miniapp_match_statistics(
+        get_fixture_statistics(match_id),
+        home_team_id,
+        away_team_id,
+    )
 
     raw_standings = get_fixture_league_standings(
         league.get("id"),
@@ -7768,6 +7913,7 @@ def get_miniapp_match_context(match: dict) -> dict:
         "country": match.get("country") or league.get("country") or "",
         "kickoff": match.get("kickoff"),
         "match_group": match_group,
+        "statistics": statistics,
         "standings": standings,
         "h2h": format_fixture_list(h2h_fixtures),
         "home_recent": format_fixture_list(
