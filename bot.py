@@ -20,10 +20,10 @@ import requests
 from psycopg2.extras import Json, RealDictCursor
 from telegram import (
     BotCommand,
-    KeyboardButton,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     Update,
     WebAppInfo,
 )
@@ -2393,6 +2393,13 @@ async def miniapp_match_reminders_loop(bot) -> None:
 
 
 async def start_miniapp_match_reminders_loop(application: Application) -> None:
+    try:
+        await application.bot.set_my_commands(
+            [BotCommand("start", "Открыть MatchLab")]
+        )
+    except Exception:
+        logger.warning("Failed to update Telegram bot commands", exc_info=True)
+
     application.bot_data["miniapp_match_reminders_task"] = (
         asyncio.create_task(
             miniapp_match_reminders_loop(application.bot),
@@ -2440,29 +2447,8 @@ def get_required_env(name: str) -> str:
     return value
 
 
-def build_main_menu_markup() -> ReplyKeyboardMarkup:
-    keyboard = [
-        ["📅 Сегодня", "📆 Завтра"],
-        ["🔥 Топ матчи"],
-        ["⚽ Команда", "📊 Результаты"],
-        ["⭐ Моя команда", "📋 Профиль"],
-        ["🏆 Таблица", PREMIUM_BUTTON],
-    ]
-    if WEBAPP_URL:
-        keyboard.insert(
-            0,
-            [
-                KeyboardButton(
-                    text="🚀 Открыть MatchLab",
-                    web_app=WebAppInfo(url=WEBAPP_URL),
-                )
-            ],
-        )
-
-    return ReplyKeyboardMarkup(
-        keyboard,
-        resize_keyboard=True
-    )
+def build_main_menu_markup() -> ReplyKeyboardRemove:
+    return ReplyKeyboardRemove()
 
 
 def build_miniapp_inline_keyboard(
@@ -2472,7 +2458,7 @@ def build_miniapp_inline_keyboard(
         return None
 
     button_url = WEBAPP_URL
-    button_text = "🚀 Открыть MatchLab"
+    button_text = "Открыть MatchLab"
     if screen:
         url_parts = urlsplit(WEBAPP_URL)
         query_params = dict(
@@ -2523,29 +2509,60 @@ def build_match_analysis_ai_markup() -> ReplyKeyboardMarkup:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message and update.message.text and update.message.text.startswith("/start"):
+    message = update.effective_message
+    if not message:
+        return
+
+    if message.text and message.text.startswith("/start"):
         track_user_action(update, "start")
-    reply_markup = build_main_menu_markup()
 
-    await update.message.reply_text(
-        "⚽ MatchLab\n\n"
-        "📅 Сегодня — матчи на сегодня\n"
-        "📆 Завтра — матчи на завтра\n"
-        "🔥 Топ матчи — самые интересные игры\n"
-        "⚽ Команда — ближайшие матчи команды\n"
-        "📊 Результаты — последние результаты команды\n"
-        "📋 Профиль — тариф, AI-лимиты и Telegram ID\n"
-        "⭐ Моя команда — выбрать или изменить любимую команду\n"
-        "🏆 Таблица — турнирные таблицы лиг",
-        reply_markup=reply_markup,
+    sent_message = await message.reply_text(
+        "👋 Добро пожаловать в MatchLab\n\n"
+        "Вся аналитика, матчи, турниры, команды, избранное, "
+        "уведомления и AI-разбор теперь в Mini App.\n\n"
+        "Открой MatchLab 👇",
+        reply_markup=build_main_menu_markup(),
     )
-
     miniapp_markup = build_miniapp_inline_keyboard()
     if miniapp_markup:
-        await update.message.reply_text(
-            "🚀 Mini App доступен здесь:",
-            reply_markup=miniapp_markup,
-        )
+        try:
+            await sent_message.edit_reply_markup(reply_markup=miniapp_markup)
+        except Exception:
+            logger.warning(
+                "Failed to attach Mini App button to start message",
+                exc_info=True,
+            )
+            await message.reply_text(
+                "Открыть MatchLab 👇",
+                reply_markup=miniapp_markup,
+            )
+
+
+async def open_miniapp_redirect(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    message = update.effective_message
+    if not message:
+        return
+
+    sent_message = await message.reply_text(
+        "Открой MatchLab — теперь всё внутри Mini App 👇",
+        reply_markup=build_main_menu_markup(),
+    )
+    miniapp_markup = build_miniapp_inline_keyboard()
+    if miniapp_markup:
+        try:
+            await sent_message.edit_reply_markup(reply_markup=miniapp_markup)
+        except Exception:
+            logger.warning(
+                "Failed to attach Mini App button to redirect message",
+                exc_info=True,
+            )
+            await message.reply_text(
+                "Открыть MatchLab 👇",
+                reply_markup=miniapp_markup,
+            )
 
 
 def fetch_fixtures_for_date(api_key: str, date_value: datetime) -> list[dict]:
@@ -8818,19 +8835,21 @@ def main() -> None:
     )
     #application.bot_data["football_api_key"] = football_api_key
 
-    from telegram import BotCommand
-
-    application.bot.set_my_commands([
-        BotCommand("today", "Матчи сегодня"),
-        BotCommand("tomorrow", "Матчи завтра"),
-        BotCommand("top", "Топ матчи"),
-    ])
-
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("today", today))
-    application.add_handler(CommandHandler("tomorrow", tomorrow))
-    application.add_handler(CommandHandler("top", top))
-    application.add_handler(CommandHandler("testdb", testdb))
+    application.add_handler(
+        CommandHandler(
+            [
+                "today",
+                "tomorrow",
+                "top",
+                "testdb",
+                "matches",
+                "profile",
+                "help",
+            ],
+            open_miniapp_redirect,
+        )
+    )
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("user", user_command))
@@ -8848,104 +8867,6 @@ def main() -> None:
 
     application.add_handler(
         MessageHandler(
-            filters.Regex("^📅 Сегодня$"),
-            button_handler
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex("^📆 Завтра$"),
-            button_handler
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex("^🔥 Топ матчи$"),
-            button_handler
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex("^⚽ Команда$"),
-            button_handler
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex("^📋 Профиль$"),
-            button_handler
-        )
-    )
-    
-    application.add_handler(
-        MessageHandler(
-            filters.Regex("^📊 Результаты$"),
-            button_handler
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex("^⭐ Моя команда$"),
-            button_handler
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex("^🏆 Таблица$"),
-            button_handler
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex("^⬅️ Назад$"),
-            button_handler
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex(
-                "^(" + "|".join(
-                    re.escape(key)
-                    for key in STANDINGS_LEAGUES.keys()
-                ) + ")$"
-            ),
-            button_handler
-        )
-    )
-
-    favorite_team_buttons = set(FAVORITE_TEAM_LEAGUES.keys())
-    favorite_team_buttons.add(FAVORITE_MANUAL_INPUT_BUTTON)
-    favorite_team_buttons.add(FAVORITE_BACK_TO_LEAGUES_BUTTON)
-    favorite_team_buttons.add(FAVORITE_OPEN_PROFILE_BUTTON)
-    favorite_team_buttons.add(FAVORITE_CHANGE_TEAM_BUTTON)
-    favorite_team_buttons.add(MATCH_AI_ANALYSIS_BUTTON)
-    favorite_team_buttons.add(PREMIUM_BUTTON)
-    favorite_team_buttons.update(PAYMENT_PACKAGE_BUTTONS)
-    for teams in FAVORITE_TEAM_LEAGUES.values():
-        favorite_team_buttons.update(teams)
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex(
-                "^(" + "|".join(
-                    re.escape(button)
-                    for button in favorite_team_buttons
-                ) + ")$"
-            ),
-            button_handler
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
             filters.Document.ALL,
             payment_receipt_document
         )
@@ -8954,33 +8875,8 @@ def main() -> None:
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            match_number_analysis
-        ),
-        group=1
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            team_search
-        ),
-        group=2
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            team_results
-        ),
-        group=3
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            favorite_team
-        ),
-        group=4
+            open_miniapp_redirect
+        )
     )
 
     if ENABLE_MINIAPP_API:
