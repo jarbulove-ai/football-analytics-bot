@@ -12,6 +12,7 @@ import type {
   MiniAppPaymentPackageCode,
   PaymentReceiptErrorResponse,
   PaymentReceiptResponse,
+  SingleMatchResponse,
   SubscriptionData,
   TeamMatchesResponse,
   TeamProfileResponse,
@@ -60,6 +61,12 @@ async function apiRequest<T>(path: string): Promise<T> {
 
 export function getMatches(type: MatchListType): Promise<MatchResponse> {
   return apiRequest<MatchResponse>(`/api/matches/${type}`);
+}
+
+export function getMatch(matchId: string): Promise<SingleMatchResponse> {
+  return apiRequest<SingleMatchResponse>(
+    `/api/matches/${encodeURIComponent(matchId)}`,
+  );
 }
 
 export function getMatchContext(

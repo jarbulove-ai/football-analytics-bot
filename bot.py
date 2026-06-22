@@ -2351,7 +2351,9 @@ async def check_and_send_miniapp_match_reminders(bot) -> None:
             await bot.send_message(
                 chat_id=telegram_user_id,
                 text=build_miniapp_match_reminder_message(reminder),
-                reply_markup=build_miniapp_inline_keyboard(),
+                reply_markup=build_miniapp_inline_keyboard(
+                    params={"match_id": match_id}
+                ),
             )
         except Exception:
             logger.warning(
@@ -2451,32 +2453,48 @@ def build_main_menu_markup() -> ReplyKeyboardRemove:
     return ReplyKeyboardRemove()
 
 
+def build_miniapp_url(params: dict | None = None) -> str:
+    if not WEBAPP_URL:
+        return ""
+
+    if not params:
+        return WEBAPP_URL
+
+    url_parts = urlsplit(WEBAPP_URL)
+    query_params = dict(parse_qsl(url_parts.query, keep_blank_values=True))
+    query_params.update(
+        {
+            str(key): str(value)
+            for key, value in params.items()
+            if value is not None and str(value).strip()
+        }
+    )
+    return urlunsplit(
+        (
+            url_parts.scheme,
+            url_parts.netloc,
+            url_parts.path,
+            urlencode(query_params),
+            url_parts.fragment,
+        )
+    )
+
+
 def build_miniapp_inline_keyboard(
     screen: str | None = None,
+    params: dict | None = None,
 ) -> InlineKeyboardMarkup | None:
     if not WEBAPP_URL:
         return None
 
-    button_url = WEBAPP_URL
+    button_params = dict(params or {})
     button_text = "Открыть MatchLab"
     if screen:
-        url_parts = urlsplit(WEBAPP_URL)
-        query_params = dict(
-            parse_qsl(url_parts.query, keep_blank_values=True)
-        )
-        query_params["screen"] = screen
-        button_url = urlunsplit(
-            (
-                url_parts.scheme,
-                url_parts.netloc,
-                url_parts.path,
-                urlencode(query_params),
-                url_parts.fragment,
-            )
-        )
+        button_params["screen"] = screen
         if screen == "profile":
             button_text = "👤 Открыть профиль"
 
+    button_url = build_miniapp_url(button_params)
     return InlineKeyboardMarkup(
         [
             [
@@ -8153,6 +8171,33 @@ def miniapp_matches_tomorrow():
 @miniapp_api.get("/api/matches/top")
 def miniapp_matches_top():
     return build_miniapp_matches_response("top")
+
+
+@miniapp_api.get("/api/matches/<match_id>")
+def miniapp_match(match_id: str):
+    try:
+        match = find_miniapp_match(match_id)
+        if not match:
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "match_not_found",
+                    "message": "Матч не найден или уже недоступен.",
+                }
+            ), 404
+        return jsonify({"ok": True, "match": match})
+    except Exception:
+        logger.exception(
+            "Mini App match request failed: match_id=%s",
+            match_id,
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "error": "match_unavailable",
+                "message": "Данные матча временно недоступны.",
+            }
+        ), 503
 
 
 @miniapp_api.get("/api/teams/search")

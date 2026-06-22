@@ -30,6 +30,7 @@ import {
   addFavoriteTeam,
   getAppConfig,
   getFavoriteTeams,
+  getMatch,
   getMatchContext,
   getMatchReminders,
   getMatches,
@@ -590,6 +591,7 @@ function MatchesScreen({
   remindersLoading,
   reminderLoadingIds,
   reminderActionError,
+  deepLinkError,
   onToggleReminder,
 }: {
   initialType: MatchListType;
@@ -600,6 +602,7 @@ function MatchesScreen({
   remindersLoading: boolean;
   reminderLoadingIds: Set<string>;
   reminderActionError: string;
+  deepLinkError: string;
   onToggleReminder: (match: MatchItem) => void;
 }) {
   const [activeType, setActiveType] = useState<MatchListType>(initialType);
@@ -776,6 +779,11 @@ function MatchesScreen({
 
       {!isTeamSearchActive && (
         <>
+      {deepLinkError && (
+        <p className="mb-4 rounded-md border border-amber-400/15 bg-amber-400/[0.07] px-3 py-2 text-xs text-amber-100">
+          {deepLinkError}
+        </p>
+      )}
       {reminderActionError && (
         <p className="mb-4 rounded-md bg-red-500/[0.08] px-3 py-2 text-xs text-red-200">
           {reminderActionError}
@@ -3130,8 +3138,15 @@ function getInitialScreenFromUrl(): Screen {
   return requestedScreen === "profile" ? "profile" : "home";
 }
 
+function getInitialMatchIdFromUrl() {
+  return (
+    new URLSearchParams(window.location.search).get("match_id")?.trim() || ""
+  );
+}
+
 export default function App() {
   const telegramIdentity = useMemo(getTelegramUserIdentity, []);
+  const initialMatchId = useMemo(getInitialMatchIdFromUrl, []);
   const [screen, setScreen] = useState<Screen>(getInitialScreenFromUrl);
   const [matchType, setMatchType] = useState<MatchListType>("top");
   const [selectedMatch, setSelectedMatch] = useState<MatchItem | null>(null);
@@ -3154,6 +3169,10 @@ export default function App() {
     new Set(),
   );
   const [reminderActionError, setReminderActionError] = useState("");
+  const [deepLinkLoading, setDeepLinkLoading] = useState(
+    Boolean(initialMatchId),
+  );
+  const [deepLinkError, setDeepLinkError] = useState("");
   const reminderMatchIds = useMemo(
     () => new Set(matchReminders.map((reminder) => reminder.match_id)),
     [matchReminders],
@@ -3167,6 +3186,34 @@ export default function App() {
     document.documentElement.dataset.telegramTheme =
       telegramWebApp?.colorScheme || "dark";
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    if (!initialMatchId) {
+      return () => {
+        active = false;
+      };
+    }
+
+    getMatch(initialMatchId)
+      .then((response) => {
+        if (!active) return;
+        setScreen("matches");
+        setSelectedMatch(response.match);
+      })
+      .catch(() => {
+        if (!active) return;
+        setScreen("matches");
+        setDeepLinkError("Не удалось открыть матч из уведомления.");
+      })
+      .finally(() => {
+        if (active) setDeepLinkLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [initialMatchId]);
 
   useEffect(() => {
     let active = true;
@@ -3343,7 +3390,14 @@ export default function App() {
   return (
     <div className="min-h-dvh bg-canvas text-white">
       <main className="mx-auto min-h-dvh max-w-lg px-4 pb-28 pt-[max(1rem,env(safe-area-inset-top))]">
-        {selectedTeam ? (
+        {deepLinkLoading ? (
+          <div className="animate-rise">
+            <AppHeader compact />
+            <div className="flex min-h-[60vh] items-center justify-center">
+              <LoaderCircle className="h-7 w-7 animate-spin text-accent" />
+            </div>
+          </div>
+        ) : selectedTeam ? (
           <TeamDetails
             team={selectedTeam}
             onBack={() => setSelectedTeam(null)}
@@ -3428,6 +3482,7 @@ export default function App() {
                 remindersLoading={remindersLoading}
                 reminderLoadingIds={reminderLoadingIds}
                 reminderActionError={reminderActionError}
+                deepLinkError={deepLinkError}
                 onToggleReminder={toggleMatchReminder}
               />
             )}

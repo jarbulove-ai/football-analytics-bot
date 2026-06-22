@@ -36,6 +36,11 @@ export interface MatchResponse {
   error?: string;
 }
 
+export interface SingleMatchResponse {
+  ok: true;
+  match: MatchItem;
+}
+
 export interface MatchContextMatch {
   id: string;
   date: string | null;
