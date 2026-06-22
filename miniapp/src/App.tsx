@@ -72,6 +72,8 @@ const matchTabs: Array<{ id: MatchListType; label: string }> = [
   { id: "tomorrow", label: "Завтра" },
 ];
 
+const ONBOARDING_STORAGE_KEY = "matchlab_onboarding_seen";
+
 type MatchDetailTab = "details" | "ai" | "table" | "matches";
 type MatchesView = "matches" | "leagues";
 type TournamentTab = "overview" | "matches" | "standings" | "bracket";
@@ -3769,6 +3771,121 @@ function getInitialMatchIdFromUrl() {
   );
 }
 
+function shouldShowInitialOnboarding() {
+  const params = new URLSearchParams(window.location.search);
+  const matchId = params.get("match_id")?.trim() || "";
+  const requestedScreen = params.get("screen");
+
+  if (matchId || requestedScreen === "profile") {
+    return false;
+  }
+
+  try {
+    return window.localStorage.getItem(ONBOARDING_STORAGE_KEY) !== "true";
+  } catch {
+    return false;
+  }
+}
+
+function markOnboardingSeen() {
+  try {
+    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, "true");
+  } catch {
+    return;
+  }
+}
+
+function OnboardingOverlay({
+  onStart,
+  onLater,
+}: {
+  onStart: () => void;
+  onLater: () => void;
+}) {
+  const steps = [
+    {
+      label: "Откройте матч",
+      icon: Activity,
+      iconClass: "bg-accent/15 text-accent",
+    },
+    {
+      label: "Включите 🔔 за 1 час до начала",
+      icon: Bell,
+      iconClass: "bg-lime/10 text-lime",
+    },
+    {
+      label: "Посмотрите детали, таблицу и AI-разбор",
+      icon: Bot,
+      iconClass: "bg-violet-500/15 text-violet-300",
+    },
+  ];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] backdrop-blur-sm sm:items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="matchlab-onboarding-title"
+    >
+      <section className="w-full max-w-md animate-rise rounded-lg border border-line bg-panel p-5 shadow-card">
+        <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-accent text-white">
+          <Sparkles className="h-5 w-5" />
+        </div>
+        <h1
+          id="matchlab-onboarding-title"
+          className="mt-5 text-2xl font-extrabold text-white"
+        >
+          Добро пожаловать в MatchLab
+        </h1>
+        <p className="mt-3 text-sm leading-6 text-slate-400">
+          Следите за матчами, командами и турнирами, включайте напоминания и
+          открывайте AI-разбор в одном месте.
+        </p>
+
+        <div className="mt-6 space-y-3">
+          {steps.map(({ label, icon: Icon, iconClass }, index) => (
+            <div
+              key={label}
+              className="flex items-center gap-3 rounded-md border border-line/80 bg-white/[0.025] p-3"
+            >
+              <span
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${iconClass}`}
+              >
+                <Icon className="h-4 w-4" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold uppercase text-slate-600">
+                  Шаг {index + 1}
+                </p>
+                <p className="mt-0.5 text-sm font-semibold text-slate-200">
+                  {label}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-6 grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={onLater}
+            className="h-12 rounded-md border border-line bg-white/[0.04] text-sm font-bold text-slate-300 transition hover:bg-white/[0.07] active:scale-[0.98]"
+          >
+            Позже
+          </button>
+          <button
+            type="button"
+            onClick={onStart}
+            className="h-12 rounded-md bg-accent text-sm font-bold text-white shadow-card transition active:scale-[0.98]"
+          >
+            Начать
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export default function App() {
   const telegramIdentity = useMemo(getTelegramUserIdentity, []);
   const initialMatchId = useMemo(getInitialMatchIdFromUrl, []);
@@ -3798,6 +3915,9 @@ export default function App() {
     Boolean(initialMatchId),
   );
   const [deepLinkError, setDeepLinkError] = useState("");
+  const [onboardingVisible, setOnboardingVisible] = useState(
+    shouldShowInitialOnboarding,
+  );
   const reminderMatchIds = useMemo(
     () => new Set(matchReminders.map((reminder) => reminder.match_id)),
     [matchReminders],
@@ -3811,6 +3931,17 @@ export default function App() {
     document.documentElement.dataset.telegramTheme =
       telegramWebApp?.colorScheme || "dark";
   }, []);
+
+  useEffect(() => {
+    if (!onboardingVisible) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [onboardingVisible]);
 
   useEffect(() => {
     let active = true;
@@ -3907,6 +4038,14 @@ export default function App() {
   function openMatches(type: MatchListType) {
     setMatchType(type);
     navigate("matches");
+  }
+
+  function closeOnboarding(nextScreen?: Screen) {
+    markOnboardingSeen();
+    setOnboardingVisible(false);
+    if (nextScreen) {
+      navigate(nextScreen);
+    }
   }
 
   async function toggleFavoriteTeam(team: TeamSearchItem) {
@@ -4210,6 +4349,12 @@ export default function App() {
       </main>
 
       <BottomNavigation activeScreen={screen} onNavigate={navigate} />
+      {onboardingVisible && (
+        <OnboardingOverlay
+          onStart={() => closeOnboarding("matches")}
+          onLater={() => closeOnboarding()}
+        />
+      )}
     </div>
   );
 }
