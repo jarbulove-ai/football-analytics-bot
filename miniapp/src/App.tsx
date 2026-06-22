@@ -8,10 +8,8 @@ import {
   ChevronRight,
   ChevronUp,
   CircleUserRound,
-  Clock3,
   Crown,
   FileText,
-  Flame,
   Home,
   LoaderCircle,
   RefreshCw,
@@ -395,37 +393,35 @@ function AppHeader({ compact = false }: { compact?: boolean }) {
 }
 
 function HomeScreen({
-  onOpenMatches,
   onNavigate,
 }: {
-  onOpenMatches: (type: MatchListType) => void;
   onNavigate: (screen: Screen) => void;
 }) {
-  const shortcuts = [
+  const productFeatures = [
     {
-      title: "Топ матчи",
-      caption: "Главные игры ближайших дней",
-      icon: Flame,
-      iconClass: "bg-red-500/15 text-red-400",
-      action: () => onOpenMatches("top"),
-    },
-    {
-      title: "Сегодня",
-      caption: "Расписание на текущий день",
-      icon: CalendarDays,
+      title: "Матчи",
+      caption: "Сегодня, завтра и топ-игры",
+      icon: Activity,
       iconClass: "bg-accent/15 text-accent",
-      action: () => onOpenMatches("today"),
+      action: () => onNavigate("matches"),
     },
     {
-      title: "Завтра",
-      caption: "Матчи следующего дня",
-      icon: Clock3,
+      title: "Избранное",
+      caption: "Команды, матчи и напоминания",
+      icon: Star,
       iconClass: "bg-lime/10 text-lime",
-      action: () => onOpenMatches("tomorrow"),
+      action: () => onNavigate("favorites"),
     },
     {
-      title: "Подписка",
-      caption: "Тарифы и AI-лимиты",
+      title: "AI-разбор",
+      caption: "Аналитика по матчу",
+      icon: Bot,
+      iconClass: "bg-violet-500/15 text-violet-300",
+      action: () => onNavigate("matches"),
+    },
+    {
+      title: "Premium",
+      caption: "Больше AI-разборов",
       icon: Crown,
       iconClass: "bg-gold/10 text-gold",
       action: () => onNavigate("subscription"),
@@ -434,68 +430,109 @@ function HomeScreen({
 
   return (
     <div className="animate-rise">
-      <AppHeader />
-
-      <section className="mb-7">
-        <div className="mb-3 flex items-end justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase text-slate-500">
-              Центр матчей
-            </p>
-            <h1 className="mt-1 text-2xl font-extrabold text-white">
-              Что смотрим?
-            </h1>
+      <section className="relative overflow-hidden border-b border-line pb-8 pt-2">
+        <div className="flex items-center justify-between">
+          <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-accent text-white shadow-card">
+            <Activity className="h-5 w-5" />
           </div>
-          <Sparkles className="h-5 w-5 text-lime" />
+          <div className="flex items-center gap-1.5 rounded-full border border-lime/20 bg-lime/10 px-2.5 py-1 text-[11px] font-semibold text-lime">
+            <span className="h-1.5 w-1.5 rounded-full bg-lime" />
+            Online
+          </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          {shortcuts.map(({ title, caption, icon: Icon, iconClass, action }) => (
-            <button
-              key={title}
-              type="button"
-              onClick={action}
-              className="group min-h-36 rounded-lg border border-line bg-panel p-4 text-left shadow-card transition duration-200 active:scale-[0.98]"
-            >
-              <span
-                className={`mb-5 flex h-10 w-10 items-center justify-center rounded-lg ${iconClass}`}
-              >
-                <Icon className="h-5 w-5" />
-              </span>
-              <span className="block text-base font-bold text-white">
-                {title}
-              </span>
-              <span className="mt-1 block text-xs leading-5 text-slate-400">
-                {caption}
-              </span>
-            </button>
-          ))}
+        <div className="mt-7 max-w-md">
+          <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
+            <Sparkles className="h-4 w-4 text-lime" />
+            Футбольная аналитика
+          </div>
+          <h1 className="text-4xl font-black text-white">MatchLab</h1>
+          <p className="mt-2 text-lg font-bold text-slate-200">
+            AI-разбор футбольных матчей
+          </p>
+          <p className="mt-4 max-w-sm text-sm leading-6 text-slate-400">
+            Следите за матчами, командами, турнирами, включайте напоминания и
+            открывайте AI-разбор в одном месте.
+          </p>
+        </div>
+
+        <div className="mt-6 grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={() => onNavigate("matches")}
+            className="flex h-12 items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white shadow-card transition active:scale-[0.98]"
+          >
+            <Activity className="h-4 w-4" />
+            Матчи
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate("profile")}
+            className="flex h-12 items-center justify-center gap-2 rounded-md border border-line bg-panel text-sm font-bold text-white transition hover:bg-panelSoft active:scale-[0.98]"
+          >
+            <CircleUserRound className="h-4 w-4 text-lime" />
+            Профиль
+          </button>
         </div>
       </section>
 
-      <section className="border-t border-line pt-6">
+      <section className="py-7">
+        <div className="mb-4">
+          <div>
+            <p className="text-xs font-semibold uppercase text-slate-500">
+              Возможности
+            </p>
+            <h2 className="mt-1 text-xl font-extrabold text-white">
+              Всё важное рядом
+            </h2>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          {productFeatures.map(
+            ({ title, caption, icon: Icon, iconClass, action }) => (
+              <button
+                key={title}
+                type="button"
+                onClick={action}
+                className="group min-h-32 rounded-lg border border-line bg-panel p-4 text-left shadow-card transition duration-200 hover:border-white/15 active:scale-[0.98]"
+              >
+                <div className="flex items-start justify-between">
+                  <span
+                    className={`flex h-9 w-9 items-center justify-center rounded-lg ${iconClass}`}
+                  >
+                    <Icon className="h-4.5 w-4.5" />
+                  </span>
+                  <ChevronRight className="h-4 w-4 text-slate-600 transition group-hover:text-slate-300" />
+                </div>
+                <span className="mt-4 block text-sm font-bold text-white">
+                  {title}
+                </span>
+                <span className="mt-1 block text-xs leading-5 text-slate-400">
+                  {caption}
+                </span>
+              </button>
+            ),
+          )}
+        </div>
+      </section>
+
+      <section className="border-t border-line pb-2 pt-6">
         <div className="mb-4 flex items-center gap-2">
-          <Bot className="h-5 w-5 text-accent" />
-          <h2 className="text-base font-bold text-white">
-            Что умеет MatchLab
-          </h2>
+          <Zap className="h-5 w-5 text-gold" />
+          <h2 className="text-base font-bold text-white">Как пользоваться</h2>
         </div>
         <div className="space-y-4">
           {[
-            ["Форма и тренды", "Последние матчи, голы и динамика команд"],
-            ["Матчевый контекст", "Турнир, время начала и ключевые показатели"],
-            ["AI-разбор", "Краткие выводы и аналитические сигналы"],
-          ].map(([title, text], index) => (
-            <div key={title} className="flex items-start gap-3">
+            "Откройте матч",
+            "Посмотрите детали и таблицу",
+            "Включите 🔔 или откройте AI-разбор",
+          ].map((text, index) => (
+            <div key={text} className="flex items-center gap-3">
               <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-panelSoft text-xs font-bold text-lime">
                 {index + 1}
               </span>
-              <div>
-                <p className="text-sm font-semibold text-white">{title}</p>
-                <p className="mt-0.5 text-xs leading-5 text-slate-400">
-                  {text}
-                </p>
-              </div>
+              <p className="text-sm text-slate-300">{text}</p>
             </div>
           ))}
         </div>
@@ -3832,10 +3869,7 @@ export default function App() {
         ) : (
           <>
             {screen === "home" && (
-              <HomeScreen
-                onOpenMatches={openMatches}
-                onNavigate={navigate}
-              />
+              <HomeScreen onNavigate={navigate} />
             )}
             {screen === "matches" && (
               <MatchesScreen
