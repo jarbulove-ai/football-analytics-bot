@@ -3112,11 +3112,35 @@ function PackageIcon({ packageCode }: { packageCode: string }) {
 }
 
 function packageDescription(item: PaymentPackage) {
-  if (item.ai_credits) return `${item.ai_credits} полных AI-разборов`;
-  if (item.days && item.ai_limit) {
-    return `${item.ai_limit} AI-разборов на ${item.days} дней`;
+  if (item.code === "ai_30") {
+    return "Для точечного анализа отдельных матчей.";
   }
-  return "Возможности MatchLab";
+  if (item.code === "premium_30") {
+    return "Больше AI-разборов и удобный доступ к возможностям MatchLab.";
+  }
+  if (item.code === "premium_90") {
+    return "Выгодный вариант для регулярного использования.";
+  }
+  return "Удобный доступ к возможностям MatchLab.";
+}
+
+function packageDisplayTitle(item: PaymentPackage) {
+  if (item.code === "ai_30") return "30 AI-разборов";
+  if (item.code === "premium_30") return "Premium на 1 месяц";
+  if (item.code === "premium_90") return "Premium на 3 месяца";
+  return item.title;
+}
+
+function formatPremiumUntil(value: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(date);
 }
 
 function getMiniAppPaymentPackageCode(
@@ -3131,8 +3155,11 @@ function getMiniAppPaymentPackageCode(
 function SubscriptionScreen() {
   const telegramIdentity = useMemo(getTelegramUserIdentity, []);
   const [config, setConfig] = useState<AppConfig | null>(null);
+  const [subscription, setSubscription] =
+    useState<SubscriptionData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [subscriptionError, setSubscriptionError] = useState(false);
   const [selectedPackage, setSelectedPackage] =
     useState<PaymentPackage | null>(null);
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
@@ -3142,11 +3169,45 @@ function SubscriptionScreen() {
     useState<PaymentReceiptResponse | null>(null);
 
   useEffect(() => {
-    getAppConfig()
-      .then(setConfig)
-      .catch(() => setError(true))
-      .finally(() => setLoading(false));
-  }, []);
+    let active = true;
+
+    Promise.allSettled([
+      getAppConfig(),
+      getSubscription(telegramIdentity.id),
+    ])
+      .then(([configResult, subscriptionResult]) => {
+        if (!active) return;
+
+        if (configResult.status === "fulfilled") {
+          setConfig(configResult.value);
+        } else {
+          setError(true);
+        }
+
+        if (subscriptionResult.status === "fulfilled") {
+          setSubscription(subscriptionResult.value);
+        } else {
+          setSubscriptionError(true);
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [telegramIdentity.id]);
+
+  const remainingAi = subscription
+    ? Math.max(
+        subscription.ai_limit_monthly - subscription.ai_used_monthly,
+        0,
+      ) + subscription.extra_ai_credits
+    : null;
+  const premiumUntil = formatPremiumUntil(
+    subscription?.premium_until || null,
+  );
 
   function selectPackage(item: PaymentPackage) {
     setSelectedPackage(item);
@@ -3358,13 +3419,71 @@ function SubscriptionScreen() {
   return (
     <div className="animate-rise">
       <AppHeader compact />
-      <p className="text-xs font-semibold uppercase text-slate-500">
-        Больше возможностей
-      </p>
-      <h1 className="mt-1 text-2xl font-extrabold text-white">Подписка</h1>
-      <p className="mt-2 max-w-sm text-sm leading-6 text-slate-400">
-        Выберите подходящий пакет аналитики.
-      </p>
+      <section className="overflow-hidden rounded-lg border border-gold/20 bg-gold/[0.055] p-5 shadow-card">
+        <div className="flex items-start gap-4">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-gold/15 text-gold">
+            <Crown className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="text-xs font-semibold uppercase text-gold/80">
+              Больше возможностей
+            </p>
+            <h1 className="mt-1 text-2xl font-extrabold text-white">
+              Premium MatchLab
+            </h1>
+          </div>
+        </div>
+        <p className="mt-4 text-sm leading-6 text-slate-300">
+          Откройте больше AI-разборов, сохраняйте удобный доступ к аналитике и
+          используйте MatchLab без лишних ограничений.
+        </p>
+
+        <div className="mt-5 grid gap-2 border-t border-gold/15 pt-4">
+          {loading ? (
+            <>
+              <div className="h-4 w-44 animate-pulseSoft rounded bg-white/10" />
+              <div className="h-4 w-36 animate-pulseSoft rounded bg-white/10" />
+            </>
+          ) : subscriptionError || !subscription ? (
+            <p className="text-xs text-slate-400">
+              Статус подписки временно недоступен.
+            </p>
+          ) : subscription.is_admin ? (
+            <>
+              <div className="flex items-center gap-2 text-sm font-semibold text-lime">
+                <ShieldCheck className="h-4 w-4" />
+                Админ-доступ: без лимита
+              </div>
+              <p className="text-xs text-slate-400">
+                AI-разборы доступны без ограничений.
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-xs text-slate-400">Статус</span>
+                <span
+                  className={`text-right text-xs font-bold ${
+                    subscription.plan === "premium"
+                      ? "text-lime"
+                      : "text-slate-300"
+                  }`}
+                >
+                  {subscription.plan === "premium" && premiumUntil
+                    ? `Premium активен до: ${premiumUntil}`
+                    : "Premium не активен"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-xs text-slate-400">AI-разборы</span>
+                <span className="text-right text-xs font-bold text-white">
+                  Осталось AI-разборов: {remainingAi}
+                </span>
+              </div>
+            </>
+          )}
+        </div>
+      </section>
 
       {loading && (
         <div className="mt-7 space-y-3">
@@ -3387,14 +3506,25 @@ function SubscriptionScreen() {
       )}
 
       {!loading && config && (
-        <div className="mt-7 space-y-3">
+        <section className="mt-7">
+          <p className="text-xs font-semibold uppercase text-slate-500">
+            Выберите пакет
+          </p>
+          <h2 className="mt-1 text-xl font-extrabold text-white">
+            Тарифы и AI-разборы
+          </h2>
+
+          <div className="mt-4 space-y-3">
           {config.packages.map((item, index) => {
             const premium = item.code !== "ai_30";
+            const longPremium = item.code === "premium_90";
             return (
               <article
                 key={item.code}
                 className={`animate-rise rounded-lg border p-5 shadow-card ${
-                  premium
+                  longPremium
+                    ? "border-lime/30 bg-lime/[0.045]"
+                    : premium
                     ? "border-gold/25 bg-gold/[0.06]"
                     : "border-line bg-panel"
                 }`}
@@ -3403,7 +3533,9 @@ function SubscriptionScreen() {
                 <div className="flex items-start gap-4">
                   <div
                     className={`flex h-10 w-10 items-center justify-center rounded-lg ${
-                      premium
+                      longPremium
+                        ? "bg-lime/10 text-lime"
+                        : premium
                         ? "bg-gold/15 text-gold"
                         : "bg-accent/15 text-accent"
                     }`}
@@ -3411,8 +3543,10 @@ function SubscriptionScreen() {
                     <PackageIcon packageCode={item.code} />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-bold text-white">{item.title}</p>
-                    <p className="mt-1 text-xs text-slate-400">
+                    <p className="text-sm font-bold text-white">
+                      {packageDisplayTitle(item)}
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-slate-400">
                       {packageDescription(item)}
                     </p>
                   </div>
@@ -3424,25 +3558,77 @@ function SubscriptionScreen() {
                   type="button"
                   onClick={() => selectPackage(item)}
                   className={`mt-5 h-11 w-full rounded-md text-sm font-bold transition active:scale-[0.99] ${
-                    premium
+                    longPremium
+                      ? "bg-lime text-zinc-950"
+                      : premium
                       ? "bg-gold text-zinc-950"
                       : "bg-accent text-white"
                   }`}
                 >
-                  Выбрать
+                  Выбрать пакет
                 </button>
               </article>
             );
           })}
-        </div>
+          </div>
+        </section>
       )}
 
-      <div className="mt-6 flex items-start gap-3 border-t border-line pt-5">
-        <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-lime" />
-        <p className="text-xs leading-5 text-slate-500">
-          Доступ привязан к вашему Telegram-профилю.
-        </p>
-      </div>
+      {!loading && config && (
+        <>
+          <section className="mt-7 rounded-lg border border-line bg-panel p-5">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-accent" />
+              <h2 className="text-base font-bold text-white">Что входит</h2>
+            </div>
+            <div className="mt-4 grid gap-3">
+              {[
+                "AI-разбор матчей",
+                "Больше доступных разборов",
+                "Избранные команды",
+                "Напоминания о матчах",
+                "Удобный профиль и лимиты",
+              ].map((item) => (
+                <div key={item} className="flex items-center gap-3">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-lime/10 text-lime">
+                    <ShieldCheck className="h-3 w-3" />
+                  </span>
+                  <p className="text-sm text-slate-300">{item}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="mt-4 rounded-lg border border-line bg-panel p-5">
+            <div className="flex items-center gap-2">
+              <FileText className="h-5 w-5 text-gold" />
+              <h2 className="text-base font-bold text-white">Как оплатить</h2>
+            </div>
+            <div className="mt-4 space-y-3">
+              {[
+                "Выберите пакет",
+                "Переведите сумму",
+                "Загрузите PDF-чек",
+                "После проверки доступ активируется",
+              ].map((item, index) => (
+                <div key={item} className="flex items-center gap-3">
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/[0.05] text-[11px] font-bold text-slate-300">
+                    {index + 1}
+                  </span>
+                  <p className="text-sm text-slate-300">{item}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <div className="mt-6 flex items-start gap-3 border-t border-line pt-5">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-lime" />
+            <p className="text-xs leading-5 text-slate-500">
+              Доступ привязан к вашему Telegram-профилю.
+            </p>
+          </div>
+        </>
+      )}
     </div>
   );
 }
