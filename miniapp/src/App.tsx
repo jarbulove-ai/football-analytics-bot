@@ -122,6 +122,20 @@ function formatKickoff(value: string | null) {
   };
 }
 
+function formatReminderKickoff(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Время уточняется";
+  }
+
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "numeric",
+    month: "long",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
 function formatPrice(value: number) {
   return new Intl.NumberFormat("ru-RU").format(value);
 }
@@ -2504,16 +2518,28 @@ function FavoritesScreen({
   loadError,
   actionError,
   removingTeamIds,
+  reminders,
+  remindersLoading,
+  reminderLoadingIds,
+  reminderActionError,
   onOpenTeam,
   onRemoveTeam,
+  onOpenReminder,
+  onRemoveReminder,
 }: {
   teams: FavoriteTeamItem[];
   loading: boolean;
   loadError: string;
   actionError: string;
   removingTeamIds: Set<number>;
+  reminders: MatchReminderItem[];
+  remindersLoading: boolean;
+  reminderLoadingIds: Set<string>;
+  reminderActionError: string;
   onOpenTeam: (team: TeamSearchItem) => void;
   onRemoveTeam: (team: TeamSearchItem) => void;
+  onOpenReminder: (reminder: MatchReminderItem) => void;
+  onRemoveReminder: (reminder: MatchReminderItem) => void;
 }) {
   return (
     <div className="animate-rise">
@@ -2606,6 +2632,99 @@ function FavoritesScreen({
           })}
         </div>
       )}
+
+      <section className="mt-9">
+        <div className="flex items-center gap-2">
+          <Bell className="h-4 w-4 text-lime" />
+          <h2 className="text-lg font-extrabold text-white">
+            Мои напоминания
+          </h2>
+          {!remindersLoading && reminders.length > 0 && (
+            <span className="ml-auto rounded-full bg-lime/10 px-2 py-1 text-[10px] font-bold text-lime">
+              {reminders.length}
+            </span>
+          )}
+        </div>
+
+        {reminderActionError && (
+          <p className="mt-4 rounded-md bg-red-500/[0.08] px-3 py-2 text-sm text-red-200">
+            {reminderActionError}
+          </p>
+        )}
+
+        {remindersLoading && (
+          <div className="mt-4 flex min-h-28 items-center justify-center rounded-lg border border-line bg-panel">
+            <LoaderCircle className="h-5 w-5 animate-spin text-accent" />
+          </div>
+        )}
+
+        {!remindersLoading && reminders.length === 0 && (
+          <div className="mt-4 rounded-lg border border-line bg-panel px-4 py-5">
+            <p className="text-sm leading-6 text-slate-400">
+              Нажмите 🔔 на будущем матче, чтобы получить уведомление за 1 час.
+            </p>
+          </div>
+        )}
+
+        {!remindersLoading && reminders.length > 0 && (
+          <div className="mt-4 overflow-hidden rounded-lg border border-line bg-panel">
+            {reminders.map((reminder) => {
+              const reminderLoading = reminderLoadingIds.has(
+                reminder.match_id,
+              );
+
+              return (
+                <div
+                  key={reminder.match_id}
+                  className="flex items-center border-t border-line/80 first:border-t-0"
+                >
+                  <button
+                    type="button"
+                    onClick={() => onOpenReminder(reminder)}
+                    disabled={reminderLoading}
+                    className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left transition hover:bg-white/[0.035] disabled:cursor-wait disabled:opacity-60"
+                  >
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-lime/10 text-lime">
+                      <Bell className="h-4 w-4" fill="currentColor" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-white">
+                        {reminder.home_team} — {reminder.away_team}
+                      </p>
+                      <p className="mt-0.5 truncate text-xs text-slate-500">
+                        {reminder.league || "Турнир не указан"}
+                      </p>
+                      <p className="mt-1 text-[11px] font-semibold text-slate-300">
+                        {formatReminderKickoff(reminder.kickoff)}
+                      </p>
+                      <p className="mt-0.5 text-[10px] text-slate-500">
+                        Уведомление за 1 час до матча
+                      </p>
+                    </div>
+                    <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-slate-500" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onRemoveReminder(reminder);
+                    }}
+                    disabled={reminderLoading}
+                    className="mr-3 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-lime/10 text-lime transition active:scale-95 disabled:cursor-wait disabled:opacity-60"
+                    aria-label={`Удалить напоминание ${reminder.home_team} — ${reminder.away_team}`}
+                  >
+                    {reminderLoading ? (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Bell className="h-4 w-4" fill="currentColor" />
+                    )}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -3387,6 +3506,70 @@ export default function App() {
     }
   }
 
+  async function openSavedReminder(reminder: MatchReminderItem) {
+    if (reminderLoadingIds.has(reminder.match_id)) {
+      return;
+    }
+
+    setReminderActionError("");
+    setReminderLoadingIds((current) =>
+      new Set(current).add(reminder.match_id),
+    );
+
+    try {
+      const response = await getMatch(reminder.match_id);
+      setTeamBeforeMatch(null);
+      setSelectedMatch(response.match);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch {
+      setReminderActionError("Не удалось открыть матч.");
+    } finally {
+      setReminderLoadingIds((current) => {
+        const next = new Set(current);
+        next.delete(reminder.match_id);
+        return next;
+      });
+    }
+  }
+
+  async function removeSavedReminder(reminder: MatchReminderItem) {
+    if (reminderLoadingIds.has(reminder.match_id)) {
+      return;
+    }
+
+    setReminderActionError("");
+    setReminderLoadingIds((current) =>
+      new Set(current).add(reminder.match_id),
+    );
+    setMatchReminders((current) =>
+      current.filter((item) => item.match_id !== reminder.match_id),
+    );
+
+    try {
+      await removeMatchReminder(telegramIdentity.id, reminder.match_id);
+    } catch {
+      setMatchReminders((current) => {
+        const withoutReminder = current.filter(
+          (item) => item.match_id !== reminder.match_id,
+        );
+        return [...withoutReminder, reminder].sort(
+          (left, right) =>
+            new Date(left.kickoff).getTime() -
+            new Date(right.kickoff).getTime(),
+        );
+      });
+      setReminderActionError(
+        "Не удалось удалить напоминание. Попробуйте позже.",
+      );
+    } finally {
+      setReminderLoadingIds((current) => {
+        const next = new Set(current);
+        next.delete(reminder.match_id);
+        return next;
+      });
+    }
+  }
+
   return (
     <div className="min-h-dvh bg-canvas text-white">
       <main className="mx-auto min-h-dvh max-w-lg px-4 pb-28 pt-[max(1rem,env(safe-area-inset-top))]">
@@ -3493,11 +3676,17 @@ export default function App() {
                 loadError={favoritesLoadError}
                 actionError={favoriteActionError}
                 removingTeamIds={favoriteLoadingIds}
+                reminders={matchReminders}
+                remindersLoading={remindersLoading}
+                reminderLoadingIds={reminderLoadingIds}
+                reminderActionError={reminderActionError}
                 onOpenTeam={(team) => {
                   setSelectedTeam(team);
                   window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
                 onRemoveTeam={toggleFavoriteTeam}
+                onOpenReminder={openSavedReminder}
+                onRemoveReminder={removeSavedReminder}
               />
             )}
             {screen === "subscription" && (
