@@ -396,9 +396,112 @@ function AppHeader({ compact = false }: { compact?: boolean }) {
 
 function HomeScreen({
   onNavigate,
+  favoriteTeams,
+  matchReminders,
+  reminderMatchIds,
+  reminderLoadingIds,
+  remindersLoading,
+  onToggleReminder,
+  onOpenMatch,
+  onOpenReminder,
 }: {
   onNavigate: (screen: Screen) => void;
+  favoriteTeams: FavoriteTeamItem[];
+  matchReminders: MatchReminderItem[];
+  reminderMatchIds: Set<string>;
+  reminderLoadingIds: Set<string>;
+  remindersLoading: boolean;
+  onToggleReminder: (match: MatchItem) => void;
+  onOpenMatch: (match: MatchItem) => void;
+  onOpenReminder: (reminder: MatchReminderItem) => void;
 }) {
+  const [favoriteMatches, setFavoriteMatches] = useState<MatchItem[]>([]);
+  const [favoriteMatchesLoading, setFavoriteMatchesLoading] = useState(false);
+  const [favoriteMatchesError, setFavoriteMatchesError] = useState("");
+  const favoriteTeamsToLoad = useMemo(
+    () => favoriteTeams.slice(0, 3),
+    [favoriteTeams],
+  );
+  const favoriteTeamsKey = favoriteTeamsToLoad
+    .map((team) => team.team_id)
+    .join(",");
+  const nearestReminder = useMemo(
+    () =>
+      [...matchReminders]
+        .filter((reminder) => {
+          const kickoffTime = new Date(reminder.kickoff).getTime();
+          return (
+            !reminder.is_sent &&
+            Number.isFinite(kickoffTime) &&
+            kickoffTime > Date.now()
+          );
+        })
+        .sort(
+          (left, right) =>
+            new Date(left.kickoff).getTime() -
+            new Date(right.kickoff).getTime(),
+        )[0] || null,
+    [matchReminders],
+  );
+
+  useEffect(() => {
+    if (!favoriteTeamsKey) {
+      setFavoriteMatches([]);
+      setFavoriteMatchesError("");
+      setFavoriteMatchesLoading(false);
+      return;
+    }
+
+    let active = true;
+    setFavoriteMatches([]);
+    setFavoriteMatchesError("");
+    setFavoriteMatchesLoading(true);
+
+    Promise.allSettled(
+      favoriteTeamsToLoad.map((team) => getTeamMatches(team.team_id)),
+    )
+      .then((results) => {
+        if (!active) return;
+
+        const successfulResponses = results.flatMap((result) =>
+          result.status === "fulfilled" ? [result.value] : [],
+        );
+        const uniqueMatches = new Map<string, MatchItem>();
+
+        successfulResponses.forEach((response) => {
+          response.upcoming.forEach((match) => {
+            uniqueMatches.set(match.id, match);
+          });
+        });
+
+        const sortedMatches = Array.from(uniqueMatches.values())
+          .sort((left, right) => {
+            const leftTime = left.kickoff
+              ? new Date(left.kickoff).getTime()
+              : Number.POSITIVE_INFINITY;
+            const rightTime = right.kickoff
+              ? new Date(right.kickoff).getTime()
+              : Number.POSITIVE_INFINITY;
+            return leftTime - rightTime;
+          })
+          .slice(0, 3);
+
+        setFavoriteMatches(sortedMatches);
+        if (successfulResponses.length === 0) {
+          setFavoriteMatchesError(
+            "Матчи избранных команд временно недоступны.",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setFavoriteMatchesLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [favoriteTeamsKey]);
+
   const productFeatures = [
     {
       title: "Матчи",
@@ -517,6 +620,125 @@ function HomeScreen({
             ),
           )}
         </div>
+      </section>
+
+      <section className="border-t border-line py-6">
+        <div className="mb-3 flex items-center justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold uppercase text-slate-500">
+              Персональное
+            </p>
+            <h2 className="mt-1 text-base font-bold text-white">
+              Ближайшее напоминание
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate("favorites")}
+            className="shrink-0 text-xs font-semibold text-accent"
+          >
+            Все
+          </button>
+        </div>
+
+        {remindersLoading ? (
+          <div className="flex min-h-24 items-center justify-center rounded-lg border border-line bg-panel">
+            <LoaderCircle className="h-5 w-5 animate-spin text-accent" />
+          </div>
+        ) : nearestReminder ? (
+          <button
+            type="button"
+            onClick={() => onOpenReminder(nearestReminder)}
+            disabled={reminderLoadingIds.has(nearestReminder.match_id)}
+            className="flex w-full items-center gap-3 rounded-lg border border-line bg-panel p-4 text-left shadow-card transition hover:border-white/15 active:scale-[0.99] disabled:cursor-wait disabled:opacity-60"
+          >
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-lime/10 text-lime">
+              {reminderLoadingIds.has(nearestReminder.match_id) ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <Bell className="h-4 w-4" fill="currentColor" />
+              )}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-bold text-white">
+                {nearestReminder.home_team} — {nearestReminder.away_team}
+              </span>
+              <span className="mt-0.5 block truncate text-xs text-slate-500">
+                {nearestReminder.league || "Турнир не указан"}
+              </span>
+              <span className="mt-1 block text-[11px] font-semibold text-slate-300">
+                {formatReminderKickoff(nearestReminder.kickoff)}
+              </span>
+              <span className="mt-0.5 block text-[10px] text-slate-500">
+                Уведомление за 1 час до матча
+              </span>
+            </span>
+            <ChevronRight className="h-4 w-4 shrink-0 text-slate-600" />
+          </button>
+        ) : (
+          <div className="rounded-lg border border-line bg-panel px-4 py-5">
+            <p className="text-sm leading-6 text-slate-400">
+              Включите 🔔 на будущем матче, чтобы получить напоминание.
+            </p>
+          </div>
+        )}
+      </section>
+
+      <section className="border-t border-line py-6">
+        <div className="mb-3 flex items-center justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold uppercase text-slate-500">
+              Избранное
+            </p>
+            <h2 className="mt-1 text-base font-bold text-white">
+              Матчи избранных команд
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate("favorites")}
+            className="shrink-0 text-xs font-semibold text-accent"
+          >
+            Все избранные
+          </button>
+        </div>
+
+        {favoriteMatchesLoading ? (
+          <div className="space-y-3">
+            <MatchSkeleton />
+          </div>
+        ) : favoriteMatchesError ? (
+          <div className="rounded-lg border border-line bg-panel px-4 py-5">
+            <p className="text-sm text-slate-400">{favoriteMatchesError}</p>
+          </div>
+        ) : favoriteTeams.length === 0 ? (
+          <div className="rounded-lg border border-line bg-panel px-4 py-5">
+            <p className="text-sm leading-6 text-slate-400">
+              Добавьте команду в избранное, чтобы видеть её ближайшие матчи.
+            </p>
+          </div>
+        ) : favoriteMatches.length === 0 ? (
+          <div className="rounded-lg border border-line bg-panel px-4 py-5">
+            <p className="text-sm leading-6 text-slate-400">
+              Пока нет ближайших матчей избранных команд.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-lg border border-line bg-panel">
+            {favoriteMatches.map((match) => (
+              <CompactMatchRow
+                key={match.id}
+                match={match}
+                onOpen={onOpenMatch}
+                reminderActive={reminderMatchIds.has(match.id)}
+                reminderLoading={
+                  remindersLoading || reminderLoadingIds.has(match.id)
+                }
+                onToggleReminder={onToggleReminder}
+              />
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="border-t border-line pb-2 pt-6">
@@ -4285,7 +4507,21 @@ export default function App() {
         ) : (
           <>
             {screen === "home" && (
-              <HomeScreen onNavigate={navigate} />
+              <HomeScreen
+                onNavigate={navigate}
+                favoriteTeams={favoriteTeams}
+                matchReminders={matchReminders}
+                reminderMatchIds={reminderMatchIds}
+                reminderLoadingIds={reminderLoadingIds}
+                remindersLoading={remindersLoading}
+                onToggleReminder={toggleMatchReminder}
+                onOpenMatch={(match) => {
+                  setTeamBeforeMatch(null);
+                  setSelectedMatch(match);
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+                onOpenReminder={openSavedReminder}
+              />
             )}
             {screen === "matches" && (
               <MatchesScreen
