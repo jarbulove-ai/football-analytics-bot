@@ -7,11 +7,22 @@ export interface TelegramUserIdentity {
   mode: TelegramUserMode;
   sdkAvailable: boolean;
   initDataAvailable: boolean;
+  displayName: string;
+  username: string;
 }
 
 type TelegramInitDataUser = {
   id?: unknown;
+  first_name?: unknown;
+  last_name?: unknown;
+  username?: unknown;
 };
+
+interface TelegramUserDetails {
+  id: number;
+  displayName: string;
+  username: string;
+}
 
 function isValidTelegramUserId(value: unknown): value is number {
   if (
@@ -25,7 +36,30 @@ function isValidTelegramUserId(value: unknown): value is number {
   return false;
 }
 
-function getTelegramUserIdFromInitData(initData: string): number | null {
+function getOptionalString(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function buildTelegramUserDetails(
+  user: TelegramInitDataUser,
+): TelegramUserDetails | null {
+  if (!isValidTelegramUserId(user.id)) {
+    return null;
+  }
+
+  const firstName = getOptionalString(user.first_name);
+  const lastName = getOptionalString(user.last_name);
+
+  return {
+    id: user.id,
+    displayName: [firstName, lastName].filter(Boolean).join(" "),
+    username: getOptionalString(user.username),
+  };
+}
+
+function getTelegramUserFromInitData(
+  initData: string,
+): TelegramUserDetails | null {
   try {
     const params = new URLSearchParams(initData);
     const rawUser = params.get("user");
@@ -40,9 +74,7 @@ function getTelegramUserIdFromInitData(initData: string): number | null {
       "id" in parsedUser
     ) {
       const telegramUser = parsedUser as TelegramInitDataUser;
-      return isValidTelegramUserId(telegramUser.id)
-        ? telegramUser.id
-        : null;
+      return buildTelegramUserDetails(telegramUser);
     }
   } catch {
     return null;
@@ -54,18 +86,18 @@ function getTelegramUserIdFromInitData(initData: string): number | null {
 export function getTelegramUserIdentity(): TelegramUserIdentity {
   const telegramWebApp = window.Telegram?.WebApp;
   const initData = telegramWebApp?.initData?.trim() || "";
-  const unsafeUserId = telegramWebApp?.initDataUnsafe?.user?.id;
-  const telegramUserId = isValidTelegramUserId(unsafeUserId)
-    ? unsafeUserId
-    : getTelegramUserIdFromInitData(initData);
+  const unsafeUser = telegramWebApp?.initDataUnsafe?.user;
+  const telegramUser =
+    (unsafeUser ? buildTelegramUserDetails(unsafeUser) : null) ||
+    getTelegramUserFromInitData(initData);
   const diagnostics = {
     sdkAvailable: Boolean(telegramWebApp),
     initDataAvailable: Boolean(initData),
   };
 
-  if (telegramUserId !== null) {
+  if (telegramUser !== null) {
     return {
-      id: telegramUserId,
+      ...telegramUser,
       mode: "telegram",
       ...diagnostics,
     };
@@ -74,6 +106,8 @@ export function getTelegramUserIdentity(): TelegramUserIdentity {
   return {
     id: TEST_TELEGRAM_USER_ID,
     mode: "fallback",
+    displayName: "MatchLab User",
+    username: "",
     ...diagnostics,
   };
 }

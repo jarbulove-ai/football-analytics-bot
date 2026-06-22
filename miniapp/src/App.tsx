@@ -2958,7 +2958,11 @@ function FavoritesScreen({
   );
 }
 
-function ProfileScreen() {
+function ProfileScreen({
+  onNavigate,
+}: {
+  onNavigate: (screen: Screen) => void;
+}) {
   const telegramIdentity = useMemo(getTelegramUserIdentity, []);
   const [profile, setProfile] = useState<SubscriptionData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -2971,21 +2975,34 @@ function ProfileScreen() {
       .finally(() => setLoading(false));
   }, [telegramIdentity.id]);
 
-  const usagePercent = useMemo(() => {
-    if (!profile || profile.is_admin || profile.ai_limit_monthly <= 0) return 0;
-    return Math.min(
-      100,
-      Math.round(
-        (profile.ai_used_monthly / profile.ai_limit_monthly) * 100,
-      ),
-    );
-  }, [profile]);
+  const remainingAi = profile
+    ? Math.max(profile.ai_limit_monthly - profile.ai_used_monthly, 0) +
+      profile.extra_ai_credits
+    : 0;
+  const premiumUntil = formatPremiumUntil(profile?.premium_until || null);
+  const accessLabel = profile?.is_admin
+    ? "Admin"
+    : profile?.plan === "premium"
+      ? "Premium"
+      : "Free";
+  const accessBadgeClass = profile?.is_admin
+    ? "border-lime/25 bg-lime/10 text-lime"
+    : profile?.plan === "premium"
+      ? "border-gold/25 bg-gold/10 text-gold"
+      : "border-line bg-white/[0.05] text-slate-300";
+  const displayName =
+    telegramIdentity.displayName ||
+    (telegramIdentity.username
+      ? `@${telegramIdentity.username}`
+      : "Пользователь MatchLab");
 
   return (
     <div className="animate-rise">
       <AppHeader compact />
       <p className="text-xs font-semibold uppercase text-slate-500">Аккаунт</p>
-      <h1 className="mt-1 text-2xl font-extrabold text-white">Профиль</h1>
+      <h1 className="mt-1 text-2xl font-extrabold text-white">
+        Личный кабинет
+      </h1>
 
       {loading && (
         <div className="flex min-h-80 items-center justify-center">
@@ -3005,16 +3022,28 @@ function ProfileScreen() {
       )}
 
       {!loading && profile && (
-        <div className="mt-6 space-y-6">
+        <div className="mt-6 space-y-5">
           <section className="rounded-lg border border-line bg-panel p-5 shadow-card">
             <div className="flex items-center gap-4">
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-accent text-lg font-black text-white">
-                M
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full border border-accent/25 bg-accent/15 text-accent">
+                <CircleUserRound className="h-7 w-7" />
               </div>
-              <div>
-                <p className="text-base font-bold text-white">
-                  MatchLab User
-                </p>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="truncate text-base font-bold text-white">
+                    {displayName}
+                  </p>
+                  <span
+                    className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${accessBadgeClass}`}
+                  >
+                    {accessLabel}
+                  </span>
+                </div>
+                {telegramIdentity.username && (
+                  <p className="mt-0.5 truncate text-xs text-slate-500">
+                    @{telegramIdentity.username}
+                  </p>
+                )}
                 <p className="mt-0.5 text-xs text-slate-400">
                   Telegram ID: {profile.telegram_user_id}
                 </p>
@@ -3023,80 +3052,142 @@ function ProfileScreen() {
                     ? "Telegram Mini App"
                     : "Тестовый режим"}
                 </p>
-                {profile.is_admin && (
-                  <p className="mt-1 text-[10px] leading-4 text-slate-500">
-                    Telegram SDK:{" "}
-                    {telegramIdentity.sdkAvailable ? "есть" : "нет"}
-                    {" · "}
-                    initData:{" "}
-                    {telegramIdentity.initDataAvailable ? "есть" : "нет"}
-                  </p>
-                )}
               </div>
-              {profile.is_admin && (
-                <ShieldCheck className="ml-auto h-5 w-5 text-lime" />
-              )}
+            </div>
+            {profile.is_admin && (
+              <div className="mt-4 rounded-md border border-lime/15 bg-lime/[0.06] px-3 py-2.5">
+                <div className="flex items-center gap-2 text-sm font-semibold text-lime">
+                  <ShieldCheck className="h-4 w-4" />
+                  Админ-доступ
+                </div>
+                <p className="mt-1 text-xs text-slate-400">
+                  AI-разборы доступны без лимита.
+                </p>
+                <p className="mt-2 text-[10px] leading-4 text-slate-500">
+                  Telegram SDK:{" "}
+                  {telegramIdentity.sdkAvailable ? "есть" : "нет"}
+                  {" · "}
+                  initData:{" "}
+                  {telegramIdentity.initDataAvailable ? "есть" : "нет"}
+                </p>
+              </div>
+            )}
+          </section>
+
+          <section>
+            <p className="mb-3 text-xs font-semibold uppercase text-slate-500">
+              Статус аккаунта
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="min-h-28 rounded-lg border border-line bg-panel p-4">
+                <div className="flex h-8 w-8 items-center justify-center rounded-md bg-gold/10 text-gold">
+                  <Crown className="h-4 w-4" />
+                </div>
+                <p className="mt-4 text-xs text-slate-500">Premium</p>
+                <p className="mt-1 text-sm font-bold text-white">
+                  {profile.is_admin
+                    ? "Админ-доступ"
+                    : profile.plan === "premium" && premiumUntil
+                      ? `До ${premiumUntil}`
+                      : "Не активен"}
+                </p>
+              </div>
+
+              <div className="min-h-28 rounded-lg border border-line bg-panel p-4">
+                <div className="flex h-8 w-8 items-center justify-center rounded-md bg-accent/15 text-accent">
+                  <Bot className="h-4 w-4" />
+                </div>
+                <p className="mt-4 text-xs text-slate-500">AI-разборы</p>
+                <p className="mt-1 text-sm font-bold text-white">
+                  {profile.is_admin ? "Без лимита" : `Осталось: ${remainingAi}`}
+                </p>
+              </div>
+
+              <div className="col-span-2 rounded-lg border border-line bg-panel p-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-md bg-lime/10 text-lime">
+                    <CircleUserRound className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs text-slate-500">Telegram ID</p>
+                    <p className="mt-0.5 truncate text-sm font-bold text-white">
+                      {profile.telegram_user_id}
+                    </p>
+                  </div>
+                </div>
+              </div>
             </div>
           </section>
 
           <section>
             <p className="mb-3 text-xs font-semibold uppercase text-slate-500">
-              Тариф
+              Быстрые действия
             </p>
-            <div className="rounded-lg border border-gold/20 bg-gold/[0.06] p-4">
-              <div className="flex items-center gap-3">
-                <Crown className="h-5 w-5 text-gold" />
-                <div>
-                  <p className="text-sm font-bold capitalize text-white">
-                    {profile.plan}
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    {profile.is_admin
-                      ? "Административный доступ"
-                      : `Период: ${profile.usage_period}`}
-                  </p>
-                </div>
-              </div>
+            <div className="overflow-hidden rounded-lg border border-line bg-panel">
+              {[
+                {
+                  label: "Подписка",
+                  caption: "Тарифы и AI-пакеты",
+                  icon: Crown,
+                  iconClass: "bg-gold/10 text-gold",
+                  screen: "subscription" as Screen,
+                },
+                {
+                  label: "Избранное",
+                  caption: "Команды, матчи и напоминания",
+                  icon: Star,
+                  iconClass: "bg-lime/10 text-lime",
+                  screen: "favorites" as Screen,
+                },
+                {
+                  label: "Матчи",
+                  caption: "Расписание и турниры",
+                  icon: Activity,
+                  iconClass: "bg-accent/15 text-accent",
+                  screen: "matches" as Screen,
+                },
+              ].map(({ label, caption, icon: Icon, iconClass, screen }) => (
+                <button
+                  key={screen}
+                  type="button"
+                  onClick={() => onNavigate(screen)}
+                  className="flex w-full items-center gap-3 border-t border-line/80 px-4 py-3 text-left transition first:border-t-0 hover:bg-white/[0.035] active:bg-white/[0.06]"
+                >
+                  <span
+                    className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${iconClass}`}
+                  >
+                    <Icon className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-bold text-white">
+                      {label}
+                    </span>
+                    <span className="mt-0.5 block truncate text-xs text-slate-500">
+                      {caption}
+                    </span>
+                  </span>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-slate-600" />
+                </button>
+              ))}
             </div>
           </section>
 
-          <section>
-            <div className="mb-3 flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase text-slate-500">
-                AI-разборы
-              </p>
-              <span className="text-xs font-semibold text-lime">
-                {profile.ai_text ||
-                  `${profile.ai_used_monthly} / ${profile.ai_limit_monthly}`}
-              </span>
+          <section className="rounded-lg border border-line bg-panel p-5">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-5 w-5 text-lime" />
+              <h2 className="text-base font-bold text-white">Ваш доступ</h2>
             </div>
-            <div className="rounded-lg bg-panel p-4">
-              {!profile.is_admin && (
-                <div className="mb-4 h-2 overflow-hidden rounded-full bg-white/[0.06]">
-                  <div
-                    className="h-full rounded-full bg-lime transition-all duration-500"
-                    style={{ width: `${usagePercent}%` }}
-                  />
+            <div className="mt-4 space-y-3">
+              {[
+                "AI-разборы обновляются согласно вашему пакету",
+                "Premium и AI-пакеты активируются после проверки оплаты",
+                "Все данные привязаны к Telegram-профилю",
+              ].map((item) => (
+                <div key={item} className="flex items-start gap-3">
+                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-lime" />
+                  <p className="text-sm leading-5 text-slate-400">{item}</p>
                 </div>
-              )}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-2xl font-black text-white">
-                    {profile.is_admin ? "∞" : profile.ai_used_monthly}
-                  </p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Использовано
-                  </p>
-                </div>
-                <div>
-                  <p className="text-2xl font-black text-white">
-                    {profile.extra_ai_credits}
-                  </p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Дополнительно
-                  </p>
-                </div>
-              </div>
+              ))}
             </div>
           </section>
         </div>
@@ -4111,7 +4202,9 @@ export default function App() {
             {screen === "subscription" && (
               <SubscriptionScreen />
             )}
-            {screen === "profile" && <ProfileScreen />}
+            {screen === "profile" && (
+              <ProfileScreen onNavigate={navigate} />
+            )}
           </>
         )}
       </main>
