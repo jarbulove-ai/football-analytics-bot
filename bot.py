@@ -446,6 +446,20 @@ def init_db() -> None:
                 BOOLEAN DEFAULT FALSE;
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS miniapp_match_event_notifications (
+                    id SERIAL PRIMARY KEY,
+                    telegram_user_id BIGINT NOT NULL,
+                    match_id TEXT NOT NULL,
+                    event_key TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    event_time INTEGER,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (telegram_user_id, match_id, event_key)
+                );
+                """
+            )
         connection.commit()
     except Exception:
         logger.exception("Failed to initialize database")
@@ -2377,6 +2391,125 @@ def mark_miniapp_lineups_notified(reminder_id: int) -> None:
             connection.close()
 
 
+def get_active_event_notification_reminders(
+    limit: int = 30,
+) -> list[dict]:
+    database_url = get_database_url()
+    if not database_url:
+        logger.warning(
+            "DATABASE_URL is not configured; event reminders were not checked"
+        )
+        return []
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    telegram_user_id,
+                    match_id,
+                    home_team,
+                    away_team,
+                    league,
+                    kickoff
+                FROM miniapp_match_reminders
+                WHERE kickoff <= CURRENT_TIMESTAMP + INTERVAL '10 minutes'
+                  AND kickoff >= CURRENT_TIMESTAMP - INTERVAL '3 hours'
+                ORDER BY kickoff ASC
+                LIMIT %s;
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+    finally:
+        if connection is not None:
+            connection.close()
+
+    return [dict(row) for row in rows]
+
+
+def was_miniapp_event_notification_sent(
+    telegram_user_id: int,
+    match_id: str,
+    event_key: str,
+) -> bool:
+    database_url = get_database_url()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT 1
+                FROM miniapp_match_event_notifications
+                WHERE telegram_user_id = %s
+                  AND match_id = %s
+                  AND event_key = %s
+                LIMIT 1;
+                """,
+                (telegram_user_id, match_id, event_key),
+            )
+            return cursor.fetchone() is not None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def save_miniapp_event_notification(
+    telegram_user_id: int,
+    match_id: str,
+    event_key: str,
+    event_type: str,
+    event_time,
+) -> bool:
+    database_url = get_database_url()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    normalized_event_time = (
+        int(event_time)
+        if isinstance(event_time, (int, float)) and not isinstance(event_time, bool)
+        else None
+    )
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO miniapp_match_event_notifications (
+                    telegram_user_id,
+                    match_id,
+                    event_key,
+                    event_type,
+                    event_time
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (telegram_user_id, match_id, event_key)
+                DO NOTHING;
+                """,
+                (
+                    telegram_user_id,
+                    match_id,
+                    event_key,
+                    event_type,
+                    normalized_event_time,
+                ),
+            )
+            inserted = cursor.rowcount == 1
+        connection.commit()
+        return inserted
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def format_match_reminder_kickoff(kickoff) -> str:
     if not isinstance(kickoff, datetime):
         return "время уточняется"
@@ -2430,6 +2563,149 @@ def build_miniapp_lineups_available_message(reminder: dict) -> str:
         "Стартовые составы опубликованы.\n"
         "Откройте MatchLab, чтобы посмотреть игроков и запасных."
     )
+
+
+def format_miniapp_event_minute(event_time, event_extra=None) -> str:
+    if not isinstance(event_time, (int, float)) or isinstance(event_time, bool):
+        return "Минута не указана"
+
+    minute = str(int(event_time))
+    if (
+        isinstance(event_extra, (int, float))
+        and not isinstance(event_extra, bool)
+        and event_extra > 0
+    ):
+        minute += f"+{int(event_extra)}"
+    return f"{minute}’"
+
+
+def build_miniapp_event_notification_message(
+    reminder: dict,
+    event_type: str,
+    event: dict | None,
+    home_score,
+    away_score,
+) -> str:
+    home_team = reminder.get("home_team") or "Хозяева"
+    away_team = reminder.get("away_team") or "Гости"
+    score_text = (
+        f"{home_score}:{away_score}"
+        if home_score is not None and away_score is not None
+        else "не указан"
+    )
+
+    if event_type == "match_finished":
+        return (
+            "✅ Матч завершён\n\n"
+            f"{home_team} — {away_team}\n"
+            f"Итоговый счёт: {score_text}"
+        )
+
+    event = event or {}
+    event_time = event.get("time") or {}
+    minute_text = format_miniapp_event_minute(
+        event_time.get("elapsed"),
+        event_time.get("extra"),
+    )
+    player = event.get("player")
+    if not isinstance(player, dict):
+        player = {}
+    team = event.get("team")
+    if not isinstance(team, dict):
+        team = {}
+    assist = event.get("assist")
+    if not isinstance(assist, dict):
+        assist = {}
+
+    player_name = str(player.get("name") or "").strip()
+    team_name = str(team.get("name") or "").strip()
+    participant_name = player_name or team_name or "Игрок не указан"
+    assist_name = str(assist.get("name") or "").strip()
+    detail = str(event.get("detail") or "").strip()
+    comments = str(event.get("comments") or "").strip()
+    titles = {
+        "goal": "⚽ Гол!",
+        "red_card": "🟥 Красная карточка",
+        "penalty": "🥅 Пенальти",
+    }
+    participant_line = (
+        f"{minute_text} — {participant_name}"
+        if minute_text == "Минута не указана"
+        else f"{minute_text} {participant_name}"
+    )
+    lines = [
+        titles.get(event_type, "📝 Событие матча"),
+        "",
+        f"{home_team} — {away_team}",
+        participant_line,
+    ]
+    if event_type == "goal":
+        lines.extend(["", f"Счёт: {score_text}"])
+        if assist_name:
+            lines.append(f"Ассист: {assist_name}")
+    elif event_type == "penalty":
+        penalty_detail = comments or detail
+        if penalty_detail:
+            lines.append(penalty_detail)
+    return "\n".join(lines)
+
+
+def classify_miniapp_push_event(event: dict) -> str | None:
+    if not isinstance(event, dict):
+        return None
+
+    event_type = str(event.get("type") or "").strip().lower()
+    detail = str(event.get("detail") or "").strip().lower()
+    comments = str(event.get("comments") or "").strip().lower()
+    event_text = f"{detail} {comments}"
+
+    if "penalty" in event_text:
+        return "penalty"
+
+    if event_type == "card" and (
+        "red" in detail or "second yellow" in detail
+    ):
+        return "red_card"
+
+    if event_type == "var" and "red" in event_text:
+        return "red_card"
+
+    if event_type == "goal":
+        return "goal"
+
+    if (
+        event_type == "var"
+        and "goal" in event_text
+        and "cancel" not in event_text
+        and "disallow" not in event_text
+    ):
+        return "goal"
+
+    return None
+
+
+def build_miniapp_event_key(match_id: str, event: dict) -> str:
+    event_time = event.get("time")
+    if not isinstance(event_time, dict):
+        event_time = {}
+    team = event.get("team")
+    if not isinstance(team, dict):
+        team = {}
+    player = event.get("player")
+    if not isinstance(player, dict):
+        player = {}
+
+    player_key = player.get("id") or player.get("name") or ""
+    key_parts = (
+        match_id,
+        event_time.get("elapsed"),
+        event_time.get("extra"),
+        team.get("id"),
+        event.get("type"),
+        event.get("detail"),
+        player_key,
+    )
+    return ":".join(str(part or "").strip() for part in key_parts)
 
 
 async def check_and_send_miniapp_match_reminders(bot) -> None:
@@ -2543,12 +2819,152 @@ async def check_and_send_miniapp_lineup_notifications(bot) -> None:
         )
 
 
+async def check_and_send_miniapp_event_notifications(bot) -> None:
+    try:
+        reminders = get_active_event_notification_reminders(limit=30)
+    except Exception:
+        logger.exception(
+            "Failed to load active Mini App event notification reminders"
+        )
+        return
+
+    reminders_by_match = {}
+    for reminder in reminders:
+        match_id = str(reminder.get("match_id") or "").strip()
+        if match_id:
+            reminders_by_match.setdefault(match_id, []).append(reminder)
+
+    logger.info(
+        "Active Mini App event reminders found: %s; unique matches: %s",
+        len(reminders),
+        len(reminders_by_match),
+    )
+
+    sent_count = 0
+    for match_id, match_reminders in reminders_by_match.items():
+        fixture_item = get_fixture_by_id(match_id)
+        if not fixture_item:
+            continue
+
+        fixture = fixture_item.get("fixture") or {}
+        status = fixture.get("status") or {}
+        status_short = str(status.get("short") or "").strip().upper()
+        goals = fixture_item.get("goals") or {}
+        home_score = format_miniapp_score_value(goals.get("home"))
+        away_score = format_miniapp_score_value(goals.get("away"))
+        logger.info(
+            "Mini App event match check: match_id=%s status=%s",
+            match_id,
+            status_short or "unknown",
+        )
+
+        notification_items = []
+        if is_miniapp_fixture_live_status(status_short):
+            raw_events = get_fixture_events(match_id)
+            for event in raw_events:
+                event_type = classify_miniapp_push_event(event)
+                if not event_type:
+                    continue
+                event_time = event.get("time") or {}
+                notification_items.append(
+                    {
+                        "event_key": build_miniapp_event_key(match_id, event),
+                        "event_type": event_type,
+                        "event_time": event_time.get("elapsed"),
+                        "event": event,
+                    }
+                )
+        elif is_miniapp_fixture_finished_status(status_short):
+            notification_items.append(
+                {
+                    "event_key": f"{match_id}:match_finished",
+                    "event_type": "match_finished",
+                    "event_time": status.get("elapsed"),
+                    "event": None,
+                }
+            )
+        else:
+            continue
+
+        logger.info(
+            "Important Mini App match events found: match_id=%s events=%s",
+            match_id,
+            len(notification_items),
+        )
+
+        for reminder in match_reminders:
+            telegram_user_id = int(reminder["telegram_user_id"])
+            for notification in notification_items:
+                try:
+                    inserted = save_miniapp_event_notification(
+                        telegram_user_id,
+                        match_id,
+                        notification["event_key"],
+                        notification["event_type"],
+                        notification["event_time"],
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to reserve Mini App event notification: "
+                        "user_id=%s match_id=%s event_key=%s event_type=%s",
+                        telegram_user_id,
+                        match_id,
+                        notification["event_key"],
+                        notification["event_type"],
+                    )
+                    continue
+
+                if not inserted:
+                    continue
+
+                try:
+                    await bot.send_message(
+                        chat_id=telegram_user_id,
+                        text=build_miniapp_event_notification_message(
+                            reminder,
+                            notification["event_type"],
+                            notification["event"],
+                            home_score,
+                            away_score,
+                        ),
+                        reply_markup=build_miniapp_inline_keyboard(
+                            params={"match_id": match_id}
+                        ),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to send Mini App event notification: "
+                        "user_id=%s match_id=%s event_key=%s event_type=%s",
+                        telegram_user_id,
+                        match_id,
+                        notification["event_key"],
+                        notification["event_type"],
+                        exc_info=True,
+                    )
+                    continue
+
+                sent_count += 1
+                logger.info(
+                    "Mini App event notification sent: "
+                    "user_id=%s match_id=%s event_type=%s",
+                    telegram_user_id,
+                    match_id,
+                    notification["event_type"],
+                )
+
+    logger.info(
+        "Mini App event notifications sent in cycle: %s",
+        sent_count,
+    )
+
+
 async def miniapp_match_reminders_loop(bot) -> None:
     try:
         await asyncio.sleep(10)
         while True:
             await check_and_send_miniapp_match_reminders(bot)
             await check_and_send_miniapp_lineup_notifications(bot)
+            await check_and_send_miniapp_event_notifications(bot)
             await asyncio.sleep(60)
     except asyncio.CancelledError:
         logger.info("Mini App match reminders background loop stopped")
@@ -3812,6 +4228,53 @@ def get_fixture_statistics(fixture_id: int | str) -> list[dict]:
             exc_info=True,
         )
         return []
+
+
+def get_fixture_by_id(fixture_id: int | str) -> dict | None:
+    try:
+        fixtures = request_api_football(
+            "/fixtures",
+            {
+                "id": fixture_id,
+                "timezone": "UTC",
+            },
+        )
+        if fixtures and isinstance(fixtures[0], dict):
+            return fixtures[0]
+    except Exception:
+        logger.warning(
+            "Failed to get fixture by id: fixture_id=%s",
+            fixture_id,
+            exc_info=True,
+        )
+    return None
+
+
+def get_fixture_events(fixture_id: int | str) -> list[dict]:
+    try:
+        events = request_api_football(
+            "/fixtures/events",
+            {"fixture": fixture_id},
+        )
+        return events if isinstance(events, list) else []
+    except Exception:
+        logger.warning(
+            "Failed to get fixture events: fixture_id=%s",
+            fixture_id,
+            exc_info=True,
+        )
+        return []
+
+
+def is_miniapp_fixture_live_status(status_short) -> bool:
+    return str(status_short or "").strip().upper() in MINIAPP_LIVE_STATUSES
+
+
+def is_miniapp_fixture_finished_status(status_short) -> bool:
+    return (
+        str(status_short or "").strip().upper()
+        in MINIAPP_FINISHED_STATUSES
+    )
 
 
 def get_fixture_lineups(fixture_id: int | str) -> list[dict]:
