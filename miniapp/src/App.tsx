@@ -2624,34 +2624,38 @@ function getPositionedLineupPlayers(players: MatchLineupPlayer[]) {
   return positionedPlayers;
 }
 
-function LineupPitch({ team }: { team: MatchLineupTeam }) {
-  const positionedPlayers = getPositionedLineupPlayers(team.start_xi);
-  if (positionedPlayers.length < 5) {
-    return null;
-  }
-
-  const maxRow = Math.max(
-    ...positionedPlayers.map((positionedPlayer) => positionedPlayer.row),
-  );
+function getLineupColumnsByRow(positionedPlayers: PositionedLineupPlayer[]) {
   const columnsByRow = new Map<number, number>();
   positionedPlayers.forEach(({ row, column }) => {
     columnsByRow.set(row, Math.max(columnsByRow.get(row) || 0, column));
   });
+  return columnsByRow;
+}
+
+function canRenderTeamOnPitch(team: MatchLineupTeam) {
+  return getPositionedLineupPlayers(team.start_xi).length >= 5;
+}
+
+function MatchLineupsPitch({ teams }: { teams: MatchLineupTeam[] }) {
+  const pitchTeams = teams.slice(0, 2);
+  if (
+    pitchTeams.length < 2 ||
+    !pitchTeams.every((team) => canRenderTeamOnPitch(team))
+  ) {
+    return null;
+  }
 
   return (
-    <section className="border-t border-line/70 px-4 py-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h3 className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
-          Расстановка
-        </h3>
-        {team.formation && (
-          <span className="rounded-full border border-lime/20 bg-lime/10 px-2.5 py-1 text-[10px] font-bold text-lime">
-            {team.formation}
-          </span>
-        )}
+    <section className="overflow-hidden rounded-xl border border-line bg-panel shadow-card">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-b border-line/70 px-4 py-4">
+        <LineupPitchTeamHeader team={pitchTeams[0]} align="left" />
+        <span className="rounded-full border border-white/[0.06] bg-white/[0.035] px-2 py-1 text-[10px] font-black uppercase text-slate-500">
+          vs
+        </span>
+        <LineupPitchTeamHeader team={pitchTeams[1]} align="right" />
       </div>
 
-      <div className="relative h-[440px] overflow-hidden rounded-lg border border-emerald-200/20 bg-[repeating-linear-gradient(0deg,rgba(16,75,53,0.96)_0px,rgba(16,75,53,0.96)_55px,rgba(18,86,59,0.96)_55px,rgba(18,86,59,0.96)_110px)] shadow-inner">
+      <div className="relative h-[620px] overflow-hidden bg-[repeating-linear-gradient(0deg,rgba(16,75,53,0.96)_0px,rgba(16,75,53,0.96)_62px,rgba(18,86,59,0.96)_62px,rgba(18,86,59,0.96)_124px)] shadow-inner">
         <div className="pointer-events-none absolute inset-3 rounded-md border border-white/35" />
         <div className="pointer-events-none absolute inset-x-3 top-1/2 border-t border-white/35" />
         <div className="pointer-events-none absolute left-1/2 top-1/2 h-20 w-20 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/35" />
@@ -2661,36 +2665,109 @@ function LineupPitch({ team }: { team: MatchLineupTeam }) {
         <div className="pointer-events-none absolute left-1/2 top-3 h-8 w-16 -translate-x-1/2 border border-t-0 border-white/35" />
         <div className="pointer-events-none absolute bottom-3 left-1/2 h-8 w-16 -translate-x-1/2 border border-b-0 border-white/35" />
 
-        {positionedPlayers.map(({ player, row, column }, index) => {
-          const rowColumns = columnsByRow.get(row) || 1;
-          const left = (column / (rowColumns + 1)) * 100;
-          const top =
-            maxRow === 1 ? 50 : 12 + ((row - 1) / (maxRow - 1)) * 74;
-
-          return (
-            <div
-              key={`${player.id ?? player.name}-${row}-${column}-${index}`}
-              className="absolute z-10 flex w-[4.5rem] -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center"
-              style={{ left: `${left}%`, top: `${top}%` }}
-            >
-              <span className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-white/80 bg-slate-950 text-xs font-black text-white shadow-[0_4px_14px_rgba(0,0,0,0.45)]">
-                {player.number ?? "?"}
-              </span>
-              <span className="mt-1 max-w-full truncate rounded bg-slate-950/75 px-1.5 py-0.5 text-[9px] font-bold text-white shadow-sm backdrop-blur-sm">
-                {getShortPlayerName(player.name)}
-              </span>
-            </div>
-          );
-        })}
+        {pitchTeams.map((team, teamIndex) => (
+          <LineupPitchPlayers
+            key={`${team.team_id ?? team.team_name}-${teamIndex}`}
+            team={team}
+            side={teamIndex === 0 ? "home" : "away"}
+          />
+        ))}
       </div>
     </section>
   );
 }
 
-function MatchLineupTeamCard({ team }: { team: MatchLineupTeam }) {
-  const hasLineupPitch =
-    getPositionedLineupPlayers(team.start_xi).length >= 5;
+function LineupPitchTeamHeader({
+  team,
+  align,
+}: {
+  team: MatchLineupTeam;
+  align: "left" | "right";
+}) {
+  return (
+    <div
+      className={`flex min-w-0 items-center gap-2 ${
+        align === "right" ? "justify-end text-right" : ""
+      }`}
+    >
+      {align === "left" && (
+        <TeamLogo
+          logo={team.team_logo}
+          name={team.team_name || "Команда"}
+          size="xs"
+        />
+      )}
+      <div className="min-w-0">
+        <p className="truncate text-xs font-bold text-white">
+          {team.team_name || "Команда"}
+        </p>
+        {team.formation && (
+          <span className="mt-1 inline-flex rounded-full border border-lime/15 bg-lime/[0.08] px-2 py-0.5 text-[9px] font-bold text-lime">
+            {team.formation}
+          </span>
+        )}
+      </div>
+      {align === "right" && (
+        <TeamLogo
+          logo={team.team_logo}
+          name={team.team_name || "Команда"}
+          size="xs"
+        />
+      )}
+    </div>
+  );
+}
 
+function LineupPitchPlayers({
+  team,
+  side,
+}: {
+  team: MatchLineupTeam;
+  side: "home" | "away";
+}) {
+  const positionedPlayers = getPositionedLineupPlayers(team.start_xi);
+  const maxRow = Math.max(
+    ...positionedPlayers.map((positionedPlayer) => positionedPlayer.row),
+  );
+  const columnsByRow = getLineupColumnsByRow(positionedPlayers);
+  const isHome = side === "home";
+
+  return (
+    <>
+      {positionedPlayers.map(({ player, row, column }, index) => {
+        const rowColumns = columnsByRow.get(row) || 1;
+        const left = (column / (rowColumns + 1)) * 100;
+        const rowProgress =
+          maxRow === 1 ? 0.5 : (row - 1) / (maxRow - 1);
+        const top = isHome
+          ? 90 - rowProgress * 32
+          : 10 + rowProgress * 32;
+        const accentClass = isHome
+          ? "border-lime/80 text-lime"
+          : "border-accent/80 text-accent";
+
+        return (
+          <div
+            key={`${team.team_id ?? team.team_name}-${player.id ?? player.name}-${row}-${column}-${index}`}
+            className="absolute z-10 flex w-[4rem] -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center"
+            style={{ left: `${left}%`, top: `${top}%` }}
+          >
+            <span
+              className={`flex h-8 w-8 items-center justify-center rounded-full border-2 bg-slate-950 text-xs font-black shadow-[0_4px_14px_rgba(0,0,0,0.45)] ${accentClass}`}
+            >
+              {player.number ?? "?"}
+            </span>
+            <span className="mt-1 max-w-full truncate rounded bg-slate-950/75 px-1.5 py-0.5 text-[9px] font-bold text-white shadow-sm backdrop-blur-sm">
+              {getShortPlayerName(player.name)}
+            </span>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function MatchLineupTeamCard({ team }: { team: MatchLineupTeam }) {
   return (
     <article className="overflow-hidden rounded-lg border border-line bg-panel shadow-card">
       <div className="flex items-center gap-3 px-4 py-4">
@@ -2703,7 +2780,7 @@ function MatchLineupTeamCard({ team }: { team: MatchLineupTeam }) {
           <h2 className="truncate text-sm font-bold text-white">
             {team.team_name || "Команда"}
           </h2>
-          {team.formation && !hasLineupPitch && (
+          {team.formation && (
             <span className="mt-1.5 inline-flex rounded-full border border-lime/15 bg-lime/[0.08] px-2 py-1 text-[10px] font-bold text-lime">
               Схема {team.formation}
             </span>
@@ -2722,19 +2799,90 @@ function MatchLineupTeamCard({ team }: { team: MatchLineupTeam }) {
         </div>
       )}
 
-      <LineupPitch team={team} />
-
       <div className="space-y-5 border-t border-line/70 py-4">
-        <MatchLineupPlayerList
-          title="Стартовый состав"
-          players={team.start_xi}
-        />
         <MatchLineupPlayerList
           title="Запасные"
           players={team.substitutes}
         />
+        <MatchLineupPlayerList
+          title="Стартовый состав"
+          players={team.start_xi}
+        />
       </div>
     </article>
+  );
+}
+
+function MatchLineupTeamSwitcher({
+  teams,
+  selectedIndex,
+  onSelect,
+}: {
+  teams: MatchLineupTeam[];
+  selectedIndex: number;
+  onSelect: (index: number) => void;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-2 rounded-xl border border-line bg-white/[0.025] p-1.5">
+      {teams.slice(0, 2).map((team, index) => {
+        const active = selectedIndex === index;
+        return (
+          <button
+            key={`${team.team_id ?? team.team_name}-${index}`}
+            type="button"
+            onClick={() => onSelect(index)}
+            className={`flex min-w-0 items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-xs font-bold transition ${
+              active
+                ? "bg-lime text-slate-950 shadow-[0_10px_26px_rgba(190,242,100,0.18)]"
+                : "text-slate-400 hover:bg-white/[0.04] hover:text-white"
+            }`}
+          >
+            <TeamLogo
+              logo={team.team_logo}
+              name={team.team_name || "Команда"}
+              size="xs"
+            />
+            <span className="truncate">{team.team_name || "Команда"}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function MatchLineupsPanel({ teams }: { teams: MatchLineupTeam[] }) {
+  const [selectedLineupTeamIndex, setSelectedLineupTeamIndex] = useState(0);
+  const canShowSharedPitch =
+    teams.length >= 2 && teams.slice(0, 2).every(canRenderTeamOnPitch);
+  const safeSelectedIndex = Math.min(
+    selectedLineupTeamIndex,
+    Math.max(teams.length - 1, 0),
+  );
+  const selectedTeam = teams[safeSelectedIndex];
+
+  if (!canShowSharedPitch) {
+    return (
+      <div className="space-y-4">
+        {teams.map((team, index) => (
+          <MatchLineupTeamCard
+            key={`${team.team_id ?? team.team_name}-${index}`}
+            team={team}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <MatchLineupsPitch teams={teams} />
+      <MatchLineupTeamSwitcher
+        teams={teams}
+        selectedIndex={safeSelectedIndex}
+        onSelect={setSelectedLineupTeamIndex}
+      />
+      {selectedTeam && <MatchLineupTeamCard team={selectedTeam} />}
+    </div>
   );
 }
 
@@ -3269,14 +3417,7 @@ function MatchDetails({
             !contextError &&
             matchContext?.lineups?.available &&
             matchContext.lineups.teams.length > 0 && (
-              <div className="space-y-4">
-                {matchContext.lineups.teams.map((team, index) => (
-                  <MatchLineupTeamCard
-                    key={`${team.team_id ?? team.team_name}-${index}`}
-                    team={team}
-                  />
-                ))}
-              </div>
+              <MatchLineupsPanel teams={matchContext.lineups.teams} />
             )}
         </section>
       )}
