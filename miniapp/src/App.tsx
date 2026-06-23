@@ -2596,8 +2596,11 @@ interface PositionedLineupPlayer {
 }
 
 function getShortPlayerName(name: string) {
-  const nameParts = name.trim().split(/\s+/).filter(Boolean);
-  return nameParts[nameParts.length - 1] || name.trim() || "Игрок";
+  const normalizedName = name.trim().replace(/\s+/g, " ");
+  if (!normalizedName) return "Игрок";
+
+  const nameParts = normalizedName.split(" ");
+  return nameParts[nameParts.length - 1] || normalizedName;
 }
 
 function getPositionedLineupPlayers(players: MatchLineupPlayer[]) {
@@ -2669,7 +2672,7 @@ function MatchLineupsPitch({ teams }: { teams: MatchLineupTeam[] }) {
           <LineupPitchPlayers
             key={`${team.team_id ?? team.team_name}-${teamIndex}`}
             team={team}
-            side={teamIndex === 0 ? "home" : "away"}
+            side={teamIndex === 0 ? "away" : "home"}
           />
         ))}
       </div>
@@ -2749,7 +2752,7 @@ function LineupPitchPlayers({
         return (
           <div
             key={`${team.team_id ?? team.team_name}-${player.id ?? player.name}-${row}-${column}-${index}`}
-            className="absolute z-10 flex w-[4rem] -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center"
+            className="absolute z-10 flex w-[4.75rem] -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center"
             style={{ left: `${left}%`, top: `${top}%` }}
           >
             <span
@@ -2757,7 +2760,7 @@ function LineupPitchPlayers({
             >
               {player.number ?? "?"}
             </span>
-            <span className="mt-1 max-w-full truncate rounded bg-slate-950/75 px-1.5 py-0.5 text-[9px] font-bold text-white shadow-sm backdrop-blur-sm">
+            <span className="mt-1 max-w-[4.75rem] truncate rounded bg-slate-950/75 px-2 py-0.5 text-[9px] font-bold text-white shadow-sm backdrop-blur-sm">
               {getShortPlayerName(player.name)}
             </span>
           </div>
