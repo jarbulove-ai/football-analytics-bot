@@ -2589,7 +2589,108 @@ function MatchLineupPlayerList({
   );
 }
 
+interface PositionedLineupPlayer {
+  player: MatchLineupPlayer;
+  row: number;
+  column: number;
+}
+
+function getShortPlayerName(name: string) {
+  const nameParts = name.trim().split(/\s+/).filter(Boolean);
+  return nameParts[nameParts.length - 1] || name.trim() || "Игрок";
+}
+
+function getPositionedLineupPlayers(players: MatchLineupPlayer[]) {
+  const positionedPlayers: PositionedLineupPlayer[] = [];
+
+  players.forEach((player) => {
+    const gridMatch = player.grid?.trim().match(/^(\d+):(\d+)$/);
+    if (!gridMatch) return;
+
+    const row = Number(gridMatch[1]);
+    const column = Number(gridMatch[2]);
+    if (
+      !Number.isSafeInteger(row) ||
+      !Number.isSafeInteger(column) ||
+      row <= 0 ||
+      column <= 0
+    ) {
+      return;
+    }
+
+    positionedPlayers.push({ player, row, column });
+  });
+
+  return positionedPlayers;
+}
+
+function LineupPitch({ team }: { team: MatchLineupTeam }) {
+  const positionedPlayers = getPositionedLineupPlayers(team.start_xi);
+  if (positionedPlayers.length < 5) {
+    return null;
+  }
+
+  const maxRow = Math.max(
+    ...positionedPlayers.map((positionedPlayer) => positionedPlayer.row),
+  );
+  const columnsByRow = new Map<number, number>();
+  positionedPlayers.forEach(({ row, column }) => {
+    columnsByRow.set(row, Math.max(columnsByRow.get(row) || 0, column));
+  });
+
+  return (
+    <section className="border-t border-line/70 px-4 py-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+          Расстановка
+        </h3>
+        {team.formation && (
+          <span className="rounded-full border border-lime/20 bg-lime/10 px-2.5 py-1 text-[10px] font-bold text-lime">
+            {team.formation}
+          </span>
+        )}
+      </div>
+
+      <div className="relative h-[440px] overflow-hidden rounded-lg border border-emerald-200/20 bg-[repeating-linear-gradient(0deg,rgba(16,75,53,0.96)_0px,rgba(16,75,53,0.96)_55px,rgba(18,86,59,0.96)_55px,rgba(18,86,59,0.96)_110px)] shadow-inner">
+        <div className="pointer-events-none absolute inset-3 rounded-md border border-white/35" />
+        <div className="pointer-events-none absolute inset-x-3 top-1/2 border-t border-white/35" />
+        <div className="pointer-events-none absolute left-1/2 top-1/2 h-20 w-20 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/35" />
+        <div className="pointer-events-none absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/50" />
+        <div className="pointer-events-none absolute left-1/2 top-3 h-20 w-36 -translate-x-1/2 border border-t-0 border-white/35" />
+        <div className="pointer-events-none absolute bottom-3 left-1/2 h-20 w-36 -translate-x-1/2 border border-b-0 border-white/35" />
+        <div className="pointer-events-none absolute left-1/2 top-3 h-8 w-16 -translate-x-1/2 border border-t-0 border-white/35" />
+        <div className="pointer-events-none absolute bottom-3 left-1/2 h-8 w-16 -translate-x-1/2 border border-b-0 border-white/35" />
+
+        {positionedPlayers.map(({ player, row, column }, index) => {
+          const rowColumns = columnsByRow.get(row) || 1;
+          const left = (column / (rowColumns + 1)) * 100;
+          const top =
+            maxRow === 1 ? 50 : 12 + ((row - 1) / (maxRow - 1)) * 74;
+
+          return (
+            <div
+              key={`${player.id ?? player.name}-${row}-${column}-${index}`}
+              className="absolute z-10 flex w-[4.5rem] -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center"
+              style={{ left: `${left}%`, top: `${top}%` }}
+            >
+              <span className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-white/80 bg-slate-950 text-xs font-black text-white shadow-[0_4px_14px_rgba(0,0,0,0.45)]">
+                {player.number ?? "?"}
+              </span>
+              <span className="mt-1 max-w-full truncate rounded bg-slate-950/75 px-1.5 py-0.5 text-[9px] font-bold text-white shadow-sm backdrop-blur-sm">
+                {getShortPlayerName(player.name)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function MatchLineupTeamCard({ team }: { team: MatchLineupTeam }) {
+  const hasLineupPitch =
+    getPositionedLineupPlayers(team.start_xi).length >= 5;
+
   return (
     <article className="overflow-hidden rounded-lg border border-line bg-panel shadow-card">
       <div className="flex items-center gap-3 px-4 py-4">
@@ -2602,7 +2703,7 @@ function MatchLineupTeamCard({ team }: { team: MatchLineupTeam }) {
           <h2 className="truncate text-sm font-bold text-white">
             {team.team_name || "Команда"}
           </h2>
-          {team.formation && (
+          {team.formation && !hasLineupPitch && (
             <span className="mt-1.5 inline-flex rounded-full border border-lime/15 bg-lime/[0.08] px-2 py-1 text-[10px] font-bold text-lime">
               Схема {team.formation}
             </span>
@@ -2620,6 +2721,8 @@ function MatchLineupTeamCard({ team }: { team: MatchLineupTeam }) {
           </p>
         </div>
       )}
+
+      <LineupPitch team={team} />
 
       <div className="space-y-5 border-t border-line/70 py-4">
         <MatchLineupPlayerList
