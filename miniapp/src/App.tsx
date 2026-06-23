@@ -76,6 +76,7 @@ const matchTabs: Array<{ id: MatchListType; label: string }> = [
   { id: "top", label: "Топ" },
   { id: "today", label: "Сегодня" },
   { id: "tomorrow", label: "Завтра" },
+  { id: "live", label: "Live" },
 ];
 
 const ONBOARDING_STORAGE_KEY = "matchlab_onboarding_seen";
@@ -164,6 +165,8 @@ function formatPrice(value: number) {
 }
 
 function canSetMatchReminder(match: MatchItem) {
+  if (isFinishedMatchStatus(match.status)) return false;
+  if (isLiveMatchStatus(match.status)) return true;
   if (!match.kickoff) return false;
   const kickoffTime = new Date(match.kickoff).getTime();
   return Number.isFinite(kickoffTime) && kickoffTime > Date.now();
@@ -255,6 +258,23 @@ function formatMatchStatus(status: string, hasScore: boolean) {
   }
 
   return hasScore ? "Счёт матча" : "Матч ожидается";
+}
+
+function isLiveMatchStatus(status: string) {
+  const normalizedStatus = status.trim().toLocaleUpperCase("en-US");
+  return (
+    ["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "INT"].includes(
+      normalizedStatus,
+    ) || /LIVE|IN PROGRESS/.test(normalizedStatus)
+  );
+}
+
+function isFinishedMatchStatus(status: string) {
+  const normalizedStatus = status.trim().toLocaleUpperCase("en-US");
+  return (
+    ["FT", "AET", "PEN"].includes(normalizedStatus) ||
+    /FINISHED|MATCH FINISHED/.test(normalizedStatus)
+  );
 }
 
 function normalizeTeamLabel(value: string) {
@@ -502,7 +522,6 @@ function HomeScreen({
         .filter((reminder) => {
           const kickoffTime = new Date(reminder.kickoff).getTime();
           return (
-            !reminder.is_sent &&
             Number.isFinite(kickoffTime) &&
             kickoffTime > Date.now()
           );
@@ -871,6 +890,7 @@ function CompactMatchRow({
   const hasScore =
     typeof match.score?.home === "number" &&
     typeof match.score?.away === "number";
+  const isLive = isLiveMatchStatus(match.status);
   const reminderAvailable = canSetMatchReminder(match);
 
   return (
@@ -898,9 +918,16 @@ function CompactMatchRow({
             </p>
           </div>
         </div>
-        <span className="rounded-full bg-white/[0.05] px-2 py-1 text-[10px] font-semibold text-slate-400">
-          {hasScore ? `${match.score.home}:${match.score.away}` : "Детали"}
-        </span>
+        <div className="flex flex-col items-end gap-1">
+          {isLive && (
+            <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[9px] font-black text-red-200">
+              LIVE
+            </span>
+          )}
+          <span className="rounded-full bg-white/[0.05] px-2 py-1 text-[10px] font-semibold text-slate-400">
+            {hasScore ? `${match.score.home}:${match.score.away}` : "Детали"}
+          </span>
+        </div>
       </button>
       {reminderAvailable && (
         <button
@@ -1166,7 +1193,7 @@ function MatchesScreen({
         ))}
       </div>
 
-      <div className="mb-5 grid grid-cols-3 rounded-lg bg-panel p-1">
+      <div className="mb-5 grid grid-cols-4 rounded-lg bg-panel p-1">
         {matchTabs.map((tab) => (
           <button
             key={tab.id}
@@ -1217,10 +1244,14 @@ function MatchesScreen({
           <div className="py-16 text-center">
             <CalendarDays className="mx-auto h-8 w-8 text-slate-600" />
             <p className="mt-4 text-sm font-semibold text-white">
-              Матчей пока нет
+              {activeType === "live"
+                ? "Сейчас live-матчей нет."
+                : "Матчей пока нет"}
             </p>
             <p className="mt-1 text-xs text-slate-500">
-              Расписание обновится автоматически.
+              {activeType === "live"
+                ? "Загляните позже или откройте матчи на сегодня."
+                : "Расписание обновится автоматически."}
             </p>
           </div>
         )}

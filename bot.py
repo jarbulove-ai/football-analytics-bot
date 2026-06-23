@@ -2156,8 +2156,7 @@ def get_miniapp_match_reminders(telegram_user_id: int) -> list[dict]:
                     is_sent
                 FROM miniapp_match_reminders
                 WHERE telegram_user_id = %s
-                  AND is_sent = FALSE
-                  AND kickoff > CURRENT_TIMESTAMP
+                  AND kickoff >= CURRENT_TIMESTAMP - INTERVAL '4 hours'
                 ORDER BY kickoff ASC;
                 """,
                 (telegram_user_id,),
@@ -8260,6 +8259,21 @@ def format_miniapp_team_item(team_item: dict) -> dict | None:
 
 
 def get_miniapp_matches(match_type: str) -> list[dict]:
+    if match_type == "live":
+        fixtures = request_api_football(
+            "/fixtures",
+            {
+                "live": "all",
+                "timezone": "UTC",
+            },
+        )
+        items = []
+        for fixture_item in fixtures[:50]:
+            formatted_item = format_miniapp_fixture_item(fixture_item)
+            if formatted_item and formatted_item.get("id"):
+                items.append(formatted_item)
+        return items
+
     now_almaty = datetime.now(ALMATY_TZ)
 
     if match_type == "today":
@@ -9229,6 +9243,11 @@ def miniapp_matches_tomorrow():
 @miniapp_api.get("/api/matches/top")
 def miniapp_matches_top():
     return build_miniapp_matches_response("top")
+
+
+@miniapp_api.get("/api/matches/live")
+def miniapp_matches_live():
+    return build_miniapp_matches_response("live")
 
 
 @miniapp_api.get("/api/matches/<match_id>")

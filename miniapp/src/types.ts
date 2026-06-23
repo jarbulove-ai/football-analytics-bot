@@ -1,4 +1,4 @@
-export type MatchListType = "top" | "today" | "tomorrow";
+export type MatchListType = "top" | "today" | "tomorrow" | "live";
 
 export type Screen =
   | "home"
