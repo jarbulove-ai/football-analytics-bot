@@ -419,9 +419,17 @@ def init_db() -> None:
                     kickoff TIMESTAMPTZ NOT NULL,
                     notify_at TIMESTAMPTZ NOT NULL,
                     is_sent BOOLEAN DEFAULT FALSE,
+                    lineups_notified BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE (telegram_user_id, match_id)
                 );
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE miniapp_match_reminders
+                ADD COLUMN IF NOT EXISTS lineups_notified
+                BOOLEAN DEFAULT FALSE;
                 """
             )
         connection.commit()
@@ -2291,6 +2299,70 @@ def mark_miniapp_match_reminder_sent(reminder_id: int) -> None:
             connection.close()
 
 
+def get_pending_lineup_notification_reminders(
+    limit: int = 20,
+) -> list[dict]:
+    database_url = get_database_url()
+    if not database_url:
+        logger.warning(
+            "DATABASE_URL is not configured; lineup reminders were not checked"
+        )
+        return []
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    telegram_user_id,
+                    match_id,
+                    home_team,
+                    away_team,
+                    league,
+                    kickoff
+                FROM miniapp_match_reminders
+                WHERE lineups_notified = FALSE
+                  AND kickoff > CURRENT_TIMESTAMP
+                  AND kickoff <= CURRENT_TIMESTAMP + INTERVAL '3 hours'
+                ORDER BY kickoff ASC
+                LIMIT %s;
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+    finally:
+        if connection is not None:
+            connection.close()
+
+    return [dict(row) for row in rows]
+
+
+def mark_miniapp_lineups_notified(reminder_id: int) -> None:
+    database_url = get_database_url()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE miniapp_match_reminders
+                SET lineups_notified = TRUE
+                WHERE id = %s AND lineups_notified = FALSE;
+                """,
+                (reminder_id,),
+            )
+        connection.commit()
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def format_match_reminder_kickoff(kickoff) -> str:
     if not isinstance(kickoff, datetime):
         return "время уточняется"
@@ -2332,6 +2404,17 @@ def build_miniapp_match_reminder_message(reminder: dict) -> str:
         f"Турнир: {league}\n"
         f"Начало: {kickoff_text}\n\n"
         "Открыть MatchLab 👇"
+    )
+
+
+def build_miniapp_lineups_available_message(reminder: dict) -> str:
+    home_team = reminder.get("home_team") or "Хозяева"
+    away_team = reminder.get("away_team") or "Гости"
+    return (
+        "📋 Составы доступны\n\n"
+        f"{home_team} — {away_team}\n\n"
+        "Стартовые составы опубликованы.\n"
+        "Откройте MatchLab, чтобы посмотреть игроков и запасных."
     )
 
 
@@ -2383,11 +2466,75 @@ async def check_and_send_miniapp_match_reminders(bot) -> None:
         )
 
 
+async def check_and_send_miniapp_lineup_notifications(bot) -> None:
+    try:
+        reminders = get_pending_lineup_notification_reminders(limit=20)
+    except Exception:
+        logger.exception(
+            "Failed to load pending Mini App lineup notifications"
+        )
+        return
+
+    logger.info(
+        "Pending Mini App lineup notifications found: %s",
+        len(reminders),
+    )
+
+    for reminder in reminders:
+        telegram_user_id = int(reminder["telegram_user_id"])
+        match_id = str(reminder["match_id"])
+        lineups = get_fixture_lineups(match_id)
+        if not lineups:
+            logger.debug(
+                "Mini App lineups not available yet: "
+                "user_id=%s match_id=%s",
+                telegram_user_id,
+                match_id,
+            )
+            continue
+
+        try:
+            await bot.send_message(
+                chat_id=telegram_user_id,
+                text=build_miniapp_lineups_available_message(reminder),
+                reply_markup=build_miniapp_inline_keyboard(
+                    params={"match_id": match_id}
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to send Mini App lineup notification: "
+                "user_id=%s match_id=%s",
+                telegram_user_id,
+                match_id,
+                exc_info=True,
+            )
+            continue
+
+        try:
+            mark_miniapp_lineups_notified(int(reminder["id"]))
+        except Exception:
+            logger.exception(
+                "Failed to mark Mini App lineups as notified: "
+                "user_id=%s match_id=%s",
+                telegram_user_id,
+                match_id,
+            )
+            continue
+
+        logger.info(
+            "Mini App lineup notification sent: user_id=%s match_id=%s",
+            telegram_user_id,
+            match_id,
+        )
+
+
 async def miniapp_match_reminders_loop(bot) -> None:
     try:
         await asyncio.sleep(10)
         while True:
             await check_and_send_miniapp_match_reminders(bot)
+            await check_and_send_miniapp_lineup_notifications(bot)
             await asyncio.sleep(60)
     except asyncio.CancelledError:
         logger.info("Mini App match reminders background loop stopped")
