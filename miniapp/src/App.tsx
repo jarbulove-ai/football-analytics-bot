@@ -50,6 +50,7 @@ import { getTelegramUserIdentity } from "./telegramUser";
 import type {
   AppConfig,
   FavoriteTeamItem,
+  MatchAbsencePlayer,
   MatchAiAnalysisResponse,
   MatchContextMatch,
   MatchContextResponse,
@@ -2801,7 +2802,13 @@ function LineupPitchPlayers({
   );
 }
 
-function MatchLineupTeamCard({ team }: { team: MatchLineupTeam }) {
+function MatchLineupTeamCard({
+  team,
+  absencePlayers = [],
+}: {
+  team: MatchLineupTeam;
+  absencePlayers?: MatchAbsencePlayer[];
+}) {
   return (
     <article className="overflow-hidden rounded-lg border border-line bg-panel shadow-card">
       <div className="flex items-center gap-3 px-4 py-4">
@@ -2838,12 +2845,60 @@ function MatchLineupTeamCard({ team }: { team: MatchLineupTeam }) {
           title="Запасные"
           players={team.substitutes}
         />
+        <MatchLineupAbsencesList players={absencePlayers} />
         <MatchLineupPlayerList
           title="Стартовый состав"
           players={team.start_xi}
         />
       </div>
     </article>
+  );
+}
+
+function MatchLineupAbsencesList({
+  players,
+}: {
+  players: MatchAbsencePlayer[];
+}) {
+  if (players.length === 0) {
+    return null;
+  }
+
+  return (
+    <section>
+      <h3 className="px-4 pb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+        Не сыграют / под вопросом
+      </h3>
+      <div className="border-y border-line/70 bg-red-500/[0.025]">
+        {players.map((player, index) => {
+          const reason = formatAbsenceReason(player.reason);
+          const type = formatAbsenceReason(player.type);
+          const details = [reason, type].filter(Boolean).join(" · ");
+
+          return (
+            <div
+              key={`${player.id ?? player.name}-${index}`}
+              className="grid min-h-12 grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-line/60 px-4 py-2.5 first:border-t-0"
+            >
+              <span className="flex h-7 w-7 items-center justify-center rounded-md border border-red-300/10 bg-red-500/[0.08] text-[11px] font-black text-red-200">
+                !
+              </span>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-slate-100">
+                  {player.name}
+                </p>
+                <p className="mt-0.5 truncate text-xs text-slate-500">
+                  {details || "Статус уточняется"}
+                </p>
+              </div>
+              <span className="rounded-full bg-red-500/[0.08] px-2 py-1 text-[10px] font-bold text-red-200">
+                Потеря
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -2884,7 +2939,41 @@ function MatchLineupTeamSwitcher({
   );
 }
 
-function MatchLineupsPanel({ teams }: { teams: MatchLineupTeam[] }) {
+function getAbsenceTeamForLineupTeam(
+  absences: MatchContextResponse["absences"] | undefined,
+  lineupTeam: MatchLineupTeam,
+) {
+  if (!absences?.available) {
+    return undefined;
+  }
+
+  if (lineupTeam.team_id !== null) {
+    const teamById = absences.teams.find(
+      (team) => team.team_id === lineupTeam.team_id,
+    );
+    if (teamById) return teamById;
+  }
+
+  const normalizedLineupTeamName = normalizeTeamLabel(
+    lineupTeam.team_name,
+  );
+  if (!normalizedLineupTeamName) {
+    return undefined;
+  }
+
+  return absences.teams.find(
+    (team) =>
+      normalizeTeamLabel(team.team_name) === normalizedLineupTeamName,
+  );
+}
+
+function MatchLineupsPanel({
+  teams,
+  absences,
+}: {
+  teams: MatchLineupTeam[];
+  absences?: MatchContextResponse["absences"];
+}) {
   const [selectedLineupTeamIndex, setSelectedLineupTeamIndex] = useState(0);
   const canShowSharedPitch =
     teams.length >= 2 && teams.slice(0, 2).every(canRenderTeamOnPitch);
@@ -2901,6 +2990,9 @@ function MatchLineupsPanel({ teams }: { teams: MatchLineupTeam[] }) {
           <MatchLineupTeamCard
             key={`${team.team_id ?? team.team_name}-${index}`}
             team={team}
+            absencePlayers={
+              getAbsenceTeamForLineupTeam(absences, team)?.players || []
+            }
           />
         ))}
       </div>
@@ -2915,9 +3007,30 @@ function MatchLineupsPanel({ teams }: { teams: MatchLineupTeam[] }) {
         selectedIndex={safeSelectedIndex}
         onSelect={setSelectedLineupTeamIndex}
       />
-      {selectedTeam && <MatchLineupTeamCard team={selectedTeam} />}
+      {selectedTeam && (
+        <MatchLineupTeamCard
+          team={selectedTeam}
+          absencePlayers={
+            getAbsenceTeamForLineupTeam(absences, selectedTeam)?.players || []
+          }
+        />
+      )}
     </div>
   );
+}
+
+function formatAbsenceReason(value: string) {
+  const normalizedValue = value.trim().toLocaleLowerCase("en-US");
+  const translations: Record<string, string> = {
+    injury: "Травма",
+    suspended: "Дисквалификация",
+    illness: "Болезнь",
+    questionable: "Под вопросом",
+    "missing fixture": "Не сыграет",
+    doubtful: "Под вопросом",
+  };
+
+  return translations[normalizedValue] || value.trim();
 }
 
 function getLiveEventIcon(event: MatchLiveEvent) {
@@ -3451,7 +3564,10 @@ function MatchDetails({
             !contextError &&
             matchContext?.lineups?.available &&
             matchContext.lineups.teams.length > 0 && (
-              <MatchLineupsPanel teams={matchContext.lineups.teams} />
+              <MatchLineupsPanel
+                teams={matchContext.lineups.teams}
+                absences={matchContext.absences}
+              />
             )}
         </section>
       )}

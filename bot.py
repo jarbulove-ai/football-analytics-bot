@@ -4297,6 +4297,27 @@ def get_fixture_lineups(fixture_id: int | str) -> list[dict]:
         return []
 
 
+def get_fixture_injuries(fixture_id: int | str) -> list[dict]:
+    try:
+        injuries = request_api_football(
+            "/injuries",
+            {"fixture": fixture_id},
+        )
+        logger.debug(
+            "Fixture injuries loaded: fixture_id=%s items=%s",
+            fixture_id,
+            len(injuries),
+        )
+        return injuries if isinstance(injuries, list) else []
+    except Exception:
+        logger.warning(
+            "Failed to get fixture injuries for fixture_id=%s",
+            fixture_id,
+            exc_info=True,
+        )
+        return []
+
+
 def format_miniapp_lineup_player(item: dict) -> dict | None:
     if not isinstance(item, dict):
         return None
@@ -4387,6 +4408,70 @@ def format_miniapp_match_lineups(raw_lineups) -> dict:
                 "substitutes": substitutes,
             }
         )
+
+    return {
+        "available": bool(teams),
+        "teams": teams,
+    }
+
+
+def format_miniapp_match_absences(raw_injuries) -> dict:
+    if not isinstance(raw_injuries, list):
+        return {
+            "available": False,
+            "teams": [],
+        }
+
+    teams_by_id = {}
+    fallback_index = 0
+
+    for injury in raw_injuries:
+        if not isinstance(injury, dict):
+            continue
+
+        player = injury.get("player")
+        if not isinstance(player, dict):
+            player = {}
+
+        team = injury.get("team")
+        if not isinstance(team, dict):
+            team = {}
+
+        player_name = str(player.get("name") or "").strip()
+        if not player_name:
+            continue
+
+        team_id = team.get("id")
+        team_name = str(team.get("name") or "").strip()
+        if team_id is None and not team_name:
+            fallback_index += 1
+            team_key = f"unknown-{fallback_index}"
+        else:
+            team_key = str(team_id if team_id is not None else team_name)
+
+        if team_key not in teams_by_id:
+            teams_by_id[team_key] = {
+                "team_id": team_id,
+                "team_name": team_name,
+                "team_logo": team.get("logo") or None,
+                "players": [],
+            }
+
+        teams_by_id[team_key]["players"].append(
+            {
+                "id": player.get("id"),
+                "name": player_name,
+                "photo": player.get("photo") or None,
+                "type": str(player.get("type") or "").strip(),
+                "reason": str(player.get("reason") or "").strip(),
+            }
+        )
+
+    teams = [
+        team
+        for team in teams_by_id.values()
+        if team.get("players")
+    ]
 
     return {
         "available": bool(teams),
@@ -8735,6 +8820,9 @@ def get_miniapp_match_context(match: dict) -> dict:
     lineups = format_miniapp_match_lineups(
         get_fixture_lineups(match_id)
     )
+    absences = format_miniapp_match_absences(
+        get_fixture_injuries(match_id)
+    )
 
     raw_standings = get_fixture_league_standings(
         league.get("id"),
@@ -8840,6 +8928,7 @@ def get_miniapp_match_context(match: dict) -> dict:
         "match_group": match_group,
         "statistics": statistics,
         "lineups": lineups,
+        "absences": absences,
         "standings": standings,
         "h2h": format_fixture_list(h2h_fixtures),
         "home_recent": format_fixture_list(

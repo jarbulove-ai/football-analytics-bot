@@ -162,6 +162,26 @@ export interface MatchLineupsBlock {
   teams: MatchLineupTeam[];
 }
 
+export interface MatchAbsencePlayer {
+  id: number | null;
+  name: string;
+  photo: string | null;
+  type: string;
+  reason: string;
+}
+
+export interface MatchAbsenceTeam {
+  team_id: number | null;
+  team_name: string;
+  team_logo: string | null;
+  players: MatchAbsencePlayer[];
+}
+
+export interface MatchAbsencesBlock {
+  available: boolean;
+  teams: MatchAbsenceTeam[];
+}
+
 export interface MatchContextResponse {
   ok: true;
   match_id: string;
@@ -173,6 +193,7 @@ export interface MatchContextResponse {
   match_group: string;
   statistics: MatchStatisticsBlock;
   lineups: MatchLineupsBlock;
+  absences: MatchAbsencesBlock;
   standings: MatchStandingRow[];
   h2h: MatchContextMatch[];
   home_recent: MatchContextMatch[];
