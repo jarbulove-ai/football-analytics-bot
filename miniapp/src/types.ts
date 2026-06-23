@@ -41,6 +41,48 @@ export interface SingleMatchResponse {
   match: MatchItem;
 }
 
+export interface MatchLiveStatus {
+  short: string;
+  long: string;
+  elapsed: number | null;
+}
+
+export interface MatchLiveScore {
+  home: number | null;
+  away: number | null;
+}
+
+export interface MatchLiveFixture {
+  home: string;
+  away: string;
+  home_logo: string | null;
+  away_logo: string | null;
+  kickoff: string | null;
+  league: string;
+}
+
+export interface MatchLiveEvent {
+  time: number | null;
+  extra: number | null;
+  team_id: number | null;
+  team_name: string;
+  player: string;
+  assist: string;
+  type: string;
+  detail: string;
+  comments: string | null;
+}
+
+export interface MatchLiveResponse {
+  ok: true;
+  match_id: string;
+  status: MatchLiveStatus;
+  score: MatchLiveScore;
+  fixture: MatchLiveFixture;
+  events: MatchLiveEvent[];
+  updated_at: string;
+}
+
 export interface MatchContextMatch {
   id: string;
   date: string | null;

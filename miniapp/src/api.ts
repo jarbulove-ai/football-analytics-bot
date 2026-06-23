@@ -6,6 +6,7 @@ import type {
   MatchAiAnalysisResponse,
   MatchContextResponse,
   MatchItem,
+  MatchLiveResponse,
   MatchListType,
   MatchRemindersResponse,
   MatchResponse,
@@ -74,6 +75,14 @@ export function getMatchContext(
 ): Promise<MatchContextResponse> {
   return apiRequest<MatchContextResponse>(
     `/api/matches/${encodeURIComponent(matchId)}/context`,
+  );
+}
+
+export function getMatchLive(
+  matchId: string,
+): Promise<MatchLiveResponse> {
+  return apiRequest<MatchLiveResponse>(
+    `/api/matches/${encodeURIComponent(matchId)}/live`,
   );
 }
 

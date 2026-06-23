@@ -280,6 +280,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 miniapp_api = Flask("matchlab_miniapp_api")
+MINIAPP_LIVE_CACHE = {}
+MINIAPP_LIVE_CACHE_LOCK = threading.Lock()
+MINIAPP_LIVE_STATUSES = {
+    "1H",
+    "HT",
+    "2H",
+    "ET",
+    "BT",
+    "P",
+    "LIVE",
+    "INT",
+}
+MINIAPP_FINISHED_STATUSES = {"FT", "AET", "PEN"}
+MINIAPP_NOT_STARTED_STATUSES = {"NS", "TBD"}
 
 
 @miniapp_api.after_request
@@ -7868,6 +7882,116 @@ def find_miniapp_match(match_id: str) -> dict | None:
     return None
 
 
+def get_miniapp_live_cache_ttl(status_short: str) -> int:
+    normalized_status = str(status_short or "").strip().upper()
+    if normalized_status in MINIAPP_LIVE_STATUSES:
+        return 45
+    if normalized_status in MINIAPP_FINISHED_STATUSES:
+        return 600
+    if normalized_status in MINIAPP_NOT_STARTED_STATUSES:
+        return 180
+    return 180
+
+
+def get_cached_miniapp_live_payload(match_id: str) -> dict | None:
+    now_timestamp = datetime.now(timezone.utc).timestamp()
+    with MINIAPP_LIVE_CACHE_LOCK:
+        cached = MINIAPP_LIVE_CACHE.get(match_id)
+        if not cached:
+            return None
+        if float(cached.get("expires_at") or 0) <= now_timestamp:
+            MINIAPP_LIVE_CACHE.pop(match_id, None)
+            return None
+        return cached.get("payload")
+
+
+def cache_miniapp_live_payload(
+    match_id: str,
+    payload: dict,
+    ttl_seconds: int,
+) -> None:
+    expires_at = (
+        datetime.now(timezone.utc).timestamp() + max(ttl_seconds, 1)
+    )
+    with MINIAPP_LIVE_CACHE_LOCK:
+        MINIAPP_LIVE_CACHE[match_id] = {
+            "expires_at": expires_at,
+            "payload": payload,
+        }
+
+
+def format_miniapp_live_event(event: dict) -> dict | None:
+    if not isinstance(event, dict):
+        return None
+
+    event_time = event.get("time")
+    if not isinstance(event_time, dict):
+        event_time = {}
+    team = event.get("team")
+    if not isinstance(team, dict):
+        team = {}
+    player = event.get("player")
+    if not isinstance(player, dict):
+        player = {}
+    assist = event.get("assist")
+    if not isinstance(assist, dict):
+        assist = {}
+
+    return {
+        "time": event_time.get("elapsed"),
+        "extra": event_time.get("extra"),
+        "team_id": team.get("id"),
+        "team_name": str(team.get("name") or "").strip(),
+        "player": str(player.get("name") or "").strip(),
+        "assist": str(assist.get("name") or "").strip(),
+        "type": str(event.get("type") or "").strip(),
+        "detail": str(event.get("detail") or "").strip(),
+        "comments": event.get("comments") or None,
+    }
+
+
+def build_miniapp_match_live_payload(
+    match_id: str,
+    fixture_item: dict,
+    raw_events,
+) -> dict:
+    fixture = fixture_item.get("fixture") or {}
+    status = fixture.get("status") or {}
+    teams = fixture_item.get("teams") or {}
+    league = fixture_item.get("league") or {}
+    formatted_fixture = format_miniapp_fixture_item(fixture_item)
+    if not formatted_fixture:
+        raise ValueError("Fixture data is incomplete")
+
+    events = []
+    if isinstance(raw_events, list):
+        for event in raw_events:
+            formatted_event = format_miniapp_live_event(event)
+            if formatted_event:
+                events.append(formatted_event)
+
+    return {
+        "ok": True,
+        "match_id": match_id,
+        "status": {
+            "short": str(status.get("short") or "").strip(),
+            "long": str(status.get("long") or "").strip(),
+            "elapsed": status.get("elapsed"),
+        },
+        "score": formatted_fixture["score"],
+        "fixture": {
+            "home": (teams.get("home") or {}).get("name") or "",
+            "away": (teams.get("away") or {}).get("name") or "",
+            "home_logo": (teams.get("home") or {}).get("logo") or None,
+            "away_logo": (teams.get("away") or {}).get("logo") or None,
+            "kickoff": formatted_fixture["kickoff"],
+            "league": league.get("name") or "",
+        },
+        "events": events,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def format_miniapp_context_fixture(fixture_item: dict) -> dict | None:
     fixture = fixture_item.get("fixture") or {}
     teams = fixture_item.get("teams") or {}
@@ -8669,6 +8793,89 @@ def miniapp_match(match_id: str):
                 "message": "Данные матча временно недоступны.",
             }
         ), 503
+
+
+@miniapp_api.route(
+    "/api/matches/<match_id>/live",
+    methods=["GET", "OPTIONS"],
+)
+def miniapp_match_live(match_id: str):
+    if flask_request.method == "OPTIONS":
+        return "", 204
+
+    normalized_match_id = str(match_id).strip()
+    cached_payload = get_cached_miniapp_live_payload(normalized_match_id)
+    if cached_payload:
+        return jsonify(cached_payload)
+
+    try:
+        fixture_response = request_api_football(
+            "/fixtures",
+            {
+                "id": normalized_match_id,
+                "timezone": "UTC",
+            },
+        )
+    except Exception:
+        logger.exception(
+            "Mini App live fixture request failed: match_id=%s",
+            normalized_match_id,
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "error": "live_unavailable",
+            }
+        ), 503
+
+    if not fixture_response:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "match_not_found",
+            }
+        ), 404
+
+    raw_events = []
+    try:
+        raw_events = request_api_football(
+            "/fixtures/events",
+            {"fixture": normalized_match_id},
+        )
+    except Exception:
+        logger.warning(
+            "Mini App live events request failed: match_id=%s",
+            normalized_match_id,
+            exc_info=True,
+        )
+
+    try:
+        payload = build_miniapp_match_live_payload(
+            normalized_match_id,
+            fixture_response[0],
+            raw_events,
+        )
+    except Exception:
+        logger.exception(
+            "Mini App live payload formatting failed: match_id=%s",
+            normalized_match_id,
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "error": "live_unavailable",
+            }
+        ), 503
+
+    ttl_seconds = get_miniapp_live_cache_ttl(
+        payload["status"]["short"]
+    )
+    cache_miniapp_live_payload(
+        normalized_match_id,
+        payload,
+        ttl_seconds,
+    )
+    return jsonify(payload)
 
 
 @miniapp_api.get("/api/teams/search")

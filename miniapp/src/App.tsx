@@ -23,7 +23,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   addMatchReminder,
   addFavoriteTeam,
@@ -31,6 +31,7 @@ import {
   getFavoriteTeams,
   getMatch,
   getMatchContext,
+  getMatchLive,
   getMatchReminders,
   getMatches,
   getSubscription,
@@ -53,6 +54,8 @@ import type {
   MatchContextMatch,
   MatchContextResponse,
   MatchItem,
+  MatchLiveEvent,
+  MatchLiveResponse,
   MatchLineupPlayer,
   MatchLineupTeam,
   MatchListType,
@@ -79,6 +82,7 @@ const ONBOARDING_STORAGE_KEY = "matchlab_onboarding_seen";
 
 type MatchDetailTab =
   | "details"
+  | "live"
   | "statistics"
   | "lineups"
   | "ai"
@@ -103,6 +107,7 @@ interface FavoriteTeamMatchesGroup {
 
 const matchDetailTabs: Array<{ id: MatchDetailTab; label: string }> = [
   { id: "details", label: "Детали" },
+  { id: "live", label: "Live" },
   { id: "statistics", label: "Статистика" },
   { id: "lineups", label: "Составы" },
   { id: "ai", label: "AI-разбор" },
@@ -2630,6 +2635,52 @@ function MatchLineupTeamCard({ team }: { team: MatchLineupTeam }) {
   );
 }
 
+function getLiveEventIcon(event: MatchLiveEvent) {
+  const eventType = event.type.trim().toLocaleLowerCase("en-US");
+  if (eventType === "goal") return "⚽";
+  if (eventType === "card") {
+    const cardDetail = event.detail.toLocaleLowerCase("en-US");
+    return cardDetail.includes("red") || cardDetail.includes("second yellow")
+      ? "🟥"
+      : "🟨";
+  }
+  if (eventType === "subst") return "🔁";
+  if (eventType === "var") return "📺";
+  return "•";
+}
+
+function formatLiveEventMinute(event: MatchLiveEvent) {
+  if (typeof event.time !== "number") return "—";
+  if (typeof event.extra === "number" && event.extra > 0) {
+    return `${event.time}+${event.extra}’`;
+  }
+  return `${event.time}’`;
+}
+
+function MatchLiveEventRow({ event }: { event: MatchLiveEvent }) {
+  return (
+    <div className="grid grid-cols-[3.25rem_1.5rem_minmax(0,1fr)] gap-2 border-t border-line/70 px-4 py-3 first:border-t-0">
+      <span className="text-xs font-bold text-slate-400">
+        {formatLiveEventMinute(event)}
+      </span>
+      <span className="text-sm">{getLiveEventIcon(event)}</span>
+      <div className="min-w-0">
+        <p className="truncate text-xs font-semibold text-slate-400">
+          {event.team_name || "Команда"}
+        </p>
+        <p className="mt-0.5 truncate text-sm font-semibold text-white">
+          {event.player || event.detail || event.type || "Событие матча"}
+        </p>
+        {event.assist && (
+          <p className="mt-0.5 truncate text-xs text-slate-500">
+            Ассист: {event.assist}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function MatchDetails({
   match,
   onBack,
@@ -2662,6 +2713,9 @@ function MatchDetails({
   const [aiError, setAiError] = useState("");
   const [activeTab, setActiveTab] =
     useState<MatchDetailTab>("details");
+  const [liveData, setLiveData] = useState<MatchLiveResponse | null>(null);
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [liveError, setLiveError] = useState(false);
   const [matchContext, setMatchContext] =
     useState<MatchContextResponse | null>(null);
   const [contextLoading, setContextLoading] = useState(true);
@@ -2704,6 +2758,50 @@ function MatchDetails({
       active = false;
     };
   }, [match.id]);
+
+  const loadLiveData = useCallback(
+    async (showLoader: boolean) => {
+      if (showLoader) {
+        setLiveLoading(true);
+      }
+      setLiveError(false);
+
+      try {
+        const response = await getMatchLive(match.id);
+        setLiveData(response);
+      } catch {
+        setLiveError(true);
+      } finally {
+        if (showLoader) {
+          setLiveLoading(false);
+        }
+      }
+    },
+    [match.id],
+  );
+
+  useEffect(() => {
+    if (activeTab !== "live") return;
+    void loadLiveData(true);
+  }, [activeTab, loadLiveData]);
+
+  useEffect(() => {
+    if (
+      activeTab !== "live" ||
+      !liveData ||
+      !["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "INT"].includes(
+        liveData.status.short.toLocaleUpperCase("en-US"),
+      )
+    ) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void loadLiveData(false);
+    }, 60_000);
+
+    return () => window.clearInterval(intervalId);
+  }, [activeTab, liveData?.status.short, loadLiveData]);
 
   async function handleAiAnalysis() {
     setAiLoading(true);
@@ -2916,6 +3014,102 @@ function MatchDetails({
               </div>
             )}
           </div>
+        </section>
+      )}
+
+      {activeTab === "live" && (
+        <section className="animate-rise py-6">
+          {liveLoading && !liveData && <MatchContextLoading />}
+
+          {!liveLoading && liveError && !liveData && (
+            <div className="rounded-lg border border-line bg-panel px-5 py-10 text-center">
+              <RefreshCw className="mx-auto h-7 w-7 text-slate-600" />
+              <p className="mt-4 text-sm font-semibold text-white">
+                Live-данные временно недоступны.
+              </p>
+            </div>
+          )}
+
+          {liveData && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-line bg-panel p-5 text-center shadow-card">
+                <p className="text-xs font-semibold text-slate-500">
+                  {liveData.fixture.league || match.league}
+                </p>
+                <div className="mt-4 grid grid-cols-[1fr_auto_1fr] items-center gap-4">
+                  <div className="min-w-0">
+                    <TeamLogo
+                      logo={liveData.fixture.home_logo}
+                      name={liveData.fixture.home}
+                      size="sm"
+                    />
+                    <p className="mt-2 truncate text-xs font-bold text-white">
+                      {liveData.fixture.home || match.home}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-3xl font-black text-white">
+                      {liveData.score.home ?? "—"}:
+                      {liveData.score.away ?? "—"}
+                    </p>
+                    <p className="mt-1 text-xs font-semibold text-lime">
+                      {formatMatchStatus(
+                        liveData.status.short,
+                        hasNumericMatchScore(
+                          liveData.score.home,
+                          liveData.score.away,
+                        ),
+                      )}
+                      {typeof liveData.status.elapsed === "number"
+                        ? ` · ${liveData.status.elapsed}’`
+                        : ""}
+                    </p>
+                  </div>
+                  <div className="min-w-0">
+                    <TeamLogo
+                      logo={liveData.fixture.away_logo}
+                      name={liveData.fixture.away}
+                      size="sm"
+                    />
+                    <p className="mt-2 truncate text-xs font-bold text-white">
+                      {liveData.fixture.away || match.away}
+                    </p>
+                  </div>
+                </div>
+                {liveError && (
+                  <p className="mt-4 text-xs text-slate-500">
+                    Не удалось обновить данные. Показана последняя версия.
+                  </p>
+                )}
+              </div>
+
+              {["NS", "TBD"].includes(
+                liveData.status.short.toLocaleUpperCase("en-US"),
+              ) ? (
+                <div className="rounded-lg border border-line bg-panel px-4 py-6 text-center text-sm text-slate-400">
+                  Live появится после начала матча.
+                </div>
+              ) : liveData.events.length > 0 ? (
+                <div className="overflow-hidden rounded-lg border border-line bg-panel">
+                  <div className="px-4 py-3">
+                    <h2 className="text-sm font-bold text-white">
+                      События матча
+                    </h2>
+                  </div>
+                  {liveData.events.map((event, index) => (
+                    <MatchLiveEventRow
+                      key={`${event.time}-${event.extra}-${event.type}-${index}`}
+                      event={event}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-line bg-panel px-4 py-6 text-center text-sm text-slate-400">
+                  Событий пока нет.
+                </div>
+              )}
+            </div>
+          )}
         </section>
       )}
 
