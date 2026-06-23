@@ -53,6 +53,8 @@ import type {
   MatchContextMatch,
   MatchContextResponse,
   MatchItem,
+  MatchLineupPlayer,
+  MatchLineupTeam,
   MatchListType,
   MatchReminderItem,
   MatchStatisticItem,
@@ -78,6 +80,7 @@ const ONBOARDING_STORAGE_KEY = "matchlab_onboarding_seen";
 type MatchDetailTab =
   | "details"
   | "statistics"
+  | "lineups"
   | "ai"
   | "table"
   | "matches";
@@ -101,6 +104,7 @@ interface FavoriteTeamMatchesGroup {
 const matchDetailTabs: Array<{ id: MatchDetailTab; label: string }> = [
   { id: "details", label: "Детали" },
   { id: "statistics", label: "Статистика" },
+  { id: "lineups", label: "Составы" },
   { id: "ai", label: "AI-разбор" },
   { id: "table", label: "Таблица" },
   { id: "matches", label: "Матчи" },
@@ -2540,6 +2544,92 @@ function MatchStatisticsPanel({
   );
 }
 
+function MatchLineupPlayerList({
+  title,
+  players,
+}: {
+  title: string;
+  players: MatchLineupPlayer[];
+}) {
+  return (
+    <section>
+      <h3 className="px-4 pb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+        {title}
+      </h3>
+      {players.length > 0 ? (
+        <div className="border-y border-line/70 bg-white/[0.012]">
+          {players.map((player, index) => (
+            <div
+              key={`${player.id ?? player.name}-${index}`}
+              className="grid min-h-12 grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-line/60 px-4 py-2.5 first:border-t-0"
+            >
+              <span className="flex h-7 w-7 items-center justify-center rounded-md border border-white/[0.06] bg-white/[0.04] text-[11px] font-bold text-slate-300">
+                {player.number ?? "—"}
+              </span>
+              <span className="truncate text-sm font-semibold text-slate-100">
+                {player.name}
+              </span>
+              <span className="min-w-8 rounded-full bg-white/[0.05] px-2 py-1 text-center text-[10px] font-bold uppercase text-slate-400">
+                {player.pos || "—"}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mx-4 rounded-md bg-white/[0.025] px-3 py-3 text-xs leading-5 text-slate-500">
+          Данные пока не опубликованы.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function MatchLineupTeamCard({ team }: { team: MatchLineupTeam }) {
+  return (
+    <article className="overflow-hidden rounded-lg border border-line bg-panel shadow-card">
+      <div className="flex items-center gap-3 px-4 py-4">
+        <TeamLogo
+          logo={team.team_logo}
+          name={team.team_name || "Команда"}
+          size="sm"
+        />
+        <div className="min-w-0">
+          <h2 className="truncate text-sm font-bold text-white">
+            {team.team_name || "Команда"}
+          </h2>
+          {team.formation && (
+            <span className="mt-1.5 inline-flex rounded-full border border-lime/15 bg-lime/[0.08] px-2 py-1 text-[10px] font-bold text-lime">
+              Схема {team.formation}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {team.coach && (
+        <div className="flex items-center justify-between gap-4 border-t border-line/70 bg-white/[0.018] px-4 py-3">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+            Тренер
+          </p>
+          <p className="truncate text-right text-sm font-semibold text-slate-200">
+            {team.coach.name || "Имя не указано"}
+          </p>
+        </div>
+      )}
+
+      <div className="space-y-5 border-t border-line/70 py-4">
+        <MatchLineupPlayerList
+          title="Стартовый состав"
+          players={team.start_xi}
+        />
+        <MatchLineupPlayerList
+          title="Запасные"
+          players={team.substitutes}
+        />
+      </div>
+    </article>
+  );
+}
+
 function MatchDetails({
   match,
   onBack,
@@ -2853,6 +2943,43 @@ function MatchDetails({
                 match={match}
                 statistics={matchContext.statistics}
               />
+            )}
+        </section>
+      )}
+
+      {activeTab === "lineups" && (
+        <section className="animate-rise py-6">
+          {contextLoading && <MatchContextLoading />}
+
+          {!contextLoading &&
+            (contextError ||
+              !matchContext?.lineups?.available ||
+              matchContext.lineups.teams.length === 0) && (
+              <div className="rounded-lg border border-line bg-panel px-5 py-10 text-center shadow-card">
+                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-white/[0.06] bg-white/[0.035]">
+                  <CircleUserRound className="h-6 w-6 text-slate-500" />
+                </div>
+                <p className="mt-4 text-sm font-semibold text-white">
+                  Составы пока недоступны.
+                </p>
+                <p className="mx-auto mt-2 max-w-72 text-xs leading-5 text-slate-400">
+                  Обычно они появляются ближе к началу матча.
+                </p>
+              </div>
+            )}
+
+          {!contextLoading &&
+            !contextError &&
+            matchContext?.lineups?.available &&
+            matchContext.lineups.teams.length > 0 && (
+              <div className="space-y-4">
+                {matchContext.lineups.teams.map((team, index) => (
+                  <MatchLineupTeamCard
+                    key={`${team.team_id ?? team.team_name}-${index}`}
+                    team={team}
+                  />
+                ))}
+              </div>
             )}
         </section>
       )}

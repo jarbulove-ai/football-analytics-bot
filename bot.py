@@ -3653,6 +3653,124 @@ def get_fixture_statistics(fixture_id: int | str) -> list[dict]:
         return []
 
 
+def get_fixture_lineups(fixture_id: int | str) -> list[dict]:
+    try:
+        lineups = request_api_football(
+            "/fixtures/lineups",
+            {"fixture": fixture_id},
+        )
+        logger.debug(
+            "Fixture lineups loaded: fixture_id=%s teams=%s",
+            fixture_id,
+            len(lineups),
+        )
+        return lineups
+    except Exception:
+        logger.warning(
+            "Failed to get fixture lineups for fixture_id=%s",
+            fixture_id,
+            exc_info=True,
+        )
+        return []
+
+
+def format_miniapp_lineup_player(item: dict) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+
+    player = item.get("player")
+    if not isinstance(player, dict):
+        player = item
+
+    player_name = str(player.get("name") or "").strip()
+    if not player_name:
+        return None
+
+    return {
+        "id": player.get("id"),
+        "name": player_name,
+        "number": player.get("number"),
+        "pos": str(player.get("pos") or "").strip(),
+        "grid": player.get("grid") or None,
+    }
+
+
+def format_miniapp_match_lineups(raw_lineups) -> dict:
+    if not isinstance(raw_lineups, list):
+        return {
+            "available": False,
+            "teams": [],
+        }
+
+    teams = []
+    for lineup in raw_lineups:
+        if not isinstance(lineup, dict):
+            continue
+
+        team = lineup.get("team")
+        if not isinstance(team, dict):
+            team = {}
+
+        coach_data = lineup.get("coach")
+        coach = None
+        if isinstance(coach_data, dict):
+            coach_name = str(coach_data.get("name") or "").strip()
+            if coach_name or coach_data.get("id") is not None:
+                coach = {
+                    "id": coach_data.get("id"),
+                    "name": coach_name,
+                    "photo": coach_data.get("photo") or None,
+                }
+
+        raw_start_xi = lineup.get("startXI")
+        if raw_start_xi is None:
+            raw_start_xi = lineup.get("start_xi")
+        if not isinstance(raw_start_xi, list):
+            raw_start_xi = []
+
+        raw_substitutes = lineup.get("substitutes")
+        if not isinstance(raw_substitutes, list):
+            raw_substitutes = []
+
+        start_xi = [
+            player
+            for item in raw_start_xi
+            if (player := format_miniapp_lineup_player(item))
+        ]
+        substitutes = [
+            player
+            for item in raw_substitutes
+            if (player := format_miniapp_lineup_player(item))
+        ]
+
+        team_name = str(team.get("name") or "").strip()
+        if (
+            not team_name
+            and team.get("id") is None
+            and not start_xi
+            and not substitutes
+            and coach is None
+        ):
+            continue
+
+        teams.append(
+            {
+                "team_id": team.get("id"),
+                "team_name": team_name,
+                "team_logo": team.get("logo") or None,
+                "formation": str(lineup.get("formation") or "").strip(),
+                "coach": coach,
+                "start_xi": start_xi,
+                "substitutes": substitutes,
+            }
+        )
+
+    return {
+        "available": bool(teams),
+        "teams": teams,
+    }
+
+
 MINIAPP_STATISTIC_LABELS = {
     "Ball Possession": "Владение мячом",
     "Expected Goals": "Ожидаемые голы (xG)",
@@ -7866,6 +7984,9 @@ def get_miniapp_match_context(match: dict) -> dict:
         match_id,
         len(statistics.get("items") or []),
     )
+    lineups = format_miniapp_match_lineups(
+        get_fixture_lineups(match_id)
+    )
 
     raw_standings = get_fixture_league_standings(
         league.get("id"),
@@ -7970,6 +8091,7 @@ def get_miniapp_match_context(match: dict) -> dict:
         "kickoff": match.get("kickoff"),
         "match_group": match_group,
         "statistics": statistics,
+        "lineups": lineups,
         "standings": standings,
         "h2h": format_fixture_list(h2h_fixtures),
         "home_recent": format_fixture_list(

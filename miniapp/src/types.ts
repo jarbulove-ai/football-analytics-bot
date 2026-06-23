@@ -91,6 +91,35 @@ export interface MatchStatisticsBlock {
   items: MatchStatisticItem[];
 }
 
+export interface MatchLineupPlayer {
+  id: number | null;
+  name: string;
+  number: number | null;
+  pos: string;
+  grid: string | null;
+}
+
+export interface MatchLineupCoach {
+  id: number | null;
+  name: string;
+  photo: string | null;
+}
+
+export interface MatchLineupTeam {
+  team_id: number | null;
+  team_name: string;
+  team_logo: string | null;
+  formation: string;
+  coach: MatchLineupCoach | null;
+  start_xi: MatchLineupPlayer[];
+  substitutes: MatchLineupPlayer[];
+}
+
+export interface MatchLineupsBlock {
+  available: boolean;
+  teams: MatchLineupTeam[];
+}
+
 export interface MatchContextResponse {
   ok: true;
   match_id: string;
@@ -101,6 +130,7 @@ export interface MatchContextResponse {
   kickoff: string | null;
   match_group: string;
   statistics: MatchStatisticsBlock;
+  lineups: MatchLineupsBlock;
   standings: MatchStandingRow[];
   h2h: MatchContextMatch[];
   home_recent: MatchContextMatch[];
