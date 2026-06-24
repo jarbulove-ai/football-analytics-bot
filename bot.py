@@ -476,6 +476,24 @@ def init_db() -> None:
                 );
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS miniapp_match_ai_analyses (
+                    id SERIAL PRIMARY KEY,
+                    telegram_user_id BIGINT NOT NULL,
+                    match_id TEXT NOT NULL,
+                    analysis TEXT NOT NULL,
+                    structured JSONB,
+                    analysis_mode TEXT NOT NULL DEFAULT 'default',
+                    home_team TEXT,
+                    away_team TEXT,
+                    league TEXT,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (telegram_user_id, match_id)
+                );
+                """
+            )
         connection.commit()
     except Exception:
         logger.exception("Failed to initialize database")
@@ -1471,6 +1489,109 @@ def approve_latest_payment_request(telegram_user_id: int) -> None:
         connection.commit()
     except Exception:
         logger.error("Failed to approve payment request", exc_info=True)
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def get_saved_miniapp_ai_analysis(
+    telegram_user_id: int,
+    match_id: str,
+) -> dict | None:
+    database_url = get_database_url()
+    if not database_url:
+        return None
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT *
+                FROM miniapp_match_ai_analyses
+                WHERE telegram_user_id = %s
+                AND match_id = %s;
+                """,
+                (telegram_user_id, match_id),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except Exception:
+        logger.warning(
+            "Failed to load saved Mini App AI analysis: "
+            "user_id=%s match_id=%s",
+            telegram_user_id,
+            match_id,
+            exc_info=True,
+        )
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def save_miniapp_ai_analysis(
+    telegram_user_id: int,
+    match_id: str,
+    analysis: str,
+    structured: dict | None,
+    analysis_mode: str,
+    home_team: str,
+    away_team: str,
+    league: str,
+) -> None:
+    database_url = get_database_url()
+    if not database_url:
+        return
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO miniapp_match_ai_analyses (
+                    telegram_user_id,
+                    match_id,
+                    analysis,
+                    structured,
+                    analysis_mode,
+                    home_team,
+                    away_team,
+                    league,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (telegram_user_id, match_id)
+                DO UPDATE SET
+                    analysis = EXCLUDED.analysis,
+                    structured = EXCLUDED.structured,
+                    analysis_mode = EXCLUDED.analysis_mode,
+                    home_team = EXCLUDED.home_team,
+                    away_team = EXCLUDED.away_team,
+                    league = EXCLUDED.league,
+                    updated_at = CURRENT_TIMESTAMP;
+                """,
+                (
+                    telegram_user_id,
+                    match_id,
+                    analysis,
+                    Json(structured) if structured is not None else None,
+                    analysis_mode,
+                    home_team,
+                    away_team,
+                    league,
+                ),
+            )
+        connection.commit()
+    except Exception:
+        logger.warning(
+            "Failed to save Mini App AI analysis: user_id=%s match_id=%s",
+            telegram_user_id,
+            match_id,
+            exc_info=True,
+        )
     finally:
         if connection is not None:
             connection.close()
@@ -10673,7 +10794,7 @@ def miniapp_match_context(match_id: str):
 
 @miniapp_api.route(
     "/api/matches/<match_id>/ai",
-    methods=["POST", "OPTIONS"],
+    methods=["GET", "POST", "OPTIONS"],
 )
 def miniapp_match_ai_analysis(match_id: str):
     if flask_request.method == "OPTIONS":
@@ -10691,13 +10812,89 @@ def miniapp_match_ai_analysis(match_id: str):
 
     telegram_user_id = int(telegram_user["id"])
     is_admin = is_admin_user(telegram_user_id)
+    normalized_match_id = str(match_id or "").strip()
     logger.info(
-        "Mini App AI analysis requested: match_id=%s user_id=%s",
-        match_id,
+        "Mini App AI analysis requested: method=%s match_id=%s user_id=%s",
+        flask_request.method,
+        normalized_match_id,
         telegram_user_id,
     )
 
-    match = find_miniapp_match(match_id)
+    subscription = (
+        {} if is_admin else get_or_create_subscription(telegram_user_id)
+    )
+    remaining_ai = (
+        None if is_admin else get_ai_available_count(subscription)
+    )
+    saved_analysis = get_saved_miniapp_ai_analysis(
+        telegram_user_id,
+        normalized_match_id,
+    )
+
+    if flask_request.method == "GET":
+        if not saved_analysis:
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "analysis_not_found",
+                    "message": "Сохранённый AI-разбор не найден.",
+                }
+            ), 404
+
+        return jsonify(
+            {
+                "ok": True,
+                "match_id": normalized_match_id,
+                "home": saved_analysis.get("home_team") or "",
+                "away": saved_analysis.get("away_team") or "",
+                "analysis": saved_analysis.get("analysis") or "",
+                "structured": saved_analysis.get("structured"),
+                "analysis_mode": (
+                    saved_analysis.get("analysis_mode") or "default"
+                ),
+                "limit_charged": False,
+                "remaining_ai": remaining_ai,
+                "is_admin": is_admin,
+                "cached": True,
+                "regenerated": False,
+                "created_at": serialize_api_datetime(
+                    saved_analysis.get("created_at")
+                ),
+                "updated_at": serialize_api_datetime(
+                    saved_analysis.get("updated_at")
+                ),
+            }
+        )
+
+    request_data = flask_request.get_json(silent=True) or {}
+    force_refresh = request_data.get("force_refresh") is True
+    if saved_analysis and not force_refresh:
+        return jsonify(
+            {
+                "ok": True,
+                "match_id": normalized_match_id,
+                "home": saved_analysis.get("home_team") or "",
+                "away": saved_analysis.get("away_team") or "",
+                "analysis": saved_analysis.get("analysis") or "",
+                "structured": saved_analysis.get("structured"),
+                "analysis_mode": (
+                    saved_analysis.get("analysis_mode") or "default"
+                ),
+                "limit_charged": False,
+                "remaining_ai": remaining_ai,
+                "is_admin": is_admin,
+                "cached": True,
+                "regenerated": False,
+                "created_at": serialize_api_datetime(
+                    saved_analysis.get("created_at")
+                ),
+                "updated_at": serialize_api_datetime(
+                    saved_analysis.get("updated_at")
+                ),
+            }
+        )
+
+    match = find_miniapp_match(normalized_match_id)
     if not match:
         return jsonify(
             {
@@ -10709,7 +10906,6 @@ def miniapp_match_ai_analysis(match_id: str):
 
     if is_admin:
         allowed = True
-        subscription = {}
     else:
         allowed, _, subscription = can_use_ai_analysis(telegram_user_id)
 
@@ -10725,6 +10921,7 @@ def miniapp_match_ai_analysis(match_id: str):
             }
         ), 402
 
+    analysis_result = None
     try:
         analysis_mode = get_ai_analysis_mode(is_admin, subscription)
         match_data = build_miniapp_ai_match_data(match)
@@ -10736,7 +10933,7 @@ def miniapp_match_ai_analysis(match_id: str):
         logger.info(
             "Mini App AI analysis mode: match_id=%s user_id=%s mode=%s "
             "is_premium=%s is_admin=%s",
-            match_id,
+            normalized_match_id,
             telegram_user_id,
             analysis_mode,
             is_premium_active(subscription),
@@ -10745,10 +10942,17 @@ def miniapp_match_ai_analysis(match_id: str):
     except Exception:
         logger.exception(
             "Mini App AI analysis failed: match_id=%s user_id=%s",
-            match_id,
+            normalized_match_id,
             telegram_user_id,
         )
         analysis = "AI-разбор временно недоступен."
+        analysis_result = {
+            "analysis": analysis,
+            "structured": None,
+            "analysis_mode": (
+                analysis_mode if "analysis_mode" in locals() else "default"
+            ),
+        }
 
     if analysis in {
         "AI-разбор пока не подключён.",
@@ -10770,18 +10974,44 @@ def miniapp_match_ai_analysis(match_id: str):
         remaining_ai = get_ai_available_count(updated_subscription)
         limit_charged = remaining_ai < available_before
 
+    structured = analysis_result.get("structured")
+    analysis_mode = analysis_result.get("analysis_mode") or "default"
+    saved_match_id = str(match.get("id") or normalized_match_id)
+    save_miniapp_ai_analysis(
+        telegram_user_id,
+        saved_match_id,
+        analysis,
+        structured,
+        analysis_mode,
+        match.get("home") or "",
+        match.get("away") or "",
+        match.get("league") or "",
+    )
+    saved_analysis = get_saved_miniapp_ai_analysis(
+        telegram_user_id,
+        saved_match_id,
+    )
+
     return jsonify(
         {
             "ok": True,
-            "match_id": str(match.get("id") or match_id),
+            "match_id": saved_match_id,
             "home": match.get("home") or "",
             "away": match.get("away") or "",
             "analysis": analysis,
             "limit_charged": limit_charged,
             "remaining_ai": remaining_ai,
             "is_admin": is_admin,
-            "analysis_mode": analysis_result["analysis_mode"],
-            "structured": analysis_result["structured"],
+            "analysis_mode": analysis_mode,
+            "structured": structured,
+            "cached": False,
+            "regenerated": True,
+            "created_at": serialize_api_datetime(
+                (saved_analysis or {}).get("created_at")
+            ),
+            "updated_at": serialize_api_datetime(
+                (saved_analysis or {}).get("updated_at")
+            ),
         }
     )
 

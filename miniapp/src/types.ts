@@ -212,6 +212,10 @@ export interface MatchAiAnalysisResponse {
   is_admin: boolean;
   analysis_mode?: "default" | "premium";
   structured?: MatchAiStructuredAnalysis | null;
+  cached?: boolean;
+  regenerated?: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 export interface MatchAiAnalysisSignal {

@@ -23,7 +23,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   addMatchReminder,
   addFavoriteTeam,
@@ -34,6 +34,7 @@ import {
   getMatchLive,
   getMatchReminders,
   getMatches,
+  getSavedMatchAiAnalysis,
   getSubscription,
   getTeamMatches,
   getTeamProfile,
@@ -3274,6 +3275,8 @@ function MatchDetails({
     useState<MatchAiAnalysisResponse | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
+  const [savedAiLoading, setSavedAiLoading] = useState(false);
+  const savedAiRequestMatchIdRef = useRef<string | null>(null);
   const [activeTab, setActiveTab] =
     useState<MatchDetailTab>("details");
   const [liveData, setLiveData] = useState<MatchLiveResponse | null>(null);
@@ -3322,6 +3325,53 @@ function MatchDetails({
     };
   }, [match.id]);
 
+  useEffect(() => {
+    setAiAnalysis(null);
+    setAiError("");
+    setSavedAiLoading(false);
+    savedAiRequestMatchIdRef.current = null;
+  }, [match.id]);
+
+  useEffect(() => {
+    if (
+      activeTab !== "ai" ||
+      savedAiRequestMatchIdRef.current === match.id
+    ) {
+      return;
+    }
+
+    const requestedMatchId = match.id;
+    savedAiRequestMatchIdRef.current = requestedMatchId;
+    setSavedAiLoading(true);
+
+    getSavedMatchAiAnalysis(requestedMatchId, telegramIdentity.id)
+      .then((response) => {
+        if (savedAiRequestMatchIdRef.current === requestedMatchId) {
+          setAiAnalysis(response);
+        }
+      })
+      .catch((error) => {
+        if (
+          savedAiRequestMatchIdRef.current === requestedMatchId &&
+          !(
+            error instanceof MatchAiAnalysisError &&
+            (error.status === 404 || error.code === "analysis_not_found")
+          )
+        ) {
+          setAiError("Не удалось загрузить сохранённый AI-разбор.");
+        }
+      })
+      .finally(() => {
+        if (savedAiRequestMatchIdRef.current === requestedMatchId) {
+          setSavedAiLoading(false);
+        }
+      });
+  }, [
+    activeTab,
+    match.id,
+    telegramIdentity.id,
+  ]);
+
   const loadLiveData = useCallback(
     async (showLoader: boolean) => {
       if (showLoader) {
@@ -3369,15 +3419,16 @@ function MatchDetails({
   async function handleAiAnalysis() {
     setAiLoading(true);
     setAiError("");
+    const forceRefresh = Boolean(aiAnalysis);
 
     try {
       const response = await requestMatchAiAnalysis(
         match.id,
         telegramIdentity.id,
+        forceRefresh,
       );
       setAiAnalysis(response);
     } catch (error) {
-      setAiAnalysis(null);
       if (error instanceof MatchAiAnalysisError) {
         if (error.status === 402 || error.code === "ai_limit_exceeded") {
           setAiError(
@@ -3761,7 +3812,23 @@ function MatchDetails({
                     ? "Premium deep analysis"
                     : "AI-разбор"}
                 </span>
+                {aiAnalysis.cached && (
+                  <span className="text-[10px] font-semibold text-slate-500">
+                    Сохранённый AI-разбор
+                  </span>
+                )}
               </div>
+              {aiAnalysis.updated_at && (
+                <p className="mb-3 text-[11px] text-slate-500">
+                  Обновлено:{" "}
+                  {new Date(aiAnalysis.updated_at).toLocaleString("ru-RU", {
+                    day: "numeric",
+                    month: "long",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </p>
+              )}
               {aiAnalysis.structured ? (
                 <AiStructuredAnalysis
                   analysis={aiAnalysis.structured}
@@ -3796,10 +3863,17 @@ function MatchDetails({
             </div>
           )}
 
+          {savedAiLoading && !aiAnalysis && (
+            <div className="mt-5 flex items-center justify-center gap-2 rounded-lg border border-line bg-panel px-4 py-5 text-sm text-slate-400">
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+              Загружаю сохранённый AI-разбор…
+            </div>
+          )}
+
           <button
             type="button"
             onClick={handleAiAnalysis}
-            disabled={aiLoading}
+            disabled={aiLoading || savedAiLoading}
             className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white transition active:scale-[0.99] disabled:cursor-wait disabled:opacity-70"
           >
             {aiLoading ? (
@@ -3807,7 +3881,11 @@ function MatchDetails({
             ) : (
               <Bot className="h-4 w-4" />
             )}
-            {aiLoading ? "AI-разбор готовится…" : "AI-разбор"}
+            {aiLoading
+              ? "AI-разбор готовится…"
+              : aiAnalysis
+                ? "Обновить AI-разбор"
+                : "AI-разбор"}
           </button>
         </section>
       )}

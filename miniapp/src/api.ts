@@ -272,6 +272,7 @@ export async function removeMatchReminder(
 export async function requestMatchAiAnalysis(
   matchId: string,
   telegramUserId: number,
+  forceRefresh = false,
 ): Promise<MatchAiAnalysisResponse> {
   const response = await fetch(
     `${API_BASE_URL}/api/matches/${encodeURIComponent(matchId)}/ai`,
@@ -284,6 +285,7 @@ export async function requestMatchAiAnalysis(
       },
       body: JSON.stringify({
         telegram_user_id: telegramUserId,
+        force_refresh: forceRefresh,
       }),
     },
   );
@@ -295,6 +297,34 @@ export async function requestMatchAiAnalysis(
       response.status,
       errorData.error || "unknown_error",
       errorData.message || "AI-разбор временно недоступен.",
+    );
+  }
+
+  return responseData as MatchAiAnalysisResponse;
+}
+
+export async function getSavedMatchAiAnalysis(
+  matchId: string,
+  telegramUserId: number,
+): Promise<MatchAiAnalysisResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/matches/${encodeURIComponent(matchId)}/ai` +
+      `?telegram_user_id=${telegramUserId}`,
+    {
+      headers: {
+        Accept: "application/json",
+        "X-Telegram-Init-Data": getTelegramInitDataHeader(),
+      },
+    },
+  );
+
+  const responseData: unknown = await response.json();
+  if (!response.ok) {
+    const errorData = responseData as MatchAiAnalysisErrorResponse;
+    throw new MatchAiAnalysisError(
+      response.status,
+      errorData.error || "unknown_error",
+      errorData.message || "Сохранённый AI-разбор временно недоступен.",
     );
   }
 
