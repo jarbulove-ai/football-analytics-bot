@@ -210,6 +210,32 @@ export interface MatchAiAnalysisResponse {
   limit_charged: boolean;
   remaining_ai: number | null;
   is_admin: boolean;
+  analysis_mode?: "default" | "premium";
+  structured?: MatchAiStructuredAnalysis | null;
+}
+
+export interface MatchAiAnalysisSignal {
+  label: string;
+  value: string;
+  confidence: "low" | "medium" | "high";
+  reason: string;
+}
+
+export interface MatchAiStructuredAnalysis {
+  summary: string;
+  outcome_probabilities: {
+    home_win: number;
+    draw: number;
+    away_win: number;
+  };
+  signals: MatchAiAnalysisSignal[];
+  context: string;
+  form: string;
+  lineups_and_absences: string;
+  tactical_notes: string;
+  risks: string[];
+  scenario: string;
+  disclaimer: string;
 }
 
 export interface MatchAiAnalysisErrorResponse {

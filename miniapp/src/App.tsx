@@ -51,7 +51,9 @@ import type {
   AppConfig,
   FavoriteTeamItem,
   MatchAbsencePlayer,
+  MatchAiAnalysisSignal,
   MatchAiAnalysisResponse,
+  MatchAiStructuredAnalysis,
   MatchContextMatch,
   MatchContextResponse,
   MatchItem,
@@ -3079,6 +3081,169 @@ function MatchLiveEventRow({ event }: { event: MatchLiveEvent }) {
   );
 }
 
+function AiAnalysisTextBlock({
+  title,
+  text,
+}: {
+  title: string;
+  text: string;
+}) {
+  if (!text) return null;
+
+  return (
+    <section className="rounded-lg border border-line bg-panel p-4">
+      <h3 className="text-xs font-bold uppercase text-slate-500">{title}</h3>
+      <p className="mt-2 text-sm leading-6 text-slate-200">{text}</p>
+    </section>
+  );
+}
+
+function AiAnalysisSignalCard({
+  signal,
+}: {
+  signal: MatchAiAnalysisSignal;
+}) {
+  const confidenceClass = {
+    low: "bg-slate-500/10 text-slate-400",
+    medium: "bg-amber-400/10 text-amber-200",
+    high: "bg-lime/10 text-lime",
+  }[signal.confidence];
+
+  return (
+    <div className="rounded-lg border border-line bg-white/[0.025] p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-white">{signal.label}</p>
+          <p className="mt-1 text-xs font-semibold text-accent">
+            {signal.value}
+          </p>
+        </div>
+        <span
+          className={`shrink-0 rounded px-2 py-1 text-[9px] font-bold uppercase ${confidenceClass}`}
+        >
+          {signal.confidence}
+        </span>
+      </div>
+      {signal.reason && (
+        <p className="mt-2 text-xs leading-5 text-slate-400">
+          {signal.reason}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function AiStructuredAnalysis({
+  analysis,
+  home,
+  away,
+}: {
+  analysis: MatchAiStructuredAnalysis;
+  home: string;
+  away: string;
+}) {
+  const probabilities = [
+    {
+      label: home || "Команда 1",
+      value: analysis.outcome_probabilities.home_win,
+    },
+    {
+      label: "Ничья",
+      value: analysis.outcome_probabilities.draw,
+    },
+    {
+      label: away || "Команда 2",
+      value: analysis.outcome_probabilities.away_win,
+    },
+  ];
+
+  return (
+    <div className="space-y-3">
+      <AiAnalysisTextBlock
+        title="Краткий вывод"
+        text={analysis.summary}
+      />
+
+      <section className="rounded-lg border border-line bg-panel p-4">
+        <h3 className="text-xs font-bold uppercase text-slate-500">
+          Вероятности исхода
+        </h3>
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          {probabilities.map((item) => (
+            <div
+              key={item.label}
+              className="min-w-0 rounded-md bg-white/[0.035] px-2 py-3 text-center"
+            >
+              <p className="truncate text-[10px] font-semibold text-slate-400">
+                {item.label}
+              </p>
+              <p className="mt-1 text-xl font-black text-white">
+                {item.value}%
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {analysis.signals.length > 0 && (
+        <section className="rounded-lg border border-line bg-panel p-4">
+          <h3 className="text-xs font-bold uppercase text-slate-500">
+            Статистические сигналы
+          </h3>
+          <div className="mt-3 space-y-2">
+            {analysis.signals.map((signal) => (
+              <AiAnalysisSignalCard
+                key={`${signal.label}-${signal.value}`}
+                signal={signal}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      <AiAnalysisTextBlock title="Контекст матча" text={analysis.context} />
+      <AiAnalysisTextBlock title="Форма команд" text={analysis.form} />
+      <AiAnalysisTextBlock
+        title="Составы и потери"
+        text={analysis.lineups_and_absences}
+      />
+      <AiAnalysisTextBlock
+        title="Тактика и статистика"
+        text={analysis.tactical_notes}
+      />
+
+      {analysis.risks.length > 0 && (
+        <section className="rounded-lg border border-amber-400/15 bg-amber-400/[0.04] p-4">
+          <h3 className="text-xs font-bold uppercase text-amber-200/70">
+            Риски оценки
+          </h3>
+          <div className="mt-3 space-y-2">
+            {analysis.risks.map((risk) => (
+              <p
+                key={risk}
+                className="text-sm leading-5 text-slate-300 before:mr-2 before:text-amber-300 before:content-['•']"
+              >
+                {risk}
+              </p>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <AiAnalysisTextBlock
+        title="Итоговый сценарий"
+        text={analysis.scenario}
+      />
+
+      {analysis.disclaimer && (
+        <p className="px-2 text-[11px] leading-5 text-slate-500">
+          {analysis.disclaimer}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function MatchDetails({
   match,
   onBack,
@@ -3589,10 +3754,27 @@ function MatchDetails({
           </div>
 
           {aiAnalysis && (
-            <div className="mt-5 rounded-lg border border-accent/20 bg-panel p-4">
-              <div className="whitespace-pre-line text-sm leading-6 text-slate-200">
-                {aiAnalysis.analysis}
+            <div className="mt-5">
+              <div className="mb-3 flex items-center gap-2">
+                <span className="rounded bg-accent/10 px-2 py-1 text-[10px] font-bold uppercase text-accent">
+                  {aiAnalysis.analysis_mode === "premium"
+                    ? "Premium deep analysis"
+                    : "AI-разбор"}
+                </span>
               </div>
+              {aiAnalysis.structured ? (
+                <AiStructuredAnalysis
+                  analysis={aiAnalysis.structured}
+                  home={aiAnalysis.home}
+                  away={aiAnalysis.away}
+                />
+              ) : (
+                <div className="rounded-lg border border-accent/20 bg-panel p-4">
+                  <div className="whitespace-pre-line text-sm leading-6 text-slate-200">
+                    {aiAnalysis.analysis}
+                  </div>
+                </div>
+              )}
               <div className="mt-4 border-t border-line pt-3">
                 {aiAnalysis.is_admin && (
                   <p className="text-xs font-semibold text-lime">

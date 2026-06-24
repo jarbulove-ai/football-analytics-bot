@@ -41,6 +41,22 @@ API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
 THESPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+OPENAI_AI_MODEL_DEFAULT = os.getenv(
+    "OPENAI_AI_MODEL_DEFAULT",
+    OPENAI_MODEL,
+)
+OPENAI_AI_MODEL_PREMIUM = os.getenv(
+    "OPENAI_AI_MODEL_PREMIUM",
+    OPENAI_AI_MODEL_DEFAULT,
+)
+OPENAI_AI_REASONING_EFFORT_DEFAULT = os.getenv(
+    "OPENAI_AI_REASONING_EFFORT_DEFAULT",
+    "medium",
+).strip()
+OPENAI_AI_REASONING_EFFORT_PREMIUM = os.getenv(
+    "OPENAI_AI_REASONING_EFFORT_PREMIUM",
+    "high",
+).strip()
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
 # Render Background Worker:
 # RUN_TELEGRAM_BOT=true
@@ -6203,122 +6219,105 @@ def build_tournament_context_for_ai(match_data: dict) -> str:
     return "\n".join(lines)
 
 
-def build_ai_prompt(match_data: dict) -> str:
-    home_team = match_data.get("home") or "Команда 1"
-    away_team = match_data.get("away") or "Команда 2"
-    league_name = match_data.get("league_name") or "не указан"
-    league_round = match_data.get("league_round") or "не указан"
-    kickoff = match_data.get("kickoff") or "не указано"
-    venue_name = match_data.get("venue_name") or "не указан"
-    venue_city = match_data.get("venue_city") or "не указан"
-    tournament_context_text = (
-        match_data.get("tournament_context_text")
-        or "Данных по турнирному контексту нет."
+def get_ai_analysis_mode(is_admin: bool, subscription: dict | None) -> str:
+    if is_admin or is_premium_active(subscription or {}):
+        return "premium"
+    return "default"
+
+
+def get_ai_model_settings(analysis_mode: str) -> tuple[str, str]:
+    if analysis_mode == "premium":
+        return (
+            OPENAI_AI_MODEL_PREMIUM,
+            OPENAI_AI_REASONING_EFFORT_PREMIUM,
+        )
+    return (
+        OPENAI_AI_MODEL_DEFAULT,
+        OPENAI_AI_REASONING_EFFORT_DEFAULT,
     )
+
+
+def build_ai_prompt(match_data: dict, analysis_mode: str = "default") -> str:
+    detail_instruction = (
+        "Дай углублённое объяснение связей между формой, составами, потерями, "
+        "таблицей и стилем игры. Для каждого сильного вывода укажи контраргумент."
+        if analysis_mode == "premium"
+        else
+        "Дай содержательное, но компактное объяснение ключевых факторов матча."
+    )
+    compact_context = match_data.get("compact_context") or match_data
     numeric_basis_block = (
         match_data.get("numeric_basis_block")
-        or "📊 Цифры, на которые опирается анализ\nнет данных"
+        or "Недостаточно данных для сводки числовой базы."
     )
-    analysis_text = match_data.get("analysis_text") or ""
+    analysis_text = (
+        match_data.get("analysis_text")
+        or "Расширенные внутренние данные недоступны."
+    )
+    tournament_context_text = (
+        match_data.get("tournament_context_text")
+        or "Турнирный контекст недоступен."
+    )
 
     return (
-        "Ты футбольный аналитический помощник MatchLab.\n"
-        "Сделай профессиональное матч-превью на русском: коротко, структурно, "
-        "с цифрами и понятными выводами. Не копируй стиль конкретных сервисов.\n"
-        "Обязательно используй блок '📊 Цифры, на которые опирается анализ'. "
-        "В начале AI-разбора покажи реальные цифры по голам, пропущенным, "
-        "xG/xGA, ударам, ударам в створ, угловым, карточкам и фолам. "
-        "Если xG/xGA нет, честно напиши 'нет данных' и не делай выводы на "
-        "основе xG.\n"
-        "Не выдумывай отсутствующие данные, xG/xGA, судью, составы, потери, "
-        "проценты модели или факты, которых нет во внутренних данных.\n"
-        "Если процентная оценка модели по исходам, ОЗ или тоталам есть в "
-        "данных — покажи её. Если нет — напиши: Процентная оценка модели по "
-        "рынкам недоступна, поэтому вывод строится на форме и статистике "
-        "команд.\n"
-        "Каждый вывод по голам, тоталам и ОЗ должен опираться на конкретные "
-        "цифры: средние забитые, средние пропущенные, xG/xGA если есть, удары "
-        "и удары в створ. Если xG или xGA нет в numeric_basis_block, запрещено "
-        "придумывать xG. Нужно писать: xG нет в доступных данных, поэтому "
-        "вывод по моментам строится по голам, ударам и ударам в створ.\n"
-        "Если выборка меньше 3 матчей или в numeric_basis_block есть "
-        "предупреждение о маленькой выборке — явно предупреди, что выводы менее "
-        "надёжны.\n"
-        "Если данных по судье нет — напиши: Данных по судье нет, поэтому вывод "
-        "по карточкам строится только по командной статистике. Если данных по "
-        "угловым нет — напиши: Данных по угловым недостаточно, поэтому "
-        "направление по угловым лучше не усиливать.\n"
-        "Контекст поля учитывай осторожно: если поле нейтральное или home/away "
-        "условный, не пиши про сильное домашнее преимущество.\n"
-        "Дополнительные направления выбирай строго из списка: двойной шанс "
-        "1X / X2 / 12; фора 0, +0.5, -0.5, +1.0, -1.0; команда забьёт; "
-        "ИТБ 0.5 / 1.0 / 1.5; ИТМ 1.5; гол в 1 тайме; ТБ 0.5 в 1 тайме; "
-        "ТМ 1.5 в 1 тайме; угловые только если есть данные; карточки только "
-        "если есть данные.\n"
+        "Ты футбольный аналитический помощник MatchLab. Подготовь независимую "
+        "AI-оценку матча на русском языке только по переданным данным.\n"
+        f"{detail_instruction}\n"
+        "Приоритет источников: numeric_basis_block является основной базой "
+        "для выводов по голам, тоталам, обеим забившим командам, карточкам и "
+        "угловым. compact_context используй для составов, потерь, положения "
+        "в таблице, последних матчей, H2H и ближайшего календаря. Турнирный "
+        "контекст используй для стадии, группы и мотивации команд.\n"
+        "Не выдумывай xG или xGA: используй их только если они явно есть в "
+        "numeric_basis_block или statistics внутри compact_context.\n"
+        "Не выдумывай статистику, проценты, составы, потери или события. "
+        "Если данных для метрики недостаточно, прямо укажи "
+        "'Недостаточно данных'. Вероятности исхода оцени осторожно на основе "
+        "доступного контекста; три значения должны быть целыми числами от 0 "
+        "до 100 и в сумме давать 100.\n"
         "Не используй слова: ставка, ставить, экспресс, купон, железно, "
-        "гарантия, 100%. Не обещай результат. Не упоминай API-Football.\n"
-        "Пиши компактно: каждый блок 2-4 строки, только блок цифр может быть "
-        "длиннее. Не повторяй одно и то же.\n"
-        "Ответ дай строго в таком порядке:\n\n"
-        "🤖 AI-разбор MatchLab\n\n"
-        "🏆 Контекст матча\n"
-        "Кто играет, турнир, стадия/тур/группа, поле, фаворит по модели или "
-        "по базовой оценке без обещаний. Добавь строку '📊 Оценка модели', "
-        "если проценты есть; если нет — напиши, что процентная оценка "
-        "недоступна.\n\n"
-        "📊 Цифры, на которые опирается анализ\n"
-        "Покажи цифры из numeric_basis_block: период расчёта, забивает, "
-        "пропускает, xG/xGA или нет данных, удары, удары в створ, угловые, "
-        "жёлтые/красные карточки, фолы. Не меняй смысл цифр.\n\n"
-        f"📈 Форма {home_team}\n"
-        "Последние матчи, средние забитые/пропущенные, проблемы атаки/обороны "
-        "по цифрам.\n\n"
-        f"📉 Форма {away_team}\n"
-        "Последние матчи, средние забитые/пропущенные, проблемы атаки/обороны "
-        "по цифрам.\n\n"
-        "🤝 Очные встречи\n"
-        "Если H2H есть — кратко последние очные матчи. Если мало или нет — "
-        "напиши: Очных встреч мало, поэтому H2H не должен быть главным фактором "
-        "анализа.\n\n"
-        "🧩 Игровой стиль и ключевые факторы\n"
-        "Объясни через удары, удары в створ, голы, пропущенные и xG/xGA если "
-        "есть: кто давит, кто опасен в переходах, где преимущество и риск. "
-        "Если данных мало — пиши осторожно.\n\n"
-        "🟨 Судья, карточки и угловые\n"
-        "Используй жёлтые, красные, фолы, угловые и судью только если данные "
-        "есть. Судью не выдумывать.\n\n"
-        "⚽ Голы и тоталы:\n"
-        "Вывод по ТБ 1.5, ТБ 2.5, индивидуальным тоталам только с числовым "
-        "обоснованием.\n\n"
-        "🎯 ОЗ\n"
-        "Осторожно / умеренно / вероятно. Объясни средними голами, "
-        "пропущенными, ударами и xG/xGA если есть.\n\n"
-        "📌 Дополнительные направления:\n"
-        "3-5 направлений максимум. Формат: • 🟢 Направление — причина в 1 "
-        "предложении. Используй нейтральные слова: направление, сигнал, "
-        "статистически выглядит, можно рассмотреть, лучше пропустить.\n\n"
-        "⭐ Главное направление\n"
-        "Выбери одно основное направление и объясни его цифрами. Если сильного "
-        "варианта нет — так и напиши.\n\n"
-        "🚫 Что лучше пропустить\n"
-        "Укажи 1-3 направления, которые лучше не трогать из-за малого объёма "
-        "данных или высокого риска.\n\n"
-        "💬 Итог:\n"
-        "2-3 предложения: итоговая оценка и главный риск.\n\n"
-        "В конце обязательно:\n"
-        "⚠️ Это статистический обзор, а не обещание результата.\n\n"
-        f"Матч: {home_team} - {away_team}\n"
-        f"Турнир: {league_name}\n"
-        f"Раунд: {league_round}\n"
-        f"Время: {kickoff}\n\n"
-        f"Стадион: {venue_name}\n"
-        f"Город: {venue_city}\n\n"
-        "Турнирный контекст и мотивация:\n"
-        f"{tournament_context_text}\n\n"
-        "numeric_basis_block:\n"
+        "гарантия, 100%. Не обещай результат, не давай финансовых советов и "
+        "не называй оценку точным прогнозом. Используй формулировки: "
+        "AI-оценка, вероятностный сценарий, статистический сигнал, риск, "
+        "осторожная оценка.\n"
+        "Сигналы оцени отдельно для: Тотал больше 1.5, Тотал больше 2.5, "
+        "Обе команды забьют, Жёлтые карточки, Угловые. Если данных нет, value "
+        "должно быть 'Недостаточно данных', confidence — 'low', а reason "
+        "должен кратко объяснять нехватку данных.\n"
+        "Верни только валидный JSON без markdown и без текста до или после JSON "
+        "строго по схеме:\n"
+        "{\n"
+        '  "summary": "краткий вывод",\n'
+        '  "outcome_probabilities": {\n'
+        '    "home_win": 0,\n'
+        '    "draw": 0,\n'
+        '    "away_win": 0\n'
+        "  },\n"
+        '  "signals": [\n'
+        "    {\n"
+        '      "label": "название метрики",\n'
+        '      "value": "оценка или Недостаточно данных",\n'
+        '      "confidence": "low|medium|high",\n'
+        '      "reason": "обоснование"\n'
+        "    }\n"
+        "  ],\n"
+        '  "context": "контекст матча и положение в турнире",\n'
+        '  "form": "форма обеих команд",\n'
+        '  "lineups_and_absences": "составы и потери",\n'
+        '  "tactical_notes": "тактические и статистические заметки",\n'
+        '  "risks": ["риск 1", "риск 2"],\n'
+        '  "scenario": "итоговый вероятностный сценарий",\n'
+        '  "disclaimer": "Информационная AI-оценка, не является советом '
+        'или рекомендацией."\n'
+        "}\n\n"
+        "Сводка числовой базы MatchLab:\n"
         f"{numeric_basis_block}\n\n"
-        "Полные внутренние статистические данные MatchLab:\n"
-        f"{analysis_text}"
+        "Расширенные внутренние данные MatchLab:\n"
+        f"{analysis_text}\n\n"
+        "Турнирный контекст:\n"
+        f"{tournament_context_text}\n\n"
+        "Компактный контекст матча:\n"
+        f"{json.dumps(compact_context, ensure_ascii=False, default=str)}"
     )
 
 
@@ -6331,6 +6330,16 @@ def sanitize_ai_analysis_text(text: str) -> str:
         r"\bкупон\b": "подборка",
         r"\bжелезно\b": "сильно",
         r"\bгарантия\b": "оценка",
+        r"\bрынок\b": "метрика",
+        r"\bрынка\b": "метрики",
+        r"\bрынку\b": "метрике",
+        r"\bрынком\b": "метрикой",
+        r"\bрынке\b": "метрике",
+        r"\bрынки\b": "метрики",
+        r"\bрынков\b": "метрик",
+        r"\bрынкам\b": "метрикам",
+        r"\bрынками\b": "метриками",
+        r"\bрынках\b": "метриках",
         r"100%": "высокая уверенность",
         r"API-Football": "статистика",
     }
@@ -6396,92 +6405,285 @@ def is_unsupported_reasoning_error(error: Exception) -> bool:
     )
 
 
-def get_openai_ai_analysis(match_data: dict) -> str:
+def parse_ai_analysis_json(content: str) -> dict | None:
+    text = content.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+
+    try:
+        result = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        logger.warning("OpenAI AI analysis returned non-JSON content")
+        return None
+
+    return result if isinstance(result, dict) else None
+
+
+def sanitize_ai_analysis_value(value):
+    if isinstance(value, str):
+        return sanitize_ai_analysis_text(value)
+    if isinstance(value, list):
+        return [sanitize_ai_analysis_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: sanitize_ai_analysis_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def normalize_ai_probability(value) -> int:
+    try:
+        return max(0, min(100, int(round(float(value)))))
+    except (TypeError, ValueError):
+        return 0
+
+
+def normalize_ai_analysis_payload(payload: dict) -> dict:
+    probabilities = payload.get("outcome_probabilities")
+    if not isinstance(probabilities, dict):
+        probabilities = {}
+
+    normalized_probabilities = {
+        "home_win": normalize_ai_probability(probabilities.get("home_win")),
+        "draw": normalize_ai_probability(probabilities.get("draw")),
+        "away_win": normalize_ai_probability(probabilities.get("away_win")),
+    }
+    probability_total = sum(normalized_probabilities.values())
+    if probability_total and probability_total != 100:
+        keys = ("home_win", "draw", "away_win")
+        scaled = {
+            key: round(normalized_probabilities[key] * 100 / probability_total)
+            for key in keys
+        }
+        scaled["away_win"] += 100 - sum(scaled.values())
+        normalized_probabilities = scaled
+
+    signals = []
+    for item in payload.get("signals") or []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip()
+        if not label:
+            continue
+        confidence = str(item.get("confidence") or "low").strip().lower()
+        if confidence not in {"low", "medium", "high"}:
+            confidence = "low"
+        signals.append(
+            {
+                "label": label,
+                "value": str(
+                    item.get("value") or "Недостаточно данных"
+                ).strip(),
+                "confidence": confidence,
+                "reason": str(item.get("reason") or "").strip(),
+            }
+        )
+
+    risks = [
+        str(item).strip()
+        for item in payload.get("risks") or []
+        if str(item).strip()
+    ]
+    normalized = {
+        "summary": str(payload.get("summary") or "").strip(),
+        "outcome_probabilities": normalized_probabilities,
+        "signals": signals[:8],
+        "context": str(payload.get("context") or "").strip(),
+        "form": str(payload.get("form") or "").strip(),
+        "lineups_and_absences": str(
+            payload.get("lineups_and_absences") or ""
+        ).strip(),
+        "tactical_notes": str(payload.get("tactical_notes") or "").strip(),
+        "risks": risks[:6],
+        "scenario": str(payload.get("scenario") or "").strip(),
+        "disclaimer": str(
+            payload.get("disclaimer")
+            or (
+                "Информационная AI-оценка, не является советом "
+                "или рекомендацией."
+            )
+        ).strip(),
+    }
+    return sanitize_ai_analysis_value(normalized)
+
+
+def format_ai_analysis_text(payload: dict) -> str:
+    probabilities = payload.get("outcome_probabilities") or {}
+    lines = [
+        "🤖 AI-разбор MatchLab",
+        "",
+        "1. Краткий вывод",
+        payload.get("summary") or "Недостаточно данных.",
+        "",
+        "2. Вероятности исхода",
+        f"Победа команды 1: {probabilities.get('home_win', 0)}%",
+        f"Ничья: {probabilities.get('draw', 0)}%",
+        f"Победа команды 2: {probabilities.get('away_win', 0)}%",
+        "",
+        "3. Статистические сигналы",
+    ]
+    signals = payload.get("signals") or []
+    if signals:
+        for signal in signals:
+            lines.append(
+                f"• {signal['label']}: {signal['value']} — "
+                f"{signal['reason'] or 'Недостаточно данных.'}"
+            )
+    else:
+        lines.append("Недостаточно данных.")
+
+    sections = (
+        ("4. Контекст матча", "context"),
+        ("5. Форма команд", "form"),
+        ("6. Составы и потери", "lineups_and_absences"),
+        ("7. Тактические и статистические заметки", "tactical_notes"),
+    )
+    for title, key in sections:
+        lines.extend(["", title, payload.get(key) or "Недостаточно данных."])
+
+    lines.extend(["", "8. Риски оценки"])
+    risks = payload.get("risks") or []
+    lines.extend(
+        [f"• {risk}" for risk in risks]
+        or ["• Недостаточно данных для полной оценки рисков."]
+    )
+    lines.extend(
+        [
+            "",
+            "9. Итоговый сценарий",
+            payload.get("scenario") or "Недостаточно данных.",
+            "",
+            "10. Информационный дисклеймер",
+            payload.get("disclaimer")
+            or (
+                "Информационная AI-оценка, не является советом "
+                "или рекомендацией."
+            ),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def get_openai_ai_analysis_result(
+    match_data: dict,
+    analysis_mode: str = "default",
+) -> dict:
     if not OPENAI_API_KEY:
-        return "AI-разбор пока не подключён."
+        return {
+            "analysis": "AI-разбор пока не подключён.",
+            "structured": None,
+            "analysis_mode": analysis_mode,
+        }
 
     response = None
+    selected_model, reasoning_effort = get_ai_model_settings(analysis_mode)
+    logger.info(
+        "OpenAI AI analysis selected: model=%s analysis_mode=%s",
+        selected_model,
+        analysis_mode,
+    )
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)
+        response_kwargs = {
+            "model": selected_model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты аккуратный футбольный аналитик. "
+                        "Отвечай только валидным JSON на русском языке."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": build_ai_prompt(match_data, analysis_mode),
+                },
+            ],
+            "max_output_tokens": 3200 if analysis_mode == "premium" else 2400,
+        }
+        if reasoning_effort:
+            response_kwargs["reasoning"] = {"effort": reasoning_effort}
         try:
-            response = client.responses.create(
-                model=OPENAI_MODEL,
-                input=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Ты аккуратный футбольный аналитик. Отвечай на русском, "
-                            "кратко и нейтрально."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": build_ai_prompt(match_data),
-                    },
-                ],
-                reasoning={"effort": "minimal"},
-                max_output_tokens=1500,
-            )
+            response = client.responses.create(**response_kwargs)
             content = extract_openai_response_text(response)
         except AttributeError:
-            response = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=[
+            completion_kwargs = {
+                "model": selected_model,
+                "messages": [
                     {
                         "role": "system",
                         "content": (
-                            "Ты аккуратный футбольный аналитик. Отвечай на русском, "
-                            "кратко и нейтрально."
+                            "Ты аккуратный футбольный аналитик. "
+                            "Отвечай только валидным JSON на русском языке."
                         ),
                     },
                     {
                         "role": "user",
-                        "content": build_ai_prompt(match_data),
+                        "content": build_ai_prompt(match_data, analysis_mode),
                     },
                 ],
-                max_completion_tokens=1500,
-            )
+                "max_completion_tokens": (
+                    3200 if analysis_mode == "premium" else 2400
+                ),
+            }
+            response = client.chat.completions.create(**completion_kwargs)
             content = response.choices[0].message.content or ""
         except Exception as e:
             if not is_unsupported_reasoning_error(e):
                 raise
 
-            response = client.responses.create(
-                model=OPENAI_MODEL,
-                input=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Ты аккуратный футбольный аналитик. Отвечай на русском, "
-                            "кратко и нейтрально."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": build_ai_prompt(match_data),
-                    },
-                ],
-                max_output_tokens=1500,
-            )
+            response_kwargs.pop("reasoning", None)
+            response = client.responses.create(**response_kwargs)
             content = extract_openai_response_text(response)
     except Exception as e:
         logger.exception("OpenAI match analysis failed: %s", e)
-        return "AI-разбор временно недоступен."
+        return {
+            "analysis": "AI-разбор временно недоступен.",
+            "structured": None,
+            "analysis_mode": analysis_mode,
+        }
 
     if not content.strip():
         logger.error("OpenAI returned empty AI analysis response")
         logger.error("OpenAI empty response: %s", response)
-        return "AI-разбор временно недоступен."
+        return {
+            "analysis": "AI-разбор временно недоступен.",
+            "structured": None,
+            "analysis_mode": analysis_mode,
+        }
+
+    parsed_payload = parse_ai_analysis_json(content)
+    if parsed_payload is not None:
+        structured = normalize_ai_analysis_payload(parsed_payload)
+        return {
+            "analysis": format_ai_analysis_text(structured),
+            "structured": structured,
+            "analysis_mode": analysis_mode,
+        }
 
     content = sanitize_ai_analysis_text(content)
-    if not content.strip():
-        logger.error("OpenAI returned empty AI analysis response")
-        return "AI-разбор временно недоступен."
-
     if content.startswith("🤖 AI-разбор MatchLab"):
-        return content
+        analysis = content
+    else:
+        analysis = f"🤖 AI-разбор MatchLab\n\n{content}"
 
-    return f"🤖 AI-разбор MatchLab\n\n{content}"
+    return {
+        "analysis": analysis,
+        "structured": None,
+        "analysis_mode": analysis_mode,
+    }
+
+
+def get_openai_ai_analysis(
+    match_data: dict,
+    analysis_mode: str = "default",
+) -> str:
+    return get_openai_ai_analysis_result(
+        match_data,
+        analysis_mode,
+    )["analysis"]
 
 
 def build_api_football_results_message(team_name: str) -> str | None:
@@ -7559,13 +7761,19 @@ async def ai_match_analysis(
         match_data["tournament_context_text"] = build_tournament_context_for_ai(
             match_data
         )
-        message = await asyncio.to_thread(get_openai_ai_analysis, match_data)
+        analysis_mode = get_ai_analysis_mode(is_admin, subscription)
+        message = await asyncio.to_thread(
+            get_openai_ai_analysis,
+            match_data,
+            analysis_mode,
+        )
         ai_event_data = {
             "home": match_data.get("home"),
             "away": match_data.get("away"),
             "fixture_id": match_data.get("fixture_id"),
             "league_name": match_data.get("league_name"),
             "is_admin": is_admin,
+            "analysis_mode": analysis_mode,
         }
         if message == "AI-разбор временно недоступен.":
             track_user_action(update, "ai_analysis_failed", ai_event_data)
@@ -8942,6 +9150,7 @@ def get_miniapp_match_context(match: dict) -> dict:
 
 
 def build_miniapp_ai_match_data(match: dict) -> dict:
+    context = get_miniapp_match_context(match)
     fixture_id_text = str(match.get("id") or "")
     fixture_id = int(fixture_id_text) if fixture_id_text.isdigit() else None
     match_context = {
@@ -8949,28 +9158,178 @@ def build_miniapp_ai_match_data(match: dict) -> dict:
         "league_country": match.get("country"),
         "kickoff": match.get("kickoff"),
     }
-    analysis_data = build_match_analysis_data(
-        match.get("home") or "",
-        match.get("away") or "",
-        fixture_id,
-        match_context,
-    )
-    if analysis_data.get("error"):
-        raise RuntimeError("Mini App match analysis data is unavailable")
+    analysis_data = {}
+    try:
+        analysis_data = build_match_analysis_data(
+            match.get("home") or "",
+            match.get("away") or "",
+            fixture_id,
+            match_context,
+        )
+        if analysis_data.get("error"):
+            logger.warning(
+                "Mini App legacy AI analysis data is incomplete: "
+                "match_id=%s error=%s",
+                fixture_id_text,
+                analysis_data.get("error"),
+            )
+    except Exception:
+        logger.warning(
+            "Mini App legacy AI analysis data failed: match_id=%s",
+            fixture_id_text,
+            exc_info=True,
+        )
+        analysis_data = {}
 
+    def compact_matches(items: list[dict], limit: int = 5) -> list[dict]:
+        return [
+            {
+                "date": item.get("date"),
+                "league": item.get("league"),
+                "home": item.get("home"),
+                "away": item.get("away"),
+                "home_score": item.get("home_score"),
+                "away_score": item.get("away_score"),
+                "status": item.get("status"),
+            }
+            for item in (items or [])[:limit]
+        ]
+
+    compact_statistics = [
+        {
+            "label": item.get("label"),
+            "home": item.get("home"),
+            "away": item.get("away"),
+        }
+        for item in (context.get("statistics") or {}).get("items", [])[:16]
+    ]
+    compact_lineups = []
+    for team in (context.get("lineups") or {}).get("teams", [])[:2]:
+        compact_lineups.append(
+            {
+                "team": team.get("team_name"),
+                "formation": team.get("formation"),
+                "coach": (team.get("coach") or {}).get("name"),
+                "start_xi": [
+                    {
+                        "name": player.get("name"),
+                        "position": player.get("pos"),
+                    }
+                    for player in (team.get("start_xi") or [])[:11]
+                ],
+                "substitutes": [
+                    {
+                        "name": player.get("name"),
+                        "position": player.get("pos"),
+                    }
+                    for player in (team.get("substitutes") or [])[:8]
+                ],
+            }
+        )
+
+    compact_absences = []
+    for team in (context.get("absences") or {}).get("teams", [])[:2]:
+        compact_absences.append(
+            {
+                "team": team.get("team_name"),
+                "players": [
+                    {
+                        "name": player.get("name"),
+                        "type": player.get("type"),
+                        "reason": player.get("reason"),
+                    }
+                    for player in (team.get("players") or [])[:10]
+                ],
+            }
+        )
+
+    match_group = context.get("match_group") or ""
+    standings = context.get("standings") or []
+    if match_group:
+        relevant_standings = [
+            row for row in standings if row.get("group") == match_group
+        ]
+    else:
+        relevant_standings = standings
+    compact_standings = [
+        {
+            "rank": row.get("rank"),
+            "team": row.get("team"),
+            "group": row.get("group"),
+            "played": row.get("played"),
+            "wins": row.get("wins"),
+            "draws": row.get("draws"),
+            "losses": row.get("losses"),
+            "goal_diff": row.get("goal_diff"),
+            "points": row.get("points"),
+        }
+        for row in relevant_standings[:12]
+    ]
+
+    compact_context = {
+        "match": {
+            "id": str(match.get("id") or ""),
+            "home": match.get("home") or "",
+            "away": match.get("away") or "",
+            "league": match.get("league") or "",
+            "country": match.get("country") or "",
+            "round": match.get("round") or "",
+            "kickoff": match.get("kickoff"),
+            "status": match.get("status") or "",
+            "score": match.get("score") or {},
+            "match_group": match_group,
+        },
+        "standings": compact_standings,
+        "home_recent": compact_matches(context.get("home_recent") or []),
+        "away_recent": compact_matches(context.get("away_recent") or []),
+        "h2h": compact_matches(context.get("h2h") or []),
+        "statistics": compact_statistics,
+        "lineups": compact_lineups,
+        "absences": compact_absences,
+        "upcoming": compact_matches(context.get("upcoming") or []),
+    }
+    logger.info(
+        "Mini App AI context prepared: match_id=%s recent=%s/%s h2h=%s "
+        "statistics=%s lineups=%s absences=%s numeric_basis=%s "
+        "analysis_text=%s",
+        match.get("id"),
+        len(compact_context["home_recent"]),
+        len(compact_context["away_recent"]),
+        len(compact_context["h2h"]),
+        len(compact_statistics),
+        len(compact_lineups),
+        sum(len(team["players"]) for team in compact_absences),
+        bool(analysis_data.get("numeric_basis_block")),
+        bool(analysis_data.get("full_analysis_text")),
+    )
     match_data = {
         "home": match.get("home") or "",
         "away": match.get("away") or "",
         "fixture_id": fixture_id,
         "league_name": match.get("league"),
         "league_country": match.get("country"),
+        "league_id": match.get("league_id"),
+        "league_season": match.get("season"),
+        "league_round": match.get("round"),
         "kickoff": match.get("kickoff"),
-        "numeric_basis_block": analysis_data.get("numeric_basis_block"),
+        "numeric_basis_block": (
+            analysis_data.get("numeric_basis_block") or ""
+        ),
         "analysis_text": analysis_data.get("full_analysis_text") or "",
+        "compact_context": compact_context,
     }
-    match_data["tournament_context_text"] = build_tournament_context_for_ai(
-        match_data
-    )
+    try:
+        match_data["tournament_context_text"] = (
+            build_tournament_context_for_ai(match_data)
+        )
+    except Exception:
+        logger.warning(
+            "Mini App tournament AI context failed: match_id=%s",
+            fixture_id_text,
+            exc_info=True,
+        )
+        match_data["tournament_context_text"] = ""
+
     return match_data
 
 
@@ -9924,8 +10283,22 @@ def miniapp_match_ai_analysis(match_id: str):
         ), 402
 
     try:
+        analysis_mode = get_ai_analysis_mode(is_admin, subscription)
         match_data = build_miniapp_ai_match_data(match)
-        analysis = get_openai_ai_analysis(match_data)
+        analysis_result = get_openai_ai_analysis_result(
+            match_data,
+            analysis_mode,
+        )
+        analysis = analysis_result["analysis"]
+        logger.info(
+            "Mini App AI analysis mode: match_id=%s user_id=%s mode=%s "
+            "is_premium=%s is_admin=%s",
+            match_id,
+            telegram_user_id,
+            analysis_mode,
+            is_premium_active(subscription),
+            is_admin,
+        )
     except Exception:
         logger.exception(
             "Mini App AI analysis failed: match_id=%s user_id=%s",
@@ -9964,6 +10337,8 @@ def miniapp_match_ai_analysis(match_id: str):
             "limit_charged": limit_charged,
             "remaining_ai": remaining_ai,
             "is_admin": is_admin,
+            "analysis_mode": analysis_result["analysis_mode"],
+            "structured": analysis_result["structured"],
         }
     )
 
