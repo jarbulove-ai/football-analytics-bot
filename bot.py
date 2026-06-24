@@ -6406,18 +6406,83 @@ def is_unsupported_reasoning_error(error: Exception) -> bool:
 
 
 def parse_ai_analysis_json(content: str) -> dict | None:
-    text = content.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*```$", "", text)
-
-    try:
-        result = json.loads(text)
-    except (TypeError, json.JSONDecodeError):
-        logger.warning("OpenAI AI analysis returned non-JSON content")
+    text = str(content or "").strip()
+    if not text:
         return None
 
-    return result if isinstance(result, dict) else None
+    text = re.sub(
+        r"^\s*```(?:json)?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\s*```\s*$", "", text).strip()
+    candidates = [("full", text)]
+
+    json_start = text.find("{")
+    json_end = text.rfind("}")
+    if json_start >= 0 and json_end > json_start:
+        fragment = text[json_start : json_end + 1].strip()
+        if fragment != text:
+            candidates.append(("fragment", fragment))
+
+    last_error = None
+    for source, candidate in candidates:
+        result = candidate
+        for decode_attempt in range(2):
+            if not isinstance(result, str):
+                break
+            try:
+                result = json.loads(result.strip())
+            except (TypeError, json.JSONDecodeError) as error:
+                last_error = (source, decode_attempt + 1, error)
+                break
+
+        if isinstance(result, dict):
+            return result
+
+    if last_error:
+        source, decode_attempt, error = last_error
+        logger.warning(
+            "OpenAI AI analysis JSON parse failed: source=%s attempt=%s "
+            "position=%s response_length=%s reason=%s",
+            source,
+            decode_attempt,
+            getattr(error, "pos", None),
+            len(text),
+            getattr(error, "msg", type(error).__name__),
+        )
+    else:
+        logger.warning(
+            "OpenAI AI analysis JSON parse failed: "
+            "response_length=%s result_type=non_object",
+            len(text),
+        )
+    return None
+
+
+def looks_like_ai_analysis_json(content: str) -> bool:
+    text = str(content or "").strip()
+    text = re.sub(
+        r"^\s*```(?:json)?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).lstrip()
+    return (
+        text.startswith("{")
+        or '"outcome_probabilities"' in text
+        or '"summary"' in text and '"signals"' in text
+    )
+
+
+def clean_ai_analysis_text(content: str) -> str:
+    if looks_like_ai_analysis_json(content):
+        return (
+            "AI-разбор временно недоступен в красивом формате. "
+            "Попробуйте повторить запрос."
+        )
+    return sanitize_ai_analysis_text(content)
 
 
 def sanitize_ai_analysis_value(value):
@@ -6663,7 +6728,7 @@ def get_openai_ai_analysis_result(
             "analysis_mode": analysis_mode,
         }
 
-    content = sanitize_ai_analysis_text(content)
+    content = clean_ai_analysis_text(content)
     if content.startswith("🤖 AI-разбор MatchLab"):
         analysis = content
     else:
