@@ -6405,6 +6405,121 @@ def is_unsupported_reasoning_error(error: Exception) -> bool:
     )
 
 
+def is_unsupported_structured_output_error(error: Exception) -> bool:
+    message = str(error).lower()
+    structured_terms = (
+        "json_schema",
+        "json schema",
+        "response_format",
+        "response format",
+        "structured output",
+        "structured outputs",
+        "text.format",
+        "parameter: text",
+        "parameter 'text'",
+        "parameter \"text\"",
+        "invalid schema",
+    )
+    unsupported_terms = (
+        "unsupported",
+        "not supported",
+        "unknown parameter",
+        "unexpected keyword",
+        "invalid parameter",
+        "invalid schema",
+    )
+    return (
+        any(term in message for term in structured_terms)
+        and any(term in message for term in unsupported_terms)
+    )
+
+
+def build_ai_analysis_json_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "summary": {"type": "string"},
+            "outcome_probabilities": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "home_win": {"type": "integer"},
+                    "draw": {"type": "integer"},
+                    "away_win": {"type": "integer"},
+                },
+                "required": ["home_win", "draw", "away_win"],
+            },
+            "signals": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "label": {"type": "string"},
+                        "value": {"type": "string"},
+                        "confidence": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high"],
+                        },
+                        "reason": {"type": "string"},
+                    },
+                    "required": [
+                        "label",
+                        "value",
+                        "confidence",
+                        "reason",
+                    ],
+                },
+            },
+            "context": {"type": "string"},
+            "form": {"type": "string"},
+            "lineups_and_absences": {"type": "string"},
+            "tactical_notes": {"type": "string"},
+            "risks": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "scenario": {"type": "string"},
+            "disclaimer": {"type": "string"},
+        },
+        "required": [
+            "summary",
+            "outcome_probabilities",
+            "signals",
+            "context",
+            "form",
+            "lineups_and_absences",
+            "tactical_notes",
+            "risks",
+            "scenario",
+            "disclaimer",
+        ],
+    }
+
+
+def build_responses_ai_text_format() -> dict:
+    return {
+        "format": {
+            "type": "json_schema",
+            "name": "matchlab_ai_analysis",
+            "schema": build_ai_analysis_json_schema(),
+            "strict": True,
+        }
+    }
+
+
+def build_chat_ai_response_format() -> dict:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "matchlab_ai_analysis",
+            "schema": build_ai_analysis_json_schema(),
+            "strict": True,
+        },
+    }
+
+
 def parse_ai_analysis_json(content: str) -> dict | None:
     text = str(content or "").strip()
     if not text:
@@ -6631,6 +6746,84 @@ def format_ai_analysis_text(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def create_openai_responses_analysis(
+    client: OpenAI,
+    response_kwargs: dict,
+    selected_model: str,
+    analysis_mode: str,
+):
+    request_kwargs = dict(response_kwargs)
+    while True:
+        try:
+            return client.responses.create(**request_kwargs)
+        except Exception as error:
+            if (
+                "text" in request_kwargs
+                and is_unsupported_structured_output_error(error)
+            ):
+                request_kwargs.pop("text", None)
+                logger.warning(
+                    "OpenAI structured output unsupported; retrying without "
+                    "schema: api=responses model=%s analysis_mode=%s "
+                    "structured_output_enabled=False",
+                    selected_model,
+                    analysis_mode,
+                )
+                continue
+            if (
+                "reasoning" in request_kwargs
+                and is_unsupported_reasoning_error(error)
+            ):
+                request_kwargs.pop("reasoning", None)
+                logger.warning(
+                    "OpenAI reasoning effort unsupported; retrying without it: "
+                    "api=responses model=%s analysis_mode=%s",
+                    selected_model,
+                    analysis_mode,
+                )
+                continue
+            raise
+
+
+def create_openai_chat_analysis(
+    client: OpenAI,
+    completion_kwargs: dict,
+    selected_model: str,
+    analysis_mode: str,
+):
+    request_kwargs = dict(completion_kwargs)
+    while True:
+        try:
+            return client.chat.completions.create(**request_kwargs)
+        except Exception as error:
+            if (
+                "response_format" in request_kwargs
+                and is_unsupported_structured_output_error(error)
+            ):
+                request_kwargs.pop("response_format", None)
+                logger.warning(
+                    "OpenAI structured output unsupported; retrying without "
+                    "schema: api=chat_completions model=%s analysis_mode=%s "
+                    "structured_output_enabled=False",
+                    selected_model,
+                    analysis_mode,
+                )
+                continue
+            if (
+                "reasoning_effort" in request_kwargs
+                and is_unsupported_reasoning_error(error)
+            ):
+                request_kwargs.pop("reasoning_effort", None)
+                logger.warning(
+                    "OpenAI reasoning effort unsupported; retrying without it: "
+                    "api=chat_completions model=%s analysis_mode=%s",
+                    selected_model,
+                    analysis_mode,
+                )
+                continue
+            raise
+
+
 def get_openai_ai_analysis_result(
     match_data: dict,
     analysis_mode: str = "default",
@@ -6645,7 +6838,8 @@ def get_openai_ai_analysis_result(
     response = None
     selected_model, reasoning_effort = get_ai_model_settings(analysis_mode)
     logger.info(
-        "OpenAI AI analysis selected: model=%s analysis_mode=%s",
+        "OpenAI AI analysis selected: model=%s analysis_mode=%s "
+        "structured_output_enabled=True",
         selected_model,
         analysis_mode,
     )
@@ -6667,13 +6861,30 @@ def get_openai_ai_analysis_result(
                 },
             ],
             "max_output_tokens": 3200 if analysis_mode == "premium" else 2400,
+            "text": build_responses_ai_text_format(),
         }
         if reasoning_effort:
             response_kwargs["reasoning"] = {"effort": reasoning_effort}
-        try:
-            response = client.responses.create(**response_kwargs)
-            content = extract_openai_response_text(response)
-        except AttributeError:
+        use_chat_completions = not hasattr(client, "responses")
+        if hasattr(client, "responses"):
+            try:
+                response = create_openai_responses_analysis(
+                    client,
+                    response_kwargs,
+                    selected_model,
+                    analysis_mode,
+                )
+                content = extract_openai_response_text(response)
+            except AttributeError:
+                logger.warning(
+                    "OpenAI Responses API unavailable; using Chat "
+                    "Completions: model=%s analysis_mode=%s",
+                    selected_model,
+                    analysis_mode,
+                )
+                use_chat_completions = True
+
+        if use_chat_completions:
             completion_kwargs = {
                 "model": selected_model,
                 "messages": [
@@ -6692,16 +6903,17 @@ def get_openai_ai_analysis_result(
                 "max_completion_tokens": (
                     3200 if analysis_mode == "premium" else 2400
                 ),
+                "response_format": build_chat_ai_response_format(),
             }
-            response = client.chat.completions.create(**completion_kwargs)
+            if reasoning_effort:
+                completion_kwargs["reasoning_effort"] = reasoning_effort
+            response = create_openai_chat_analysis(
+                client,
+                completion_kwargs,
+                selected_model,
+                analysis_mode,
+            )
             content = response.choices[0].message.content or ""
-        except Exception as e:
-            if not is_unsupported_reasoning_error(e):
-                raise
-
-            response_kwargs.pop("reasoning", None)
-            response = client.responses.create(**response_kwargs)
-            content = extract_openai_response_text(response)
     except Exception as e:
         logger.exception("OpenAI match analysis failed: %s", e)
         return {
