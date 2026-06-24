@@ -1494,6 +1494,19 @@ def approve_latest_payment_request(telegram_user_id: int) -> None:
             connection.close()
 
 
+def normalize_ai_analysis_match_id(match_id) -> str:
+    normalized_match_id = str(match_id or "").strip()
+    if ":" in normalized_match_id:
+        source_name, source_match_id = normalized_match_id.rsplit(":", 1)
+        if (
+            source_match_id.strip()
+            and source_name.strip().lower().replace("_", "-")
+            in {"api-football", "apifootball"}
+        ):
+            normalized_match_id = source_match_id.strip()
+    return normalized_match_id
+
+
 def get_saved_miniapp_ai_analysis(
     telegram_user_id: int,
     match_id: str,
@@ -1518,17 +1531,35 @@ def get_saved_miniapp_ai_analysis(
             row = cursor.fetchone()
             return dict(row) if row else None
     except Exception:
-        logger.warning(
+        logger.exception(
             "Failed to load saved Mini App AI analysis: "
             "user_id=%s match_id=%s",
             telegram_user_id,
             match_id,
-            exc_info=True,
         )
-        return None
+        raise
     finally:
         if connection is not None:
             connection.close()
+
+
+def lookup_saved_miniapp_ai_analysis(
+    telegram_user_id: int,
+    raw_match_id: str,
+) -> tuple[dict | None, str]:
+    normalized_match_id = normalize_ai_analysis_match_id(raw_match_id)
+    saved_analysis = get_saved_miniapp_ai_analysis(
+        telegram_user_id,
+        normalized_match_id,
+    )
+    if saved_analysis or raw_match_id == normalized_match_id:
+        return saved_analysis, normalized_match_id
+
+    saved_analysis = get_saved_miniapp_ai_analysis(
+        telegram_user_id,
+        raw_match_id,
+    )
+    return saved_analysis, normalized_match_id
 
 
 def save_miniapp_ai_analysis(
@@ -1540,10 +1571,18 @@ def save_miniapp_ai_analysis(
     home_team: str,
     away_team: str,
     league: str,
-) -> None:
+) -> bool:
     database_url = get_database_url()
     if not database_url:
-        return
+        return False
+
+    normalized_match_id = normalize_ai_analysis_match_id(match_id)
+    if not normalized_match_id:
+        logger.warning(
+            "Skipped Mini App AI analysis save with empty match_id: user_id=%s",
+            telegram_user_id,
+        )
+        return False
 
     connection = None
     try:
@@ -1585,13 +1624,15 @@ def save_miniapp_ai_analysis(
                 ),
             )
         connection.commit()
+        return True
     except Exception:
         logger.warning(
             "Failed to save Mini App AI analysis: user_id=%s match_id=%s",
             telegram_user_id,
-            match_id,
+            normalized_match_id,
             exc_info=True,
         )
+        return False
     finally:
         if connection is not None:
             connection.close()
@@ -8037,7 +8078,7 @@ async def button_handler(
     elif text == FAVORITE_CHANGE_TEAM_BUTTON:
         await show_favorite_team_leagues(update, context)
         return
-    
+
     elif text == "📊 Результаты":
         await show_team_select_leagues(update, context, "results")
 
@@ -8398,7 +8439,7 @@ async def team_search(
 
     if context.user_data.get("waiting_favorite_team"):
         return
-    
+
     if not context.user_data.get("waiting_team"):
         return
 
@@ -8447,7 +8488,7 @@ async def team_search(
         )
 
         logger.info("Events response: %s", response.text[:1000])
-        
+
         if not events:
             await update.message.reply_text(
                 "Ближайшие матчи не найдены."
@@ -8469,7 +8510,7 @@ async def team_search(
         await update.message.reply_text(
             "Ошибка при поиске команды."
         )
-        
+
 async def team_results(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -8480,7 +8521,7 @@ async def team_results(
 
     if context.user_data.get("waiting_favorite_team"):
         return
-    
+
     if not context.user_data.get("waiting_results"):
         return
 
@@ -8550,7 +8591,7 @@ async def team_results(
 
         await update.message.reply_text(
             "Ошибка при получении результатов."
-        )   
+        )
 
 async def favorite_team(
     update: Update,
@@ -10839,27 +10880,49 @@ def miniapp_match_ai_analysis(match_id: str):
         ), 400
 
     telegram_user_id = int(telegram_user["id"])
-    is_admin = is_admin_user(telegram_user_id)
-    normalized_match_id = str(match_id or "").strip()
-    logger.info(
-        "Mini App AI analysis requested: method=%s match_id=%s user_id=%s",
-        flask_request.method,
-        normalized_match_id,
-        telegram_user_id,
-    )
-
-    subscription = (
-        {} if is_admin else get_or_create_subscription(telegram_user_id)
-    )
-    remaining_ai = (
-        None if is_admin else get_ai_available_count(subscription)
-    )
-    saved_analysis = get_saved_miniapp_ai_analysis(
-        telegram_user_id,
-        normalized_match_id,
-    )
+    raw_match_id = str(match_id or "").strip()
+    normalized_match_id = normalize_ai_analysis_match_id(raw_match_id)
 
     if flask_request.method == "GET":
+        logger.info(
+            "AI saved lookup started: user_id=%s raw_match_id=%s "
+            "normalized_match_id=%s",
+            telegram_user_id,
+            raw_match_id,
+            normalized_match_id,
+        )
+        try:
+            saved_analysis, normalized_match_id = (
+                lookup_saved_miniapp_ai_analysis(
+                    telegram_user_id,
+                    raw_match_id,
+                )
+            )
+        except Exception:
+            logger.error(
+                "AI saved lookup failed: user_id=%s raw_match_id=%s "
+                "normalized_match_id=%s",
+                telegram_user_id,
+                raw_match_id,
+                normalized_match_id,
+                exc_info=True,
+            )
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "saved_analysis_unavailable",
+                    "message": "Сохранённый AI-разбор временно недоступен.",
+                }
+            ), 503
+
+        logger.info(
+            "AI saved lookup completed: user_id=%s raw_match_id=%s "
+            "normalized_match_id=%s found=%s",
+            telegram_user_id,
+            raw_match_id,
+            normalized_match_id,
+            bool(saved_analysis),
+        )
         if not saved_analysis:
             return jsonify(
                 {
@@ -10869,6 +10932,13 @@ def miniapp_match_ai_analysis(match_id: str):
                 }
             ), 404
 
+        is_admin = is_admin_user(telegram_user_id)
+        subscription = (
+            {} if is_admin else get_or_create_subscription(telegram_user_id)
+        )
+        remaining_ai = (
+            None if is_admin else get_ai_available_count(subscription)
+        )
         return jsonify(
             {
                 "ok": True,
@@ -10896,6 +10966,51 @@ def miniapp_match_ai_analysis(match_id: str):
 
     request_data = flask_request.get_json(silent=True) or {}
     force_refresh = request_data.get("force_refresh") is True
+    logger.info(
+        "AI generation started: user_id=%s raw_match_id=%s "
+        "normalized_match_id=%s force_refresh=%s",
+        telegram_user_id,
+        raw_match_id,
+        normalized_match_id,
+        force_refresh,
+    )
+
+    is_admin = is_admin_user(telegram_user_id)
+    subscription = (
+        {} if is_admin else get_or_create_subscription(telegram_user_id)
+    )
+    remaining_ai = (
+        None if is_admin else get_ai_available_count(subscription)
+    )
+    try:
+        saved_analysis, normalized_match_id = lookup_saved_miniapp_ai_analysis(
+            telegram_user_id,
+            raw_match_id,
+        )
+    except Exception:
+        logger.error(
+            "AI saved lookup failed before generation: user_id=%s "
+            "raw_match_id=%s normalized_match_id=%s",
+            telegram_user_id,
+            raw_match_id,
+            normalized_match_id,
+            exc_info=True,
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "error": "saved_analysis_unavailable",
+                "message": "Сохранённый AI-разбор временно недоступен.",
+            }
+        ), 503
+    logger.info(
+        "AI generation cache state: user_id=%s normalized_match_id=%s "
+        "force_refresh=%s saved_before=%s",
+        telegram_user_id,
+        normalized_match_id,
+        force_refresh,
+        bool(saved_analysis),
+    )
     if saved_analysis and not force_refresh:
         return jsonify(
             {
@@ -10985,7 +11100,9 @@ def miniapp_match_ai_analysis(match_id: str):
     if analysis in {
         "AI-разбор пока не подключён.",
         "AI-разбор временно недоступен.",
-    }:
+    } or analysis.startswith(
+        "AI-разбор временно недоступен в красивом формате."
+    ):
         return jsonify(
             {
                 "ok": False,
@@ -11004,8 +11121,10 @@ def miniapp_match_ai_analysis(match_id: str):
 
     structured = analysis_result.get("structured")
     analysis_mode = analysis_result.get("analysis_mode") or "default"
-    saved_match_id = str(match.get("id") or normalized_match_id)
-    save_miniapp_ai_analysis(
+    saved_match_id = normalize_ai_analysis_match_id(
+        match.get("id") or normalized_match_id
+    )
+    analysis_saved = save_miniapp_ai_analysis(
         telegram_user_id,
         saved_match_id,
         analysis,
@@ -11015,10 +11134,30 @@ def miniapp_match_ai_analysis(match_id: str):
         match.get("away") or "",
         match.get("league") or "",
     )
-    saved_analysis = get_saved_miniapp_ai_analysis(
-        telegram_user_id,
-        saved_match_id,
-    )
+    saved_analysis = None
+    if analysis_saved:
+        logger.info(
+            "AI analysis saved: user_id=%s raw_match_id=%s "
+            "normalized_match_id=%s analysis_length=%s structured=%s",
+            telegram_user_id,
+            raw_match_id,
+            saved_match_id,
+            len(analysis),
+            structured is not None,
+        )
+        try:
+            saved_analysis = get_saved_miniapp_ai_analysis(
+                telegram_user_id,
+                saved_match_id,
+            )
+        except Exception:
+            logger.warning(
+                "AI analysis saved but timestamp reload failed: "
+                "user_id=%s normalized_match_id=%s",
+                telegram_user_id,
+                saved_match_id,
+                exc_info=True,
+            )
 
     return jsonify(
         {

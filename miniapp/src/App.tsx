@@ -3276,6 +3276,8 @@ function MatchDetails({
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
   const [savedAiLoading, setSavedAiLoading] = useState(false);
+  const [savedAiLoadFailed, setSavedAiLoadFailed] = useState(false);
+  const [savedAiRetryKey, setSavedAiRetryKey] = useState(0);
   const savedAiRequestMatchIdRef = useRef<string | null>(null);
   const [activeTab, setActiveTab] =
     useState<MatchDetailTab>("details");
@@ -3329,6 +3331,7 @@ function MatchDetails({
     setAiAnalysis(null);
     setAiError("");
     setSavedAiLoading(false);
+    setSavedAiLoadFailed(false);
     savedAiRequestMatchIdRef.current = null;
   }, [match.id]);
 
@@ -3343,10 +3346,13 @@ function MatchDetails({
     const requestedMatchId = match.id;
     savedAiRequestMatchIdRef.current = requestedMatchId;
     setSavedAiLoading(true);
+    setSavedAiLoadFailed(false);
 
     getSavedMatchAiAnalysis(requestedMatchId, telegramIdentity.id)
       .then((response) => {
         if (savedAiRequestMatchIdRef.current === requestedMatchId) {
+          setAiError("");
+          setSavedAiLoadFailed(false);
           setAiAnalysis(response);
         }
       })
@@ -3358,7 +3364,10 @@ function MatchDetails({
             (error.status === 404 || error.code === "analysis_not_found")
           )
         ) {
-          setAiError("Не удалось загрузить сохранённый AI-разбор.");
+          setSavedAiLoadFailed(true);
+          setAiError(
+            "Не удалось загрузить сохранённый AI-разбор. Можно повторить или сделать новый разбор.",
+          );
         }
       })
       .finally(() => {
@@ -3369,8 +3378,16 @@ function MatchDetails({
   }, [
     activeTab,
     match.id,
+    savedAiRetryKey,
     telegramIdentity.id,
   ]);
+
+  function retrySavedAiAnalysisLoad() {
+    setAiError("");
+    setSavedAiLoadFailed(false);
+    savedAiRequestMatchIdRef.current = null;
+    setSavedAiRetryKey((value) => value + 1);
+  }
 
   const loadLiveData = useCallback(
     async (showLoader: boolean) => {
@@ -3419,6 +3436,7 @@ function MatchDetails({
   async function handleAiAnalysis() {
     setAiLoading(true);
     setAiError("");
+    setSavedAiLoadFailed(false);
     const forceRefresh = Boolean(aiAnalysis);
 
     try {
@@ -3867,6 +3885,16 @@ function MatchDetails({
           {aiError && (
             <div className="mt-5 rounded-lg border border-red-500/20 bg-red-500/[0.06] px-4 py-3 text-sm leading-5 text-red-200">
               {aiError}
+              {savedAiLoadFailed && (
+                <button
+                  type="button"
+                  onClick={retrySavedAiAnalysisLoad}
+                  className="mt-3 flex h-9 items-center justify-center gap-2 rounded-md bg-white/[0.06] px-3 text-xs font-semibold text-white transition active:scale-[0.99]"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  Повторить загрузку
+                </button>
+              )}
             </div>
           )}
 
@@ -3892,7 +3920,7 @@ function MatchDetails({
               ? "AI-разбор готовится…"
               : aiAnalysis
                 ? "Обновить AI-разбор"
-                : "AI-разбор"}
+                : "Сделать AI-разбор"}
           </button>
         </section>
       )}

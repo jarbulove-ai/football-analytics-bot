@@ -307,28 +307,36 @@ export async function getSavedMatchAiAnalysis(
   matchId: string,
   telegramUserId: number,
 ): Promise<MatchAiAnalysisResponse> {
-  const response = await fetch(
-    `${API_BASE_URL}/api/matches/${encodeURIComponent(matchId)}/ai` +
-      `?telegram_user_id=${telegramUserId}`,
-    {
-      headers: {
-        Accept: "application/json",
-        "X-Telegram-Init-Data": getTelegramInitDataHeader(),
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 15_000);
+
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/matches/${encodeURIComponent(matchId)}/ai` +
+        `?telegram_user_id=${telegramUserId}`,
+      {
+        headers: {
+          Accept: "application/json",
+          "X-Telegram-Init-Data": getTelegramInitDataHeader(),
+        },
+        signal: controller.signal,
       },
-    },
-  );
-
-  const responseData: unknown = await response.json();
-  if (!response.ok) {
-    const errorData = responseData as MatchAiAnalysisErrorResponse;
-    throw new MatchAiAnalysisError(
-      response.status,
-      errorData.error || "unknown_error",
-      errorData.message || "Сохранённый AI-разбор временно недоступен.",
     );
-  }
 
-  return responseData as MatchAiAnalysisResponse;
+    const responseData: unknown = await response.json();
+    if (!response.ok) {
+      const errorData = responseData as MatchAiAnalysisErrorResponse;
+      throw new MatchAiAnalysisError(
+        response.status,
+        errorData.error || "unknown_error",
+        errorData.message || "Сохранённый AI-разбор временно недоступен.",
+      );
+    }
+
+    return responseData as MatchAiAnalysisResponse;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 export async function submitPaymentReceipt(
