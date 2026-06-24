@@ -3807,11 +3807,18 @@ function MatchDetails({
           {aiAnalysis && (
             <div className="mt-5">
               <div className="mb-3 flex items-center gap-2">
-                <span className="rounded bg-accent/10 px-2 py-1 text-[10px] font-bold uppercase text-accent">
-                  {aiAnalysis.analysis_mode === "premium"
-                    ? "Premium deep analysis"
-                    : "AI-разбор"}
-                </span>
+                <div>
+                  <span className="rounded bg-accent/10 px-2 py-1 text-[10px] font-bold uppercase text-accent">
+                    {aiAnalysis.analysis_mode === "premium"
+                      ? "Premium deep analysis"
+                      : "AI-разбор"}
+                  </span>
+                  <p className="mt-2 text-[11px] text-slate-500">
+                    {aiAnalysis.analysis_mode === "premium"
+                      ? "Глубокая модель · расширенный контекст"
+                      : "Короткий AI-разбор"}
+                  </p>
+                </div>
                 {aiAnalysis.cached && (
                   <span className="text-[10px] font-semibold text-slate-500">
                     Сохранённый AI-разбор
@@ -4648,15 +4655,42 @@ function PackageIcon({ packageCode }: { packageCode: string }) {
 
 function packageDescription(item: PaymentPackage) {
   if (item.code === "ai_30") {
-    return "Для точечного анализа отдельных матчей.";
+    return "Разовый пакет для точечного анализа матчей.";
   }
   if (item.code === "premium_30") {
-    return "Больше AI-разборов и удобный доступ к возможностям MatchLab.";
+    return "Premium deep analysis на более глубокой модели.";
   }
   if (item.code === "premium_90") {
-    return "Выгодный вариант для регулярного использования.";
+    return "Premium deep analysis на более глубокой модели.";
   }
   return "Удобный доступ к возможностям MatchLab.";
+}
+
+function packageBenefits(item: PaymentPackage) {
+  if (item.code === "ai_30") {
+    return [
+      "Обычная AI-модель",
+      `${item.ai_credits ?? 30} сохранённых/обновляемых AI-разборов`,
+    ];
+  }
+  if (item.code === "premium_30") {
+    return [
+      `${item.ai_limit ?? 100} AI-разборов на период`,
+      "Более глубокая AI-модель",
+      "Расширенный контекст: форма, таблица, составы, потери, статистические сигналы",
+      "Можно обновлять сохранённые разборы после публикации составов",
+    ];
+  }
+  if (item.code === "premium_90") {
+    return [
+      `${item.ai_limit ?? 350} AI-разборов на период`,
+      "Лучший вариант для регулярного использования",
+      "Более глубокая AI-модель",
+      "Расширенный контекст: форма, таблица, составы, потери, статистические сигналы",
+      "Можно обновлять сохранённые разборы после публикации составов",
+    ];
+  }
+  return [];
 }
 
 function packageDisplayTitle(item: PaymentPackage) {
@@ -5089,6 +5123,16 @@ function SubscriptionScreen() {
                     {formatPrice(item.price_kzt)} ₸
                   </p>
                 </div>
+                <div className="mt-4 space-y-2 border-t border-line/70 pt-4">
+                  {packageBenefits(item).map((benefit) => (
+                    <div key={benefit} className="flex items-start gap-2">
+                      <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-lime" />
+                      <p className="text-xs leading-5 text-slate-300">
+                        {benefit}
+                      </p>
+                    </div>
+                  ))}
+                </div>
                 <button
                   type="button"
                   onClick={() => selectPackage(item)}
@@ -5114,15 +5158,18 @@ function SubscriptionScreen() {
           <section className="mt-7 rounded-lg border border-line bg-panel p-5">
             <div className="flex items-center gap-2">
               <Sparkles className="h-5 w-5 text-accent" />
-              <h2 className="text-base font-bold text-white">Что входит</h2>
+              <h2 className="text-base font-bold text-white">
+                Что даёт Premium
+              </h2>
             </div>
             <div className="mt-4 grid gap-3">
               {[
-                "AI-разбор матчей",
-                "Больше доступных разборов",
-                "Избранные команды",
-                "Напоминания о матчах",
-                "Удобный профиль и лимиты",
+                "Premium deep analysis",
+                "Более глубокая AI-модель",
+                "Больше AI-разборов на период",
+                "Расширенный контекст матча",
+                "Глубже риски и сценарии",
+                "Обновление сохранённых AI-разборов после составов",
               ].map((item) => (
                 <div key={item} className="flex items-center gap-3">
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-lime/10 text-lime">
@@ -5132,6 +5179,10 @@ function SubscriptionScreen() {
                 </div>
               ))}
             </div>
+            <p className="mt-4 border-t border-line pt-4 text-xs leading-5 text-slate-500">
+              Избранные команды, напоминания и профиль доступны всем
+              пользователям. Premium усиливает именно AI-разборы.
+            </p>
           </section>
 
           <section className="mt-4 rounded-lg border border-line bg-panel p-5">
