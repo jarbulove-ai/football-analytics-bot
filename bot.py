@@ -6520,6 +6520,15 @@ def build_chat_ai_response_format() -> dict:
     }
 
 
+def get_ai_max_output_tokens(
+    analysis_mode: str,
+    retry: bool = False,
+) -> int:
+    if analysis_mode == "premium":
+        return 8000 if retry else 6500
+    return 5000 if retry else 4000
+
+
 def parse_ai_analysis_json(content: str) -> dict | None:
     text = str(content or "").strip()
     if not text:
@@ -6824,6 +6833,46 @@ def create_openai_chat_analysis(
             raise
 
 
+def log_openai_ai_analysis_response(
+    response,
+    content: str,
+    selected_model: str,
+    analysis_mode: str,
+    api_name: str,
+    retry: bool = False,
+) -> None:
+    status = get_openai_response_field(response, "status")
+    incomplete_details = get_openai_response_field(
+        response,
+        "incomplete_details",
+    )
+    finish_reason = None
+    choices = get_openai_response_field(response, "choices") or []
+    if choices:
+        finish_reason = get_openai_response_field(
+            choices[0],
+            "finish_reason",
+        )
+
+    incomplete_text = str(incomplete_details or "")
+    if len(incomplete_text) > 300:
+        incomplete_text = f"{incomplete_text[:297]}..."
+
+    logger.info(
+        "OpenAI AI analysis response received: model=%s mode=%s api=%s "
+        "retry=%s response_length=%s status=%s incomplete=%s "
+        "finish_reason=%s structured_output_enabled=True",
+        selected_model,
+        analysis_mode,
+        api_name,
+        retry,
+        len(content or ""),
+        status,
+        incomplete_text or None,
+        finish_reason,
+    )
+
+
 def get_openai_ai_analysis_result(
     match_data: dict,
     analysis_mode: str = "default",
@@ -6836,6 +6885,10 @@ def get_openai_ai_analysis_result(
         }
 
     response = None
+    content = ""
+    api_name = "responses"
+    response_kwargs = None
+    completion_kwargs = None
     selected_model, reasoning_effort = get_ai_model_settings(analysis_mode)
     logger.info(
         "OpenAI AI analysis selected: model=%s analysis_mode=%s "
@@ -6860,7 +6913,7 @@ def get_openai_ai_analysis_result(
                     "content": build_ai_prompt(match_data, analysis_mode),
                 },
             ],
-            "max_output_tokens": 3200 if analysis_mode == "premium" else 2400,
+            "max_output_tokens": get_ai_max_output_tokens(analysis_mode),
             "text": build_responses_ai_text_format(),
         }
         if reasoning_effort:
@@ -6885,6 +6938,7 @@ def get_openai_ai_analysis_result(
                 use_chat_completions = True
 
         if use_chat_completions:
+            api_name = "chat_completions"
             completion_kwargs = {
                 "model": selected_model,
                 "messages": [
@@ -6900,8 +6954,8 @@ def get_openai_ai_analysis_result(
                         "content": build_ai_prompt(match_data, analysis_mode),
                     },
                 ],
-                "max_completion_tokens": (
-                    3200 if analysis_mode == "premium" else 2400
+                "max_completion_tokens": get_ai_max_output_tokens(
+                    analysis_mode
                 ),
                 "response_format": build_chat_ai_response_format(),
             }
@@ -6922,6 +6976,14 @@ def get_openai_ai_analysis_result(
             "analysis_mode": analysis_mode,
         }
 
+    log_openai_ai_analysis_response(
+        response,
+        content,
+        selected_model,
+        analysis_mode,
+        api_name,
+    )
+
     if not content.strip():
         logger.error("OpenAI returned empty AI analysis response")
         logger.error("OpenAI empty response: %s", response)
@@ -6932,6 +6994,81 @@ def get_openai_ai_analysis_result(
         }
 
     parsed_payload = parse_ai_analysis_json(content)
+    if parsed_payload is None and looks_like_ai_analysis_json(content):
+        logger.warning(
+            "OpenAI AI analysis appears incomplete; retrying once: "
+            "model=%s analysis_mode=%s api=%s response_length=%s "
+            "max_output_tokens=%s",
+            selected_model,
+            analysis_mode,
+            api_name,
+            len(content),
+            get_ai_max_output_tokens(analysis_mode, retry=True),
+        )
+        try:
+            if api_name == "responses" and response_kwargs is not None:
+                retry_kwargs = dict(response_kwargs)
+                retry_kwargs["max_output_tokens"] = get_ai_max_output_tokens(
+                    analysis_mode,
+                    retry=True,
+                )
+                if "reasoning" in retry_kwargs:
+                    retry_kwargs["reasoning"] = {"effort": "medium"}
+                retry_response = create_openai_responses_analysis(
+                    client,
+                    retry_kwargs,
+                    selected_model,
+                    analysis_mode,
+                )
+                retry_content = extract_openai_response_text(retry_response)
+            elif completion_kwargs is not None:
+                retry_kwargs = dict(completion_kwargs)
+                retry_kwargs["max_completion_tokens"] = (
+                    get_ai_max_output_tokens(
+                        analysis_mode,
+                        retry=True,
+                    )
+                )
+                if "reasoning_effort" in retry_kwargs:
+                    retry_kwargs["reasoning_effort"] = "medium"
+                retry_response = create_openai_chat_analysis(
+                    client,
+                    retry_kwargs,
+                    selected_model,
+                    analysis_mode,
+                )
+                retry_content = (
+                    retry_response.choices[0].message.content or ""
+                )
+            else:
+                retry_response = None
+                retry_content = ""
+
+            if retry_response is not None:
+                log_openai_ai_analysis_response(
+                    retry_response,
+                    retry_content,
+                    selected_model,
+                    analysis_mode,
+                    api_name,
+                    retry=True,
+                )
+                retry_payload = parse_ai_analysis_json(retry_content)
+                if retry_payload is not None:
+                    parsed_payload = retry_payload
+                    content = retry_content
+                elif retry_content:
+                    content = retry_content
+        except Exception:
+            logger.warning(
+                "OpenAI AI analysis incomplete-response retry failed: "
+                "model=%s analysis_mode=%s api=%s",
+                selected_model,
+                analysis_mode,
+                api_name,
+                exc_info=True,
+            )
+
     if parsed_payload is not None:
         structured = normalize_ai_analysis_payload(parsed_payload)
         return {
