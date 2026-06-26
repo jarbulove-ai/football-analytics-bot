@@ -3459,6 +3459,11 @@ function MatchDetails({
           error.code === "ai_analysis_unavailable"
         ) {
           setAiError("AI-разбор временно недоступен.");
+        } else if (
+          error.status === 429 ||
+          error.code === "ai_refresh_limit_exceeded"
+        ) {
+          setAiError(error.message);
         } else {
           setAiError("Не удалось получить AI-разбор. Попробуйте позже.");
         }
@@ -3469,6 +3474,12 @@ function MatchDetails({
       setAiLoading(false);
     }
   }
+
+  const refreshLimitReached = Boolean(
+    aiAnalysis &&
+      !aiAnalysis.is_admin &&
+      aiAnalysis.free_refreshes_left === 0,
+  );
 
   return (
     <div className="animate-rise">
@@ -3878,6 +3889,20 @@ function MatchDetails({
                     Осталось AI-разборов: {aiAnalysis.remaining_ai}
                   </p>
                 )}
+                {typeof aiAnalysis.free_refreshes_left === "number" && (
+                  <p className="mt-2 text-xs leading-5 text-slate-400">
+                    Доступно 2 бесплатных обновления. Лучше обновлять после
+                    публикации стартовых составов.
+                    <br />
+                    Осталось бесплатных обновлений:{" "}
+                    {aiAnalysis.free_refreshes_left}
+                  </p>
+                )}
+                {refreshLimitReached && (
+                  <p className="mt-2 text-xs font-semibold text-amber-200">
+                    Бесплатные обновления для этого матча закончились.
+                  </p>
+                )}
               </div>
             </div>
           )}
@@ -3908,7 +3933,7 @@ function MatchDetails({
           <button
             type="button"
             onClick={handleAiAnalysis}
-            disabled={aiLoading || savedAiLoading}
+            disabled={aiLoading || savedAiLoading || refreshLimitReached}
             className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white transition active:scale-[0.99] disabled:cursor-wait disabled:opacity-70"
           >
             {aiLoading ? (
@@ -3918,6 +3943,8 @@ function MatchDetails({
             )}
             {aiLoading
               ? "AI-разбор готовится…"
+              : refreshLimitReached
+                ? "Обновления закончились"
               : aiAnalysis
                 ? "Обновить AI-разбор"
                 : "Сделать AI-разбор"}

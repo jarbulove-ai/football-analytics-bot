@@ -214,6 +214,11 @@ export interface MatchAiAnalysisResponse {
   structured?: MatchAiStructuredAnalysis | null;
   cached?: boolean;
   regenerated?: boolean;
+  refresh_count?: number;
+  free_refreshes_total?: number;
+  free_refreshes_left?: number | null;
+  from_personal_cache?: boolean;
+  from_global_cache?: boolean;
   created_at?: string | null;
   updated_at?: string | null;
 }
