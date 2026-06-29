@@ -58,6 +58,7 @@ OPENAI_AI_REASONING_EFFORT_PREMIUM = os.getenv(
     "high",
 ).strip()
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
+MATCHLAB_CHANNEL_ID = os.getenv("MATCHLAB_CHANNEL_ID", "").strip()
 # Render Background Worker:
 # RUN_TELEGRAM_BOT=true
 # ENABLE_MINIAPP_API=false
@@ -2654,7 +2655,7 @@ def get_channel_draft_keyboard(match_id: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     "Опубликовать в канал",
-                    callback_data="channel_publish_stub",
+                    callback_data=f"channel_publish:{match_id}",
                 )
             ],
             [
@@ -11568,6 +11569,7 @@ async def channel_pick_callback(
     drafts[match_id] = {
         "draft": draft,
         "match": match,
+        "content_type": "pre_match",
         "created_at": datetime.now(timezone.utc).timestamp(),
     }
     await query.message.reply_text(
@@ -11576,7 +11578,7 @@ async def channel_pick_callback(
     )
 
 
-async def channel_publish_stub_callback(
+async def channel_publish_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
@@ -11596,10 +11598,91 @@ async def channel_publish_stub_callback(
         await query.message.reply_text("Команда доступна только администратору.")
         return
 
-    logger.info("channel_publish_stub clicked: user_id=%s", admin_id)
-    await query.message.reply_text(
-        "Публикацию в канал подключим следующим этапом."
+    callback_data = query.data or ""
+    match_id = callback_data.split(":", 1)[1].strip() if ":" in callback_data else ""
+    cleanup_channel_bot_data(context)
+    draft_item = (context.bot_data.get("channel_plan_drafts") or {}).get(match_id)
+    content_type = (draft_item or {}).get("content_type") or "pre_match"
+    logger.info(
+        "channel_publish requested: user_id=%s match_id=%s content_type=%s",
+        admin_id,
+        match_id,
+        content_type,
     )
+
+    channel_configured = bool(MATCHLAB_CHANNEL_ID)
+    logger.info(
+        "channel_publish channel_configured %s: match_id=%s content_type=%s",
+        channel_configured,
+        match_id,
+        content_type,
+    )
+    if not channel_configured:
+        await query.message.reply_text(
+            "Канал не настроен: добавьте MATCHLAB_CHANNEL_ID в Environment."
+        )
+        return
+
+    if not draft_item:
+        await query.message.reply_text(
+            "Черновик не найден. Выберите матч заново через /channel_plan."
+        )
+        return
+
+    if draft_item.get("published_at"):
+        logger.info(
+            "channel_publish skipped already_published: match_id=%s "
+            "content_type=%s",
+            match_id,
+            content_type,
+        )
+        await query.message.reply_text("Этот черновик уже опубликован.")
+        return
+
+    draft = draft_item.get("draft") or ""
+    forbidden_left = channel_text_has_forbidden_words(draft)
+    logger.info(
+        "channel_publish forbidden_left %s: match_id=%s content_type=%s",
+        forbidden_left,
+        match_id,
+        content_type,
+    )
+    if forbidden_left:
+        await query.message.reply_text(
+            "Пост содержит запрещённые слова. Нужна ручная проверка."
+        )
+        return
+
+    try:
+        sent_message = await context.bot.send_message(
+            chat_id=MATCHLAB_CHANNEL_ID,
+            text=draft,
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        logger.exception(
+            "channel_publish failed: match_id=%s content_type=%s "
+            "channel_id_configured=%s",
+            match_id,
+            content_type,
+            True,
+        )
+        await query.message.reply_text(
+            "Не удалось опубликовать пост в канал. Проверьте, что "
+            "MATCHLAB_CHANNEL_ID указан правильно и бот добавлен админом "
+            "канала."
+        )
+        return
+
+    draft_item["published_at"] = datetime.now(timezone.utc).isoformat()
+    draft_item["published_message_id"] = sent_message.message_id
+    logger.info(
+        "channel_publish success: match_id=%s content_type=%s message_id=%s",
+        match_id,
+        content_type,
+        sent_message.message_id,
+    )
+    await query.message.reply_text("Пост опубликован в канал.")
 
 
 async def channel_shorten_callback(
@@ -13149,8 +13232,8 @@ def main() -> None:
     )
     application.add_handler(
         CallbackQueryHandler(
-            channel_publish_stub_callback,
-            pattern=r"^channel_publish_stub$",
+            channel_publish_callback,
+            pattern=r"^channel_publish:.+$",
         )
     )
     application.add_handler(
