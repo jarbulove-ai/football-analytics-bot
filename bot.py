@@ -2510,6 +2510,44 @@ def extract_risk_lines(structured: dict | None, limit: int = 3) -> list[str]:
     return [str(risk).strip() for risk in risks[:limit] if str(risk).strip()]
 
 
+CHANNEL_DRAFT_DISCLAIMER = (
+    "Это футбольная аналитика на основе данных, а не обещание результата."
+)
+
+
+def get_channel_short_text(text: str, max_chars: int = 140) -> str:
+    compact_text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(compact_text) <= max_chars:
+        return compact_text
+    return compact_text[: max_chars - 3].rstrip(" .,;:") + "..."
+
+
+def get_channel_short_sentences(text: str, limit: int = 2, max_chars: int = 220) -> str:
+    compact_text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not compact_text:
+        return ""
+
+    sentences = re.split(r"(?<=[.!?])\s+", compact_text)
+    selected = " ".join(sentence for sentence in sentences[:limit] if sentence)
+    return get_channel_short_text(selected or compact_text, max_chars)
+
+
+def limit_channel_text_preserving_disclaimer(text: str, max_chars: int) -> str:
+    sanitized = sanitize_channel_post_text(text)
+    if len(sanitized) <= max_chars:
+        return sanitized
+
+    disclaimer = CHANNEL_DRAFT_DISCLAIMER
+    body = sanitized.replace(disclaimer, "").rstrip()
+    max_body_chars = max(120, max_chars - len(disclaimer) - 3)
+    trimmed_body = body[:max_body_chars].rstrip()
+    newline_position = trimmed_body.rfind("\n")
+    if newline_position > max_body_chars * 0.65:
+        trimmed_body = trimmed_body[:newline_position].rstrip()
+    trimmed_body = trimmed_body.rstrip(" .,;:")
+    return sanitize_channel_post_text(f"{trimmed_body}\n\n{disclaimer}")
+
+
 def format_channel_probability(value) -> str:
     if value is None:
         return "—"
@@ -2531,40 +2569,53 @@ def build_channel_post_draft(match: dict, analysis_result: dict) -> str:
     away = match.get("away") or analysis_result.get("away_team") or "Команда 2"
     summary = structured.get("summary") or "AI-оценка MatchLab видит матч с несколькими рабочими сценариями."
     scenario = structured.get("scenario") or structured.get("tactical_notes") or summary
-    signals = extract_signal_lines(structured)
-    risks = extract_risk_lines(structured)
+    summary_text = get_channel_short_sentences(summary, limit=2, max_chars=210)
+    if scenario and scenario != summary:
+        scenario_text = get_channel_short_sentences(scenario, limit=1, max_chars=160)
+        intro_text = f"{summary_text} {scenario_text}".strip()
+    else:
+        intro_text = summary_text
+    intro_text = get_channel_short_text(intro_text, 260)
+    signals = [
+        get_channel_short_text(signal, 105)
+        for signal in extract_signal_lines(structured, limit=2)
+    ]
+    risks = [
+        get_channel_short_text(risk, 105)
+        for risk in extract_risk_lines(structured, limit=2)
+    ]
 
     lines = [
         f"🔥 Матч дня: {home} — {away}",
         "",
-        f"AI-оценка MatchLab видит: {summary}",
+        "AI-оценка MatchLab:",
+        intro_text,
         "",
         "📊 Вероятности:",
         f"• {home} — {format_channel_probability(probabilities.get('home_win'))}",
         f"• Ничья — {format_channel_probability(probabilities.get('draw'))}",
         f"• {away} — {format_channel_probability(probabilities.get('away_win'))}",
         "",
-        "🧠 AI-сценарий:",
-        scenario,
-        "",
-        "📈 Статистические сигналы:",
+        "📈 Сигналы:",
     ]
-    lines.extend(f"• {signal}" for signal in (signals or ["Данные матча дают умеренный аналитический сигнал."]))
+    lines.extend(f"• {signal}" for signal in (signals or ["Есть умеренный аналитический сигнал."]))
     lines.extend(["", "⚠️ Главные риски:"])
     lines.extend(f"• {risk}" for risk in (risks or ["Часть данных может обновиться ближе к началу матча."]))
     lines.extend(
         [
             "",
-            "📌 Итог:",
-            "Матч подходит для детального просмотра в MatchLab: есть понятный контекст, вероятности и риски сценария.",
+            "Полный AI-разбор: @Match_Stat_bot",
             "",
-            "Полный AI-разбор:",
-            "@Match_Stat_bot",
-            "",
-            "Это футбольная аналитика на основе данных, а не обещание результата.",
+            CHANNEL_DRAFT_DISCLAIMER,
         ]
     )
-    return sanitize_channel_post_text("\n".join(lines))
+    draft = limit_channel_text_preserving_disclaimer("\n".join(lines), 900)
+    logger.info(
+        "channel_draft length chars=%s forbidden_left=%s",
+        len(draft),
+        channel_text_has_forbidden_words(draft),
+    )
+    return draft
 
 
 def shorten_channel_post_draft(text: str) -> str:
@@ -2585,7 +2636,16 @@ def shorten_channel_post_draft(text: str) -> str:
         if len(line) > 220:
             line = line[:217].rstrip() + "..."
         shortened.append(line)
-    return sanitize_channel_post_text("\n".join(shortened))
+    shortened_text = limit_channel_text_preserving_disclaimer(
+        "\n".join(shortened),
+        750,
+    )
+    logger.info(
+        "channel_draft length chars=%s forbidden_left=%s",
+        len(shortened_text),
+        channel_text_has_forbidden_words(shortened_text),
+    )
+    return shortened_text
 
 
 def get_channel_draft_keyboard(match_id: str) -> InlineKeyboardMarkup:
@@ -2619,89 +2679,99 @@ def get_or_create_channel_match_ai_analysis(
 ) -> tuple[dict | None, bool, bool]:
     raw_match_id = str(match.get("id") or "").strip()
     match_id = normalize_ai_analysis_match_id(raw_match_id)
-    analysis_mode = "premium"
     generated = False
     logger.info(
         "channel_draft AI source lookup started: admin_id=%s raw_match_id=%s "
-        "normalized_match_id=%s analysis_mode=%s source=channel_agent",
+        "normalized_match_id=%s source=channel_agent",
         admin_id,
         raw_match_id,
         match_id,
-        analysis_mode,
     )
 
-    saved_analysis = None
-    try:
-        saved_analysis, match_id = lookup_saved_miniapp_ai_analysis(
-            admin_id,
+    for lookup_mode in ("premium", "default"):
+        logger.info(
+            "channel_draft cache lookup mode=%s match_id=%s",
+            lookup_mode,
             match_id,
-            analysis_mode,
         )
-    except Exception:
-        logger.warning(
-            "channel_draft personal AI lookup failed: raw_match_id=%s "
-            "normalized_match_id=%s analysis_mode=%s",
+        saved_analysis = None
+        try:
+            saved_analysis, match_id = lookup_saved_miniapp_ai_analysis(
+                admin_id,
+                match_id,
+                lookup_mode,
+            )
+        except Exception:
+            logger.warning(
+                "channel_draft personal AI lookup failed: raw_match_id=%s "
+                "normalized_match_id=%s analysis_mode=%s",
+                raw_match_id,
+                match_id,
+                lookup_mode,
+                exc_info=True,
+            )
+        logger.info(
+            "channel_draft personal saved found %s: admin_id=%s "
+            "raw_match_id=%s normalized_match_id=%s saved_match_id=%s "
+            "mode=%s",
+            bool(saved_analysis),
+            admin_id,
             raw_match_id,
             match_id,
-            analysis_mode,
-            exc_info=True,
-        )
-    logger.info(
-        "channel_draft personal saved found %s: admin_id=%s raw_match_id=%s "
-        "normalized_match_id=%s saved_match_id=%s analysis_mode=%s",
-        bool(saved_analysis),
-        admin_id,
-        raw_match_id,
-        match_id,
-        match_id,
-        analysis_mode,
-    )
-    if saved_analysis:
-        logger.info("channel_draft saved/global AI found true")
-        logger.info(
-            "channel_draft AI source selected personal_cache: admin_id=%s "
-            "saved_match_id=%s analysis_mode=%s",
-            admin_id,
             match_id,
-            analysis_mode,
+            lookup_mode,
         )
-        return saved_analysis, True, generated
+        if saved_analysis:
+            source_name = f"personal_cache_{lookup_mode}"
+            logger.info(
+                "channel_draft AI source selected %s: admin_id=%s "
+                "saved_match_id=%s analysis_mode=%s",
+                source_name,
+                admin_id,
+                match_id,
+                lookup_mode,
+            )
+            return saved_analysis, True, generated
 
-    global_analysis = get_global_miniapp_ai_analysis(match_id, analysis_mode)
-    logger.info(
-        "channel_draft global cache found %s: match_id=%s analysis_mode=%s",
-        bool(global_analysis),
-        match_id,
-        analysis_mode,
-    )
-    if global_analysis:
-        logger.info("channel_draft saved/global AI found true")
-        personal_saved = save_miniapp_ai_analysis(
-            admin_id,
-            match_id,
-            global_analysis.get("analysis") or "",
-            global_analysis.get("structured"),
-            analysis_mode,
-            global_analysis.get("home_team") or "",
-            global_analysis.get("away_team") or "",
-            global_analysis.get("league") or "",
-        )
+        global_analysis = get_global_miniapp_ai_analysis(match_id, lookup_mode)
         logger.info(
-            "channel_draft personal analysis saved %s: admin_id=%s match_id=%s analysis_mode=%s",
-            personal_saved,
-            admin_id,
+            "channel_draft global cache found %s: match_id=%s mode=%s",
+            bool(global_analysis),
             match_id,
-            analysis_mode,
+            lookup_mode,
         )
-        verify_miniapp_ai_personal_save(admin_id, match_id, analysis_mode)
-        logger.info(
-            "channel_draft AI source selected global_cache: match_id=%s analysis_mode=%s",
-            match_id,
-            analysis_mode,
-        )
-        return global_analysis, True, generated
+        if global_analysis:
+            personal_saved = save_miniapp_ai_analysis(
+                admin_id,
+                match_id,
+                global_analysis.get("analysis") or "",
+                global_analysis.get("structured"),
+                lookup_mode,
+                global_analysis.get("home_team") or "",
+                global_analysis.get("away_team") or "",
+                global_analysis.get("league") or "",
+            )
+            logger.info(
+                "channel_draft personal analysis saved %s: admin_id=%s "
+                "match_id=%s analysis_mode=%s",
+                personal_saved,
+                admin_id,
+                match_id,
+                lookup_mode,
+            )
+            verify_miniapp_ai_personal_save(admin_id, match_id, lookup_mode)
+            source_name = f"global_cache_{lookup_mode}"
+            logger.info(
+                "channel_draft AI source selected %s: match_id=%s "
+                "analysis_mode=%s",
+                source_name,
+                match_id,
+                lookup_mode,
+            )
+            return global_analysis, True, generated
 
     logger.info("channel_draft saved/global AI found false")
+    analysis_mode = "premium"
     logger.info(
         "channel_draft OpenAI generation required true: match_id=%s analysis_mode=%s",
         match_id,
@@ -2752,7 +2822,8 @@ def get_or_create_channel_match_ai_analysis(
     )
     verify_miniapp_ai_personal_save(admin_id, match_id, analysis_mode)
     logger.info(
-        "channel_draft AI source selected openai_generated: match_id=%s analysis_mode=%s",
+        "channel_draft AI source selected openai_generated_premium: "
+        "match_id=%s analysis_mode=%s",
         match_id,
         analysis_mode,
     )
