@@ -546,13 +546,15 @@ def init_db() -> None:
                         WHERE conrelid = 'miniapp_match_ai_analyses'::regclass
                         AND contype = 'u'
                         AND (
-                            SELECT array_agg(att.attname ORDER BY ord.ordinality)
+                            SELECT array_agg(
+                                att.attname::text ORDER BY ord.ordinality
+                            )
                             FROM unnest(conkey) WITH ORDINALITY
                             AS ord(attnum, ordinality)
                             JOIN pg_attribute att
                             ON att.attrelid = conrelid
                             AND att.attnum = ord.attnum
-                        ) = ARRAY['telegram_user_id', 'match_id']
+                        ) = ARRAY['telegram_user_id', 'match_id']::text[]
                     LOOP
                         EXECUTE format(
                             'ALTER TABLE miniapp_match_ai_analyses '
@@ -577,13 +579,15 @@ def init_db() -> None:
                         AND idx.indisunique
                         AND NOT idx.indisprimary
                         AND (
-                            SELECT array_agg(att.attname ORDER BY ord.ordinality)
+                            SELECT array_agg(
+                                att.attname::text ORDER BY ord.ordinality
+                            )
                             FROM unnest(idx.indkey) WITH ORDINALITY
                             AS ord(attnum, ordinality)
                             JOIN pg_attribute att
                             ON att.attrelid = idx.indrelid
                             AND att.attnum = ord.attnum
-                        ) = ARRAY['telegram_user_id', 'match_id']
+                        ) = ARRAY['telegram_user_id', 'match_id']::text[]
                     LOOP
                         EXECUTE format(
                             'DROP INDEX IF EXISTS %s',
@@ -671,13 +675,15 @@ def ensure_miniapp_ai_global_cache_table() -> bool:
                         WHERE conrelid = 'miniapp_match_ai_analyses'::regclass
                         AND contype = 'u'
                         AND (
-                            SELECT array_agg(att.attname ORDER BY ord.ordinality)
+                            SELECT array_agg(
+                                att.attname::text ORDER BY ord.ordinality
+                            )
                             FROM unnest(conkey) WITH ORDINALITY
                             AS ord(attnum, ordinality)
                             JOIN pg_attribute att
                             ON att.attrelid = conrelid
                             AND att.attnum = ord.attnum
-                        ) = ARRAY['telegram_user_id', 'match_id']
+                        ) = ARRAY['telegram_user_id', 'match_id']::text[]
                     LOOP
                         EXECUTE format(
                             'ALTER TABLE miniapp_match_ai_analyses '
@@ -702,13 +708,15 @@ def ensure_miniapp_ai_global_cache_table() -> bool:
                         AND idx.indisunique
                         AND NOT idx.indisprimary
                         AND (
-                            SELECT array_agg(att.attname ORDER BY ord.ordinality)
+                            SELECT array_agg(
+                                att.attname::text ORDER BY ord.ordinality
+                            )
                             FROM unnest(idx.indkey) WITH ORDINALITY
                             AS ord(attnum, ordinality)
                             JOIN pg_attribute att
                             ON att.attrelid = idx.indrelid
                             AND att.attnum = ord.attnum
-                        ) = ARRAY['telegram_user_id', 'match_id']
+                        ) = ARRAY['telegram_user_id', 'match_id']::text[]
                     LOOP
                         EXECUTE format(
                             'DROP INDEX IF EXISTS %s',
