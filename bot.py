@@ -2300,6 +2300,88 @@ def channel_text_has_forbidden_words(text: str) -> bool:
     return any(word.casefold() in normalized_text for word in CHANNEL_FORBIDDEN_WORDS)
 
 
+TEAM_NAME_RU_OVERRIDES = {
+    "South Africa": "ЮАР",
+    "Canada": "Канада",
+    "Brazil": "Бразилия",
+    "Japan": "Япония",
+    "Germany": "Германия",
+    "Paraguay": "Парагвай",
+    "Netherlands": "Нидерланды",
+    "Morocco": "Марокко",
+    "Ivory Coast": "Кот-д'Ивуар",
+    "Norway": "Норвегия",
+    "France": "Франция",
+    "Sweden": "Швеция",
+    "Mexico": "Мексика",
+    "Ecuador": "Эквадор",
+    "England": "Англия",
+    "DR Congo": "ДР Конго",
+    "Belgium": "Бельгия",
+    "Senegal": "Сенегал",
+    "United States": "США",
+    "USA": "США",
+    "Bosnia and Herzegovina": "Босния и Герцеговина",
+    "Spain": "Испания",
+    "Austria": "Австрия",
+    "Portugal": "Португалия",
+    "Croatia": "Хорватия",
+    "Switzerland": "Швейцария",
+    "Algeria": "Алжир",
+    "Australia": "Австралия",
+    "Egypt": "Египет",
+    "Argentina": "Аргентина",
+    "Cape Verde": "Кабо-Верде",
+    "Colombia": "Колумбия",
+    "Ghana": "Гана",
+    "RSA": "ЮАР",
+    "CAN": "Канада",
+    "BRA": "Бразилия",
+    "JPN": "Япония",
+    "GER": "Германия",
+    "PAR": "Парагвай",
+    "NED": "Нидерланды",
+    "MAR": "Марокко",
+    "CIV": "Кот-д'Ивуар",
+    "NOR": "Норвегия",
+    "FRA": "Франция",
+    "SWE": "Швеция",
+    "MEX": "Мексика",
+    "ECU": "Эквадор",
+    "ENG": "Англия",
+    "COD": "ДР Конго",
+    "BEL": "Бельгия",
+    "SEN": "Сенегал",
+    "BIH": "Босния и Герцеговина",
+    "ESP": "Испания",
+    "AUT": "Австрия",
+    "POR": "Португалия",
+    "CRO": "Хорватия",
+    "SUI": "Швейцария",
+    "DZA": "Алжир",
+    "AUS": "Австралия",
+    "EGY": "Египет",
+    "ARG": "Аргентина",
+    "CPV": "Кабо-Верде",
+    "COL": "Колумбия",
+    "GHA": "Гана",
+}
+
+
+TEAM_NAME_RU_OVERRIDES_CASEFOLD = {
+    key.casefold(): value for key, value in TEAM_NAME_RU_OVERRIDES.items()
+}
+
+
+def translate_team_name_ru(name: str | None) -> str:
+    team_name = re.sub(r"\s+", " ", str(name or "")).strip()
+    if not team_name:
+        return ""
+    if team_name in TEAM_NAME_RU_OVERRIDES:
+        return TEAM_NAME_RU_OVERRIDES[team_name]
+    return TEAM_NAME_RU_OVERRIDES_CASEFOLD.get(team_name.casefold(), team_name)
+
+
 def parse_match_kickoff_datetime(match: dict) -> datetime | None:
     kickoff = match.get("kickoff")
     if not kickoff:
@@ -2411,9 +2493,11 @@ def get_channel_plan_candidates(limit: int = 3) -> list[dict]:
 def build_channel_plan_message(candidates: list[dict]) -> str:
     lines = ["🤖 Кандидаты на матч дня:", ""]
     for index, match in enumerate(candidates, start=1):
+        home = translate_team_name_ru(match.get("home")) or "Команда 1"
+        away = translate_team_name_ru(match.get("away")) or "Команда 2"
         lines.extend(
             [
-                f"{index}. {match.get('home') or 'Команда 1'} — {match.get('away') or 'Команда 2'}",
+                f"{index}. {home} — {away}",
                 f"   Время: {format_channel_match_time(match)}",
                 f"   Турнир: {match.get('league') or 'не указан'}",
                 "   Почему подходит: "
@@ -2428,8 +2512,8 @@ def build_channel_plan_message(candidates: list[dict]) -> str:
 def build_channel_plan_keyboard(candidates: list[dict]) -> InlineKeyboardMarkup:
     keyboard = []
     for index, match in enumerate(candidates, start=1):
-        home = match.get("home") or "Команда 1"
-        away = match.get("away") or "Команда 2"
+        home = translate_team_name_ru(match.get("home")) or "Команда 1"
+        away = translate_team_name_ru(match.get("away")) or "Команда 2"
         keyboard.append(
             [
                 InlineKeyboardButton(
@@ -2566,8 +2650,18 @@ def format_channel_probability(value) -> str:
 def build_channel_post_draft(match: dict, analysis_result: dict) -> str:
     structured = analysis_result.get("structured") or {}
     probabilities = structured.get("outcome_probabilities") or {}
-    home = match.get("home") or analysis_result.get("home_team") or "Команда 1"
-    away = match.get("away") or analysis_result.get("away_team") or "Команда 2"
+    home_raw = match.get("home") or analysis_result.get("home_team") or ""
+    away_raw = match.get("away") or analysis_result.get("away_team") or ""
+    home = translate_team_name_ru(home_raw) or "Команда 1"
+    away = translate_team_name_ru(away_raw) or "Команда 2"
+    logger.info(
+        "channel_draft display teams: home_raw=%s home_ru=%s "
+        "away_raw=%s away_ru=%s",
+        home_raw,
+        home,
+        away_raw,
+        away,
+    )
     summary = structured.get("summary") or "AI-оценка MatchLab видит матч с несколькими рабочими сценариями."
     scenario = structured.get("scenario") or structured.get("tactical_notes") or summary
     summary_text = get_channel_short_sentences(summary, limit=2, max_chars=210)
@@ -11516,8 +11610,8 @@ async def channel_pick_callback(
         )
         return
 
-    home = match.get("home") or "Команда 1"
-    away = match.get("away") or "Команда 2"
+    home = translate_team_name_ru(match.get("home")) or "Команда 1"
+    away = translate_team_name_ru(match.get("away")) or "Команда 2"
     await query.message.reply_text(
         f"Готовлю черновик поста для канала по матчу {home} — {away}…"
     )
