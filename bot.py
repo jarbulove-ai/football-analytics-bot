@@ -299,6 +299,8 @@ logger = logging.getLogger(__name__)
 miniapp_api = Flask("matchlab_miniapp_api")
 MINIAPP_LIVE_CACHE = {}
 MINIAPP_LIVE_CACHE_LOCK = threading.Lock()
+CHANNEL_PLAN_CANDIDATES_TTL_SECONDS = 900
+CHANNEL_PLAN_DRAFTS_TTL_SECONDS = 1800
 MINIAPP_LIVE_STATUSES = {
     "1H",
     "HT",
@@ -2086,6 +2088,555 @@ def save_miniapp_ai_analysis(
     finally:
         if connection is not None:
             connection.close()
+
+
+CHANNEL_FORBIDDEN_WORDS = (
+    "ставка",
+    "ставки",
+    "поставить",
+    "ставь",
+    "прогноз на ставку",
+    "экспресс",
+    "ординар",
+    "купон",
+    "коэффициент",
+    "кэф",
+    "БК",
+    "букмекер",
+    "букмекерская",
+    "беттинг",
+    "betting",
+    "валуй",
+    "value bet",
+    "проходимость",
+    "железно",
+    "жб",
+    "гарантия",
+    "100%",
+    "точный прогноз",
+    "верняк",
+    "банк",
+    "флет",
+    "догон",
+    "выигрыш",
+    "заработок",
+    "доход",
+    "поднять денег",
+    "фрибет",
+    "депозит",
+    "вывод",
+    "казино",
+)
+
+
+CHANNEL_FORBIDDEN_REPLACEMENTS = {
+    "ставка": "AI-разбор",
+    "ставки": "AI-разборы",
+    "поставить": "выбрать направление",
+    "ставь": "смотри данные",
+    "прогноз на ставку": "AI-оценка",
+    "экспресс": "сценарий",
+    "ординар": "сценарий",
+    "купон": "сценарий",
+    "коэффициент": "вероятность",
+    "кэф": "вероятность",
+    "БК": "аналитика",
+    "букмекер": "аналитика",
+    "букмекерская": "аналитическая",
+    "беттинг": "аналитика",
+    "betting": "football analytics",
+    "валуй": "статистический сигнал",
+    "value bet": "статистический сигнал",
+    "проходимость": "устойчивость сценария",
+    "железно": "сильный сигнал",
+    "жб": "сильный сигнал",
+    "гарантия": "оценка",
+    "100%": "высокая вероятность",
+    "точный прогноз": "AI-оценка",
+    "верняк": "сильный сценарий",
+    "банк": "профиль",
+    "флет": "ровный подход",
+    "догон": "повторная оценка",
+    "выигрыш": "результат",
+    "заработок": "результат",
+    "доход": "результат",
+    "поднять денег": "получить результат",
+    "фрибет": "дополнительный материал",
+    "депозит": "доступ",
+    "вывод": "итог",
+    "казино": "игра",
+}
+
+
+def sanitize_channel_post_text(text: str) -> str:
+    sanitized = str(text or "")
+    for forbidden, replacement in CHANNEL_FORBIDDEN_REPLACEMENTS.items():
+        pattern = re.compile(re.escape(forbidden), re.IGNORECASE)
+        sanitized = pattern.sub(replacement, sanitized)
+    return sanitized.strip()
+
+
+def channel_text_has_forbidden_words(text: str) -> bool:
+    normalized_text = str(text or "").casefold()
+    return any(word.casefold() in normalized_text for word in CHANNEL_FORBIDDEN_WORDS)
+
+
+def parse_match_kickoff_datetime(match: dict) -> datetime | None:
+    kickoff = match.get("kickoff")
+    if not kickoff:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(kickoff).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ALMATY_TZ)
+    return parsed.astimezone(ALMATY_TZ)
+
+
+def format_channel_match_time(match: dict) -> str:
+    kickoff = parse_match_kickoff_datetime(match)
+    if not kickoff:
+        return "время не указано"
+    return kickoff.strftime("%d.%m %H:%M")
+
+
+def is_channel_match_not_started(match: dict) -> bool:
+    status = str(match.get("status") or "").strip().upper()
+    if status in MINIAPP_FINISHED_STATUSES or status in MINIAPP_LIVE_STATUSES:
+        return False
+    kickoff = parse_match_kickoff_datetime(match)
+    return kickoff is None or kickoff > datetime.now(ALMATY_TZ)
+
+
+def get_channel_match_priority(match: dict) -> tuple[int, list[str]]:
+    score = 0
+    reasons = []
+    league_id = match.get("league_id")
+    league_name = str(match.get("league") or "")
+    country = str(match.get("country") or "")
+    kickoff = parse_match_kickoff_datetime(match)
+
+    if is_channel_match_not_started(match):
+        score += 30
+        reasons.append("матч ещё не начался")
+    if kickoff:
+        days_until = (kickoff.date() - datetime.now(ALMATY_TZ).date()).days
+        if days_until in (0, 1):
+            score += 25
+            reasons.append("подходит по времени: сегодня/завтра")
+    if league_id in TOP_LEAGUE_IDS:
+        score += 24
+        reasons.append("топ-турнир MatchLab")
+    if any(
+        keyword in f"{league_name} {country}".lower()
+        for keyword in (
+            "world cup",
+            "champions",
+            "europa",
+            "conference",
+            "nations",
+            "international",
+            "world",
+            "euro",
+            "cup",
+        )
+    ):
+        score += 18
+        reasons.append("международный или кубковый контекст")
+    if league_name:
+        score += 8
+        reasons.append("есть турнир и контекст")
+    if match.get("home_id") and match.get("away_id"):
+        score += 8
+        reasons.append("есть данные команд для AI-разбора")
+    if match.get("home_logo") and match.get("away_logo"):
+        score += 4
+    if not reasons:
+        reasons.append("матч может быть интересен для контента")
+
+    return score, reasons[:3]
+
+
+def get_channel_plan_candidates(limit: int = 3) -> list[dict]:
+    candidates_by_id = {}
+    for match_type in ("top", "today", "tomorrow"):
+        try:
+            for match in get_miniapp_matches(match_type):
+                match_id = str(match.get("id") or "").strip()
+                if match_id and match_id not in candidates_by_id:
+                    candidates_by_id[match_id] = match
+        except Exception:
+            logger.warning(
+                "channel_plan match list failed: match_type=%s",
+                match_type,
+                exc_info=True,
+            )
+
+    ranked = []
+    for match in candidates_by_id.values():
+        if not is_channel_match_not_started(match):
+            continue
+        score, reasons = get_channel_match_priority(match)
+        ranked.append((score, parse_match_kickoff_datetime(match) or datetime.max.replace(tzinfo=ALMATY_TZ), reasons, match))
+
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    candidates = []
+    for _, _, reasons, match in ranked[:limit]:
+        enriched_match = dict(match)
+        enriched_match["_channel_reasons"] = reasons
+        candidates.append(enriched_match)
+    return candidates
+
+
+def build_channel_plan_message(candidates: list[dict]) -> str:
+    lines = ["🤖 Кандидаты на матч дня:", ""]
+    for index, match in enumerate(candidates, start=1):
+        lines.extend(
+            [
+                f"{index}. {match.get('home') or 'Команда 1'} — {match.get('away') or 'Команда 2'}",
+                f"   Время: {format_channel_match_time(match)}",
+                f"   Турнир: {match.get('league') or 'не указан'}",
+                "   Почему подходит: "
+                + "; ".join(match.get("_channel_reasons") or ["интересен для контента"]),
+                "",
+            ]
+        )
+    lines.append("Выбери матч для черновика:")
+    return "\n".join(lines)
+
+
+def build_channel_plan_keyboard(candidates: list[dict]) -> InlineKeyboardMarkup:
+    keyboard = []
+    for index, match in enumerate(candidates, start=1):
+        home = match.get("home") or "Команда 1"
+        away = match.get("away") or "Команда 2"
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    f"{index}. {home} — {away}"[:64],
+                    callback_data=f"channel_pick:{match.get('id')}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(keyboard)
+
+
+def cleanup_channel_bot_data(context: ContextTypes.DEFAULT_TYPE) -> None:
+    now_ts = datetime.now(timezone.utc).timestamp()
+    candidates = context.bot_data.get("channel_plan_candidates") or {}
+    context.bot_data["channel_plan_candidates"] = {
+        key: value
+        for key, value in candidates.items()
+        if now_ts - float(value.get("created_at") or 0)
+        < CHANNEL_PLAN_CANDIDATES_TTL_SECONDS
+    }
+    drafts = context.bot_data.get("channel_plan_drafts") or {}
+    context.bot_data["channel_plan_drafts"] = {
+        key: value
+        for key, value in drafts.items()
+        if now_ts - float(value.get("created_at") or 0)
+        < CHANNEL_PLAN_DRAFTS_TTL_SECONDS
+    }
+
+
+def store_channel_candidates(
+    context: ContextTypes.DEFAULT_TYPE,
+    candidates: list[dict],
+) -> None:
+    cleanup_channel_bot_data(context)
+    storage = context.bot_data.setdefault("channel_plan_candidates", {})
+    now_ts = datetime.now(timezone.utc).timestamp()
+    for match in candidates:
+        match_id = str(match.get("id") or "").strip()
+        if match_id:
+            storage[match_id] = {"match": match, "created_at": now_ts}
+
+
+def get_stored_channel_match(
+    context: ContextTypes.DEFAULT_TYPE,
+    match_id: str,
+) -> dict | None:
+    cleanup_channel_bot_data(context)
+    item = (context.bot_data.get("channel_plan_candidates") or {}).get(match_id)
+    if item and item.get("match"):
+        return item["match"]
+    return find_miniapp_match(match_id)
+
+
+def extract_signal_lines(structured: dict | None, limit: int = 3) -> list[str]:
+    signals = (structured or {}).get("signals") or []
+    lines = []
+    for signal in signals:
+        if isinstance(signal, dict):
+            label = str(signal.get("label") or "Сигнал").strip()
+            value = str(signal.get("value") or "").strip()
+            reason = str(signal.get("reason") or "").strip()
+            text = f"{label}: {value}".strip(": ")
+            if reason:
+                text = f"{text} — {reason}"
+        elif isinstance(signal, str):
+            text = signal.strip()
+        else:
+            text = str(signal).strip()
+
+        if text:
+            lines.append(text)
+        if len(lines) >= limit:
+            break
+    return lines
+
+
+def extract_risk_lines(structured: dict | None, limit: int = 3) -> list[str]:
+    risks = (structured or {}).get("risks") or []
+    return [str(risk).strip() for risk in risks[:limit] if str(risk).strip()]
+
+
+def format_channel_probability(value) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{value:g}%"
+
+    probability_text = str(value).strip()
+    if not probability_text:
+        return "—"
+    if "%" in probability_text:
+        return probability_text
+    return f"{probability_text}%"
+
+
+def build_channel_post_draft(match: dict, analysis_result: dict) -> str:
+    structured = analysis_result.get("structured") or {}
+    probabilities = structured.get("outcome_probabilities") or {}
+    home = match.get("home") or analysis_result.get("home_team") or "Команда 1"
+    away = match.get("away") or analysis_result.get("away_team") or "Команда 2"
+    summary = structured.get("summary") or "AI-оценка MatchLab видит матч с несколькими рабочими сценариями."
+    scenario = structured.get("scenario") or structured.get("tactical_notes") or summary
+    signals = extract_signal_lines(structured)
+    risks = extract_risk_lines(structured)
+
+    lines = [
+        f"🔥 Матч дня: {home} — {away}",
+        "",
+        f"AI-оценка MatchLab видит: {summary}",
+        "",
+        "📊 Вероятности:",
+        f"• {home} — {format_channel_probability(probabilities.get('home_win'))}",
+        f"• Ничья — {format_channel_probability(probabilities.get('draw'))}",
+        f"• {away} — {format_channel_probability(probabilities.get('away_win'))}",
+        "",
+        "🧠 AI-сценарий:",
+        scenario,
+        "",
+        "📈 Статистические сигналы:",
+    ]
+    lines.extend(f"• {signal}" for signal in (signals or ["Данные матча дают умеренный аналитический сигнал."]))
+    lines.extend(["", "⚠️ Главные риски:"])
+    lines.extend(f"• {risk}" for risk in (risks or ["Часть данных может обновиться ближе к началу матча."]))
+    lines.extend(
+        [
+            "",
+            "📌 Итог:",
+            "Матч подходит для детального просмотра в MatchLab: есть понятный контекст, вероятности и риски сценария.",
+            "",
+            "Полный AI-разбор:",
+            "@Match_Stat_bot",
+            "",
+            "Это футбольная аналитика на основе данных, а не обещание результата.",
+        ]
+    )
+    return sanitize_channel_post_text("\n".join(lines))
+
+
+def shorten_channel_post_draft(text: str) -> str:
+    lines = [line for line in str(text or "").splitlines()]
+    shortened = []
+    skip_markers = {"📈 Статистические сигналы:", "⚠️ Главные риски:"}
+    skipped_bullets = {marker: 0 for marker in skip_markers}
+    current_section = ""
+    for line in lines:
+        if line in skip_markers:
+            current_section = line
+            shortened.append(line)
+            continue
+        if line.startswith("• ") and current_section in skip_markers:
+            skipped_bullets[current_section] += 1
+            if skipped_bullets[current_section] > 2:
+                continue
+        if len(line) > 220:
+            line = line[:217].rstrip() + "..."
+        shortened.append(line)
+    return sanitize_channel_post_text("\n".join(shortened))
+
+
+def get_channel_draft_keyboard(match_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "Опубликовать в канал",
+                    callback_data="channel_publish_stub",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "Сделать короче",
+                    callback_data=f"channel_shorten:{match_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "Выбрать другой матч",
+                    callback_data="channel_plan_again",
+                )
+            ],
+        ]
+    )
+
+
+def get_or_create_channel_match_ai_analysis(
+    admin_id: int,
+    match: dict,
+) -> tuple[dict | None, bool, bool]:
+    match_id = normalize_ai_analysis_match_id(match.get("id"))
+    analysis_mode = "premium"
+    generated = False
+    logger.info(
+        "channel_draft AI source lookup started: admin_id=%s match_id=%s analysis_mode=%s",
+        admin_id,
+        match_id,
+        analysis_mode,
+    )
+
+    saved_analysis = None
+    try:
+        saved_analysis, match_id = lookup_saved_miniapp_ai_analysis(
+            admin_id,
+            match_id,
+            analysis_mode,
+        )
+    except Exception:
+        logger.warning(
+            "channel_draft personal AI lookup failed: match_id=%s",
+            match_id,
+            exc_info=True,
+        )
+    logger.info(
+        "channel_draft personal saved found %s: admin_id=%s match_id=%s analysis_mode=%s",
+        bool(saved_analysis),
+        admin_id,
+        match_id,
+        analysis_mode,
+    )
+    if saved_analysis:
+        logger.info("channel_draft saved/global AI found true")
+        logger.info(
+            "channel_draft AI source selected personal_cache: admin_id=%s match_id=%s analysis_mode=%s",
+            admin_id,
+            match_id,
+            analysis_mode,
+        )
+        return saved_analysis, True, generated
+
+    global_analysis = get_global_miniapp_ai_analysis(match_id, analysis_mode)
+    logger.info(
+        "channel_draft global cache found %s: match_id=%s analysis_mode=%s",
+        bool(global_analysis),
+        match_id,
+        analysis_mode,
+    )
+    if global_analysis:
+        logger.info("channel_draft saved/global AI found true")
+        personal_saved = save_miniapp_ai_analysis(
+            admin_id,
+            match_id,
+            global_analysis.get("analysis") or "",
+            global_analysis.get("structured"),
+            analysis_mode,
+            global_analysis.get("home_team") or "",
+            global_analysis.get("away_team") or "",
+            global_analysis.get("league") or "",
+        )
+        logger.info(
+            "channel_draft personal analysis saved %s: admin_id=%s match_id=%s analysis_mode=%s",
+            personal_saved,
+            admin_id,
+            match_id,
+            analysis_mode,
+        )
+        logger.info(
+            "channel_draft AI source selected global_cache: match_id=%s analysis_mode=%s",
+            match_id,
+            analysis_mode,
+        )
+        return global_analysis, True, generated
+
+    logger.info("channel_draft saved/global AI found false")
+    logger.info(
+        "channel_draft OpenAI generation required true: match_id=%s analysis_mode=%s",
+        match_id,
+        analysis_mode,
+    )
+    match_data = build_miniapp_ai_match_data(match)
+    analysis_result = get_openai_ai_analysis_result(match_data, analysis_mode)
+    analysis = analysis_result.get("analysis") or ""
+    structured = analysis_result.get("structured")
+    if not is_saveable_miniapp_ai_analysis(analysis, structured):
+        logger.info("channel_draft AI generated false")
+        return None, False, generated
+
+    generated = True
+    logger.info("channel_draft AI generated true")
+    global_saved = save_global_miniapp_ai_analysis(
+        match_id,
+        analysis,
+        structured,
+        analysis_mode,
+        match.get("home") or "",
+        match.get("away") or "",
+        match.get("league") or "",
+    )
+    logger.info(
+        "channel_draft global cache saved %s: match_id=%s analysis_mode=%s",
+        global_saved,
+        match_id,
+        analysis_mode,
+    )
+    personal_saved = save_miniapp_ai_analysis(
+        admin_id,
+        match_id,
+        analysis,
+        structured,
+        analysis_mode,
+        match.get("home") or "",
+        match.get("away") or "",
+        match.get("league") or "",
+    )
+    logger.info(
+        "channel_draft personal analysis saved %s: admin_id=%s match_id=%s analysis_mode=%s",
+        personal_saved,
+        admin_id,
+        match_id,
+        analysis_mode,
+    )
+    logger.info(
+        "channel_draft AI source selected openai_generated: match_id=%s analysis_mode=%s",
+        match_id,
+        analysis_mode,
+    )
+    return {
+        "analysis": analysis,
+        "structured": structured,
+        "analysis_mode": analysis_mode,
+        "home_team": match.get("home") or "",
+        "away_team": match.get("away") or "",
+        "league": match.get("league") or "",
+    }, False, generated
+
+
+def is_private_chat(update: Update) -> bool:
+    return bool(update.effective_chat and update.effective_chat.type == "private")
 
 
 def claim_payment_request_for_activation(
@@ -10663,6 +11214,259 @@ async def admin_payment_confirm_callback(
         )
 
 
+async def channel_plan_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    logger.info(
+        "channel_plan requested: user_id=%s",
+        update.effective_user.id if update.effective_user else None,
+    )
+    if not is_private_chat(update):
+        if update.message:
+            await update.message.reply_text(
+                "AI-агент канала работает только в личке с ботом."
+            )
+        return
+
+    if not update.effective_user or not is_admin_user(update.effective_user.id):
+        logger.info(
+            "channel_plan denied non-admin: user_id=%s",
+            update.effective_user.id if update.effective_user else None,
+        )
+        if update.message:
+            await update.message.reply_text(
+                "Команда доступна только администратору."
+            )
+        return
+
+    if not update.message:
+        return
+
+    await update.message.reply_text("Подбираю кандидатов на матч дня…")
+    candidates = await asyncio.to_thread(get_channel_plan_candidates)
+    logger.info("channel_plan candidates found: count=%s", len(candidates))
+    if not candidates:
+        await update.message.reply_text(
+            "Не нашёл подходящие ближайшие матчи. Попробуйте позже."
+        )
+        return
+
+    store_channel_candidates(context, candidates)
+    await update.message.reply_text(
+        build_channel_plan_message(candidates),
+        reply_markup=build_channel_plan_keyboard(candidates),
+    )
+
+
+async def show_channel_plan_again(
+    query,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    candidates = await asyncio.to_thread(get_channel_plan_candidates)
+    logger.info("channel_plan candidates found: count=%s", len(candidates))
+    if not candidates:
+        await query.message.reply_text(
+            "Не нашёл подходящие ближайшие матчи. Попробуйте позже."
+        )
+        return
+
+    store_channel_candidates(context, candidates)
+    await query.message.reply_text(
+        build_channel_plan_message(candidates),
+        reply_markup=build_channel_plan_keyboard(candidates),
+    )
+
+
+async def channel_pick_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "AI-агент канала работает только в личке с ботом."
+        )
+        return
+
+    if admin_id is None or not is_admin_user(admin_id):
+        logger.info("channel_plan denied non-admin: user_id=%s", admin_id)
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    callback_data = query.data or ""
+    match_id = callback_data.split(":", 1)[1].strip() if ":" in callback_data else ""
+    logger.info(
+        "channel_plan candidate selected: user_id=%s match_id=%s",
+        admin_id,
+        match_id,
+    )
+    match = await asyncio.to_thread(get_stored_channel_match, context, match_id)
+    if not match:
+        await query.message.reply_text(
+            "Матч не найден или уже недоступен. Запустите /channel_plan ещё раз."
+        )
+        return
+
+    home = match.get("home") or "Команда 1"
+    away = match.get("away") or "Команда 2"
+    await query.message.reply_text(
+        f"Готовлю черновик поста для канала по матчу {home} — {away}…"
+    )
+    logger.info(
+        "channel_draft started: user_id=%s match_id=%s",
+        admin_id,
+        match_id,
+    )
+
+    try:
+        analysis_result, _, _ = await asyncio.to_thread(
+            get_or_create_channel_match_ai_analysis,
+            admin_id,
+            match,
+        )
+    except Exception:
+        logger.exception(
+            "channel_draft failed: user_id=%s match_id=%s",
+            admin_id,
+            match_id,
+        )
+        await query.message.reply_text(
+            "Не удалось подготовить AI-черновик. Попробуйте позже."
+        )
+        return
+
+    if not analysis_result:
+        await query.message.reply_text(
+            "AI-разбор временно недоступен, черновик не готов."
+        )
+        return
+
+    draft = build_channel_post_draft(match, analysis_result)
+    logger.info("channel_draft generated: match_id=%s", match_id)
+    draft = sanitize_channel_post_text(draft)
+    logger.info(
+        "channel_draft sanitized: match_id=%s forbidden_left=%s",
+        match_id,
+        channel_text_has_forbidden_words(draft),
+    )
+    if channel_text_has_forbidden_words(draft):
+        await query.message.reply_text(
+            "Черновик содержит запрещённые слова после фильтра. "
+            "Нужна ручная проверка."
+        )
+        return
+
+    drafts = context.bot_data.setdefault("channel_plan_drafts", {})
+    drafts[match_id] = {
+        "draft": draft,
+        "match": match,
+        "created_at": datetime.now(timezone.utc).timestamp(),
+    }
+    await query.message.reply_text(
+        draft,
+        reply_markup=get_channel_draft_keyboard(match_id),
+    )
+
+
+async def channel_publish_stub_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "AI-агент канала работает только в личке с ботом."
+        )
+        return
+
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    logger.info("channel_publish_stub clicked: user_id=%s", admin_id)
+    await query.message.reply_text(
+        "Публикацию в канал подключим следующим этапом."
+    )
+
+
+async def channel_shorten_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "AI-агент канала работает только в личке с ботом."
+        )
+        return
+
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    callback_data = query.data or ""
+    match_id = callback_data.split(":", 1)[1].strip() if ":" in callback_data else ""
+    logger.info(
+        "channel_draft_shorten clicked: user_id=%s match_id=%s",
+        admin_id,
+        match_id,
+    )
+    cleanup_channel_bot_data(context)
+    draft_item = (context.bot_data.get("channel_plan_drafts") or {}).get(match_id)
+    if not draft_item:
+        await query.message.reply_text(
+            "Черновик не найден. Выберите матч заново через /channel_plan."
+        )
+        return
+
+    shortened = shorten_channel_post_draft(draft_item.get("draft") or "")
+    draft_item["draft"] = shortened
+    draft_item["created_at"] = datetime.now(timezone.utc).timestamp()
+    await query.message.reply_text(
+        shortened,
+        reply_markup=get_channel_draft_keyboard(match_id),
+    )
+
+
+async def channel_plan_again_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "AI-агент канала работает только в личке с ботом."
+        )
+        return
+
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    await show_channel_plan_again(query, context)
+
+
 @miniapp_api.get("/api/health")
 def miniapp_health():
     return jsonify(
@@ -12076,6 +12880,31 @@ def main() -> None:
     application.add_handler(CommandHandler("revoke_premium", revoke_premium_command))
     application.add_handler(CommandHandler("add_ai_limit", add_ai_limit_command))
     application.add_handler(CommandHandler("subscription", subscription_command))
+    application.add_handler(CommandHandler("channel_plan", channel_plan_command))
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_pick_callback,
+            pattern=r"^channel_pick:.+$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_publish_stub_callback,
+            pattern=r"^channel_publish_stub$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_shorten_callback,
+            pattern=r"^channel_shorten:.+$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_plan_again_callback,
+            pattern=r"^channel_plan_again$",
+        )
+    )
     application.add_handler(
         CallbackQueryHandler(
             admin_payment_confirm_callback,
