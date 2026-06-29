@@ -339,8 +339,30 @@ def get_database_url() -> str | None:
     return os.getenv("DATABASE_URL")
 
 
+def get_database_url_fingerprint(database_url: str | None = None) -> str:
+    database_url = database_url or get_database_url()
+    if not database_url:
+        return ""
+
+    try:
+        parsed_url = urlsplit(database_url)
+        host = parsed_url.hostname or "unknown-host"
+        port = f":{parsed_url.port}" if parsed_url.port else ""
+        database_name = parsed_url.path.lstrip("/") or "unknown-db"
+        url_hash = hashlib.sha256(database_url.encode("utf-8")).hexdigest()[:12]
+        return f"{host}{port}/{database_name}#{url_hash}"
+    except Exception:
+        url_hash = hashlib.sha256(str(database_url).encode("utf-8")).hexdigest()[:12]
+        return f"unparsed#{url_hash}"
+
+
 def init_db() -> None:
     database_url = get_database_url()
+    logger.info(
+        "database_url_present %s database_url_fingerprint=%s",
+        bool(database_url),
+        get_database_url_fingerprint(database_url),
+    )
     if not database_url:
         logger.warning(
             "DATABASE_URL is not configured; user settings will be in-memory only"
@@ -610,6 +632,12 @@ def init_db() -> None:
 
 def ensure_miniapp_ai_global_cache_table() -> bool:
     database_url = get_database_url()
+    logger.info(
+        "database_url_present %s database_url_fingerprint=%s "
+        "source=ensure_miniapp_ai_global_cache_table",
+        bool(database_url),
+        get_database_url_fingerprint(database_url),
+    )
     if not database_url:
         return False
 
@@ -1776,6 +1804,42 @@ def get_saved_miniapp_ai_analysis(
             connection.close()
 
 
+def verify_miniapp_ai_personal_save(
+    telegram_user_id: int,
+    match_id: str,
+    analysis_mode: str,
+) -> bool:
+    normalized_match_id = normalize_ai_analysis_match_id(match_id)
+    try:
+        found = bool(
+            get_saved_miniapp_ai_analysis(
+                telegram_user_id,
+                normalized_match_id,
+                analysis_mode,
+            )
+        )
+    except Exception:
+        logger.warning(
+            "personal save verify failed: user_id=%s normalized_match_id=%s "
+            "analysis_mode=%s",
+            telegram_user_id,
+            normalized_match_id,
+            analysis_mode,
+            exc_info=True,
+        )
+        return False
+
+    logger.info(
+        "personal save verify: user_id=%s normalized_match_id=%s "
+        "analysis_mode=%s found=%s",
+        telegram_user_id,
+        normalized_match_id,
+        analysis_mode,
+        found,
+    )
+    return found
+
+
 def lookup_saved_miniapp_ai_analysis(
     telegram_user_id: int,
     raw_match_id: str,
@@ -1788,12 +1852,30 @@ def lookup_saved_miniapp_ai_analysis(
         analysis_mode,
     )
     if saved_analysis or raw_match_id == normalized_match_id:
+        logger.info(
+            "personal AI lookup: user_id=%s raw_match_id=%s "
+            "normalized_match_id=%s analysis_mode=%s found=%s",
+            telegram_user_id,
+            raw_match_id,
+            normalized_match_id,
+            analysis_mode,
+            bool(saved_analysis),
+        )
         return saved_analysis, normalized_match_id
 
     saved_analysis = get_saved_miniapp_ai_analysis(
         telegram_user_id,
         raw_match_id,
         analysis_mode,
+    )
+    logger.info(
+        "personal AI fallback lookup: user_id=%s raw_match_id=%s "
+        "normalized_match_id=%s analysis_mode=%s found=%s",
+        telegram_user_id,
+        raw_match_id,
+        normalized_match_id,
+        analysis_mode,
+        bool(saved_analysis),
     )
     return saved_analysis, normalized_match_id
 
@@ -1871,6 +1953,13 @@ def save_global_miniapp_ai_analysis(
     if not normalized_match_id:
         logger.warning("Skipped global Mini App AI save with empty match_id")
         return False
+    logger.info(
+        "global AI save started: raw_match_id=%s normalized_match_id=%s "
+        "analysis_mode=%s",
+        match_id,
+        normalized_match_id,
+        analysis_mode,
+    )
 
     for attempt in range(2):
         connection = None
@@ -1937,6 +2026,18 @@ def save_global_miniapp_ai_analysis(
             if connection is not None:
                 connection.close()
     return False
+
+
+def verify_miniapp_ai_global_save(match_id: str, analysis_mode: str) -> bool:
+    normalized_match_id = normalize_ai_analysis_match_id(match_id)
+    found = bool(get_global_miniapp_ai_analysis(normalized_match_id, analysis_mode))
+    logger.info(
+        "global save verify: normalized_match_id=%s analysis_mode=%s found=%s",
+        normalized_match_id,
+        analysis_mode,
+        found,
+    )
+    return found
 
 
 def get_ai_free_refreshes_left(
@@ -2025,6 +2126,15 @@ def save_miniapp_ai_analysis(
             telegram_user_id,
         )
         return False
+    logger.info(
+        "personal AI save started: user_id=%s raw_match_id=%s "
+        "normalized_match_id=%s analysis_mode=%s increment_refresh_count=%s",
+        telegram_user_id,
+        match_id,
+        normalized_match_id,
+        analysis_mode,
+        increment_refresh_count,
+    )
 
     connection = None
     try:
@@ -2499,12 +2609,15 @@ def get_or_create_channel_match_ai_analysis(
     admin_id: int,
     match: dict,
 ) -> tuple[dict | None, bool, bool]:
-    match_id = normalize_ai_analysis_match_id(match.get("id"))
+    raw_match_id = str(match.get("id") or "").strip()
+    match_id = normalize_ai_analysis_match_id(raw_match_id)
     analysis_mode = "premium"
     generated = False
     logger.info(
-        "channel_draft AI source lookup started: admin_id=%s match_id=%s analysis_mode=%s",
+        "channel_draft AI source lookup started: admin_id=%s raw_match_id=%s "
+        "normalized_match_id=%s analysis_mode=%s source=channel_agent",
         admin_id,
+        raw_match_id,
         match_id,
         analysis_mode,
     )
@@ -2518,21 +2631,28 @@ def get_or_create_channel_match_ai_analysis(
         )
     except Exception:
         logger.warning(
-            "channel_draft personal AI lookup failed: match_id=%s",
+            "channel_draft personal AI lookup failed: raw_match_id=%s "
+            "normalized_match_id=%s analysis_mode=%s",
+            raw_match_id,
             match_id,
+            analysis_mode,
             exc_info=True,
         )
     logger.info(
-        "channel_draft personal saved found %s: admin_id=%s match_id=%s analysis_mode=%s",
+        "channel_draft personal saved found %s: admin_id=%s raw_match_id=%s "
+        "normalized_match_id=%s saved_match_id=%s analysis_mode=%s",
         bool(saved_analysis),
         admin_id,
+        raw_match_id,
+        match_id,
         match_id,
         analysis_mode,
     )
     if saved_analysis:
         logger.info("channel_draft saved/global AI found true")
         logger.info(
-            "channel_draft AI source selected personal_cache: admin_id=%s match_id=%s analysis_mode=%s",
+            "channel_draft AI source selected personal_cache: admin_id=%s "
+            "saved_match_id=%s analysis_mode=%s",
             admin_id,
             match_id,
             analysis_mode,
@@ -2565,6 +2685,7 @@ def get_or_create_channel_match_ai_analysis(
             match_id,
             analysis_mode,
         )
+        verify_miniapp_ai_personal_save(admin_id, match_id, analysis_mode)
         logger.info(
             "channel_draft AI source selected global_cache: match_id=%s analysis_mode=%s",
             match_id,
@@ -2603,6 +2724,7 @@ def get_or_create_channel_match_ai_analysis(
         match_id,
         analysis_mode,
     )
+    verify_miniapp_ai_global_save(match_id, analysis_mode)
     personal_saved = save_miniapp_ai_analysis(
         admin_id,
         match_id,
@@ -2620,6 +2742,7 @@ def get_or_create_channel_match_ai_analysis(
         match_id,
         analysis_mode,
     )
+    verify_miniapp_ai_personal_save(admin_id, match_id, analysis_mode)
     logger.info(
         "channel_draft AI source selected openai_generated: match_id=%s analysis_mode=%s",
         match_id,
@@ -12145,7 +12268,7 @@ def miniapp_match_ai_analysis(match_id: str):
     if flask_request.method == "GET":
         logger.info(
             "AI saved lookup started: user_id=%s raw_match_id=%s "
-            "normalized_match_id=%s analysis_mode=%s",
+            "normalized_match_id=%s analysis_mode=%s source=miniapp_get",
             telegram_user_id,
             raw_match_id,
             normalized_match_id,
@@ -12179,14 +12302,28 @@ def miniapp_match_ai_analysis(match_id: str):
 
         logger.info(
             "AI saved lookup completed: user_id=%s raw_match_id=%s "
-            "normalized_match_id=%s analysis_mode=%s found=%s",
+            "normalized_match_id=%s saved_match_id=%s analysis_mode=%s "
+            "found=%s source=miniapp_get",
             telegram_user_id,
             raw_match_id,
+            normalized_match_id,
             normalized_match_id,
             analysis_mode,
             bool(saved_analysis),
         )
         if not saved_analysis:
+            global_analysis = get_global_miniapp_ai_analysis(
+                normalized_match_id,
+                analysis_mode,
+            )
+            logger.info(
+                "global AI cache available on GET %s: raw_match_id=%s "
+                "normalized_match_id=%s analysis_mode=%s source=miniapp_get",
+                bool(global_analysis),
+                raw_match_id,
+                normalized_match_id,
+                analysis_mode,
+            )
             return jsonify(
                 {
                     "ok": False,
@@ -12212,10 +12349,12 @@ def miniapp_match_ai_analysis(match_id: str):
     force_refresh = request_data.get("force_refresh") is True
     logger.info(
         "AI generation started: user_id=%s raw_match_id=%s "
-        "normalized_match_id=%s force_refresh=%s",
+        "normalized_match_id=%s analysis_mode=%s force_refresh=%s "
+        "source=miniapp_post",
         telegram_user_id,
         raw_match_id,
         normalized_match_id,
+        analysis_mode,
         force_refresh,
     )
 
@@ -12406,6 +12545,11 @@ def miniapp_match_ai_analysis(match_id: str):
                         ),
                     }
                 ), 503
+            verify_miniapp_ai_personal_save(
+                telegram_user_id,
+                normalized_match_id,
+                analysis_mode,
+            )
 
             limit_charged = False
             if not is_admin:
@@ -12570,25 +12714,19 @@ def miniapp_match_ai_analysis(match_id: str):
             }
         ), 503
 
-    limit_charged = False
-    if not is_admin and not (force_refresh and saved_analysis):
-        available_before = get_ai_available_count(subscription)
-        updated_subscription = increment_ai_usage(telegram_user_id)
-        remaining_ai = get_ai_available_count(updated_subscription)
-        limit_charged = remaining_ai < available_before
-    elif is_admin:
-        remaining_ai = None
-    logger.info(
-        "AI limit charged %s: user_id=%s match_id=%s analysis_mode=%s",
-        limit_charged,
-        telegram_user_id,
-        normalized_match_id,
-        analysis_mode,
-    )
-
     analysis_mode = analysis_result.get("analysis_mode") or "default"
     saved_match_id = normalize_ai_analysis_match_id(
         match.get("id") or normalized_match_id
+    )
+    logger.info(
+        "AI save started after OpenAI: user_id=%s raw_match_id=%s "
+        "normalized_match_id=%s saved_match_id=%s analysis_mode=%s "
+        "source=miniapp_post",
+        telegram_user_id,
+        raw_match_id,
+        normalized_match_id,
+        saved_match_id,
+        analysis_mode,
     )
     analysis_saved = save_miniapp_ai_analysis(
         telegram_user_id,
@@ -12602,6 +12740,11 @@ def miniapp_match_ai_analysis(match_id: str):
         refresh_count=int((saved_analysis or {}).get("refresh_count") or 0),
         increment_refresh_count=bool(force_refresh and saved_analysis and not is_admin),
     )
+    personal_save_verified = verify_miniapp_ai_personal_save(
+        telegram_user_id,
+        saved_match_id,
+        analysis_mode,
+    )
     global_saved = save_global_miniapp_ai_analysis(
         saved_match_id,
         analysis,
@@ -12611,11 +12754,49 @@ def miniapp_match_ai_analysis(match_id: str):
         match.get("away") or "",
         match.get("league") or "",
     )
+    global_save_verified = verify_miniapp_ai_global_save(
+        saved_match_id,
+        analysis_mode,
+    )
     logger.info(
-        "global AI cache saved: match_id=%s analysis_mode=%s saved=%s",
+        "global AI cache saved: match_id=%s analysis_mode=%s saved=%s "
+        "verified=%s",
         saved_match_id,
         analysis_mode,
         global_saved,
+        global_save_verified,
+    )
+    if not analysis_saved:
+        logger.warning(
+            "AI analysis generated but personal save failed before charge: "
+            "user_id=%s saved_match_id=%s analysis_mode=%s verified=%s",
+            telegram_user_id,
+            saved_match_id,
+            analysis_mode,
+            personal_save_verified,
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "error": "saved_analysis_unavailable",
+                "message": "Сохранённый AI-разбор временно недоступен.",
+            }
+        ), 503
+
+    limit_charged = False
+    if not is_admin and not (force_refresh and saved_analysis):
+        available_before = get_ai_available_count(subscription)
+        updated_subscription = increment_ai_usage(telegram_user_id)
+        remaining_ai = get_ai_available_count(updated_subscription)
+        limit_charged = remaining_ai < available_before
+    elif is_admin:
+        remaining_ai = None
+    logger.info(
+        "AI limit charged %s: user_id=%s match_id=%s analysis_mode=%s",
+        limit_charged,
+        telegram_user_id,
+        saved_match_id,
+        analysis_mode,
     )
     if force_refresh and analysis_saved and not is_admin:
         logger.info(
@@ -12632,37 +12813,37 @@ def miniapp_match_ai_analysis(match_id: str):
             global_saved,
         )
     saved_analysis = None
-    if analysis_saved:
-        logger.info(
-            "AI analysis saved: user_id=%s raw_match_id=%s "
-            "normalized_match_id=%s analysis_length=%s structured=%s",
-            telegram_user_id,
-            raw_match_id,
-            saved_match_id,
-            len(analysis),
-            structured is not None,
-        )
-        logger.info(
-            "personal AI saved/linked: user_id=%s match_id=%s "
-            "analysis_mode=%s saved=true",
+    logger.info(
+        "AI analysis saved: user_id=%s raw_match_id=%s "
+        "normalized_match_id=%s analysis_length=%s structured=%s",
+        telegram_user_id,
+        raw_match_id,
+        saved_match_id,
+        len(analysis),
+        structured is not None,
+    )
+    logger.info(
+        "personal AI saved/linked: user_id=%s match_id=%s "
+        "analysis_mode=%s saved=true verified=%s",
+        telegram_user_id,
+        saved_match_id,
+        analysis_mode,
+        personal_save_verified,
+    )
+    try:
+        saved_analysis = get_saved_miniapp_ai_analysis(
             telegram_user_id,
             saved_match_id,
             analysis_mode,
         )
-        try:
-            saved_analysis = get_saved_miniapp_ai_analysis(
-                telegram_user_id,
-                saved_match_id,
-                analysis_mode,
-            )
-        except Exception:
-            logger.warning(
-                "AI analysis saved but timestamp reload failed: "
-                "user_id=%s normalized_match_id=%s",
-                telegram_user_id,
-                saved_match_id,
-                exc_info=True,
-            )
+    except Exception:
+        logger.warning(
+            "AI analysis saved but timestamp reload failed: "
+            "user_id=%s normalized_match_id=%s",
+            telegram_user_id,
+            saved_match_id,
+            exc_info=True,
+        )
 
     return jsonify(
         {
