@@ -2897,6 +2897,19 @@ SAFE_SOCIAL_HASHTAGS = [
     "#спорт",
 ]
 
+SAFE_RECAP_SOCIAL_HASHTAGS = [
+    "#футбол",
+    "#футбольнаяаналитика",
+    "#аналитикафутбола",
+    "#matchlab",
+    "#football",
+    "#footballanalytics",
+    "#soccer",
+    "#socceranalysis",
+    "#итогиматча",
+    "#спорт",
+]
+
 
 TEAM_COLOR_OVERRIDES = {
     "Brazil": ("#0f7a34", "#f6d54a"),
@@ -3122,10 +3135,14 @@ def build_social_caption_for_draft(
     home = format_channel_team_display(match.get("home")) or "Команда 1"
     away = format_channel_team_display(match.get("away")) or "Команда 2"
     score = format_channel_match_score(match)
-    hashtags = " ".join(SAFE_SOCIAL_HASHTAGS[:6])
 
     if content_type == "post_match":
-        title = f"{home} — {away} {score}"
+        title = (
+            f"{home} — {away} {score}"
+            if score != "счёт не указан"
+            else f"{home} — {away}"
+        )
+        hashtags = " ".join(SAFE_RECAP_SOCIAL_HASHTAGS)
         body = (
             "Проверяем AI-оценку MatchLab после матча: что подтвердилось, "
             "какие цифры оказались ключевыми и где игра получилась ближе, "
@@ -3133,6 +3150,7 @@ def build_social_caption_for_draft(
         )
     else:
         title = f"{home} — {away}"
+        hashtags = " ".join(SAFE_SOCIAL_HASHTAGS)
         body = (
             "Матч дня в MatchLab. AI-оценка показывает ключевые вероятности, "
             "статистические сигналы и риски перед игрой."
@@ -3274,6 +3292,168 @@ AI-ВЕРОЯТНОСТИ
 * не добавлять водяные знаки
 * не искажать MATCHLAB
 * не искажать названия команд
+
+Источник смысла:
+{source_text}"""
+
+
+def get_recap_prompt_match_info(match: dict) -> dict:
+    home_raw = match.get("home") or ""
+    away_raw = match.get("away") or ""
+    home = translate_team_name_ru(home_raw) or str(home_raw or "Команда 1")
+    away = translate_team_name_ru(away_raw) or str(away_raw or "Команда 2")
+    score = match.get("score") or {}
+    home_score = score.get("home")
+    away_score = score.get("away")
+    score_available = home_score is not None and away_score is not None
+    score_text = f"{home_score}:{away_score}" if score_available else "счёт не указан"
+    return {
+        "home": home,
+        "away": away,
+        "home_upper": home.upper(),
+        "away_upper": away.upper(),
+        "home_score": home_score,
+        "away_score": away_score,
+        "score_text": score_text,
+        "score_available": score_available,
+    }
+
+
+def build_recap_tg_cover_prompt(match: dict, draft: str | None = None) -> str:
+    info = get_recap_prompt_match_info(match)
+    score_line = f"{info['score_text']}\n" if info["score_available"] else ""
+    score_bullet = f"* счёт: {info['score_text']}" if info["score_available"] else "* счёт: не указывать, если его нет в источнике"
+    return f"""Сделай Telegram-обложку для MatchLab "Итоги матча дня".
+
+Формат:
+
+* горизонтальная картинка 16:9
+* размер 1280x720
+* стиль: премиальная футбольная аналитика, спортивная ТВ-графика, тёмный кинематографичный стадион
+
+Бренд:
+
+* название: MATCHLAB
+* подпись: ФУТБОЛЬНАЯ АНАЛИТИКА
+* основной акцент: лаймово-зелёный
+* стиль: современный спортивный, тёмный, контрастный
+* если я прикрепил референс логотипа MatchLab, используй его стиль
+* не придумывай другое название бренда
+
+Матч:
+
+* {info['home']} — {info['away']}
+{score_bullet}
+
+Текст на обложке:
+MATCHLAB
+ФУТБОЛЬНАЯ АНАЛИТИКА
+ИТОГИ МАТЧА ДНЯ
+{info['home_upper']} — {info['away_upper']}
+{score_line}ПРОВЕРКА AI-РАЗБОРА
+
+Композиция:
+
+* фон: ночной футбольный стадион после матча, прожекторы, дым, атмосфера финального свистка
+* логотип/название MatchLab сверху по центру
+* крупный заголовок "ИТОГИ МАТЧА ДНЯ" по центру
+* ниже названия команд
+* ниже крупный счёт, только если он указан в источнике
+* внизу "ПРОВЕРКА AI-РАЗБОРА"
+* слева визуальная зона первой команды
+* справа визуальная зона второй команды
+* можно использовать цвета/флаги команд как вдохновение, но не использовать официальные эмблемы федераций
+* текст должен быть крупным и читаемым
+
+Важно:
+
+* не добавлять другие слова
+* не добавлять betting/gambling-лексику, betting-сокращения и коммерческие обещания результата
+* не добавлять водяные знаки
+* не добавлять людей
+* не искажать MATCHLAB
+* не искажать названия команд
+* не искажать счёт"""
+
+
+def build_recap_social_cards_prompt(match: dict, draft: str | None = None) -> str:
+    info = get_recap_prompt_match_info(match)
+    source_text = str(draft or "").strip() or "Источник смысла пока не указан."
+    score_line = f"{info['score_text']}\n" if info["score_available"] else ""
+    score_context = (
+        f"Счёт: {info['score_text']}"
+        if info["score_available"]
+        else "Счёт: не указывать, если его нет в источнике"
+    )
+    return f"""Сделай 7 вертикальных карточек для TikTok/Instagram в стиле MatchLab.
+
+Тема:
+Итоги матча дня и проверка AI-разбора после игры.
+
+Формат:
+
+* 1080x1920
+* вертикальные карточки
+* каждая карточка отдельная
+* стиль: тёмный футбольный стадион, лаймово-зелёные акценты, спортивная аналитика, крупная типографика
+* логотип/название MATCHLAB должно быть на каждой карточке одинаковым по стилю
+* если я прикрепил референс MatchLab, используй его как стиль бренда
+
+Матч:
+{info['home']} — {info['away']}
+{score_context}
+
+Карточка 1/7 — Обложка:
+MATCHLAB
+ИТОГИ МАТЧА ДНЯ
+{info['home_upper']} — {info['away_upper']}
+{score_line}ПРОВЕРКА AI-РАЗБОРА
+
+Карточка 2/7 — AI-оценка до матча:
+AI-ОЦЕНКА ДО МАТЧА
+Используй вероятности из источника смысла ниже.
+Если вероятностей нет, не выдумывай проценты и сделай карточку без чисел.
+
+Карточка 3/7 — Что подтвердилось:
+ЧТО ПОДТВЕРДИЛОСЬ
+2–3 пункта, которые совпали с AI-разбором.
+
+Карточка 4/7 — Главные цифры матча:
+ГЛАВНЫЕ ЦИФРЫ
+2–4 статистики из источника смысла:
+
+* владение
+* xG
+* удары
+* удары в створ
+* угловые
+Если статистики нет, не выдумывай числа.
+
+Карточка 5/7 — Что не полностью совпало:
+ЧТО НЕ СОВПАЛО ПОЛНОСТЬЮ
+1–3 осторожных пункта.
+
+Карточка 6/7 — Почему победитель был лучше:
+ПОЧЕМУ ПОБЕДИТЕЛЬ БЫЛ ЛУЧШЕ
+2–3 причины из источника смысла.
+Если победителя нет, замени заголовок на "ПОЧЕМУ ИГРА БЫЛА РАВНОЙ".
+
+Карточка 7/7 — Главный вывод:
+ГЛАВНЫЙ ВЫВОД
+1 короткий вывод.
+Полный AI-разбор: @Match_Stat_bot
+Это аналитика на основе данных, а не обещание результата.
+
+Важно:
+
+* не использовать betting/gambling-лексику, betting-сокращения, коммерческие обещания результата и денежные формулировки
+* не добавлять лишний текст
+* если текст не помещается, сокращать, но не менять смысл
+* не добавлять водяные знаки
+* не искажать MATCHLAB
+* не искажать названия команд
+* не искажать счёт
+* не выдумывать статистику, если её нет в источнике
 
 Источник смысла:
 {source_text}"""
@@ -3645,18 +3825,26 @@ def get_channel_draft_keyboard(
                 [
                     [
                         InlineKeyboardButton(
-                            "🖼 Промпт TG-обложки",
+                            (
+                                "🖼 Промпт TG-обложки итогов"
+                                if content_type == "post_match"
+                                else "🖼 Промпт TG-обложки"
+                            ),
                             callback_data=f"channel_tg_cover_prompt:{match_id}",
                         )
                     ],
                     [
                         InlineKeyboardButton(
-                            "📱 Промпт 7 карточек",
+                            (
+                                "📱 Промпт 7 карточек итогов"
+                                if content_type == "post_match"
+                                else "📱 Промпт 7 карточек"
+                            ),
                             callback_data=f"channel_social_cards_prompt:{match_id}",
                         )
                     ],
                 ]
-                if content_type == "pre_match"
+                if content_type in ("pre_match", "post_match")
                 else []
             ),
             *(
@@ -3675,18 +3863,12 @@ def get_channel_draft_keyboard(
                 [
                     [
                         InlineKeyboardButton(
-                            "Опубликовать в канал",
+                            "📤 Опубликовать в канал",
                             callback_data=f"channel_publish:{match_id}",
                         )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "Сделать короче",
-                            callback_data=f"channel_shorten:{match_id}",
-                        )
-                    ],
+                    ]
                 ]
-                if content_type != "pre_match"
+                if content_type == "post_match"
                 else []
             ),
             [
@@ -13068,27 +13250,40 @@ async def channel_tg_cover_prompt_callback(
     match_id = callback_data.split(":", 1)[1].strip() if ":" in callback_data else ""
     cleanup_channel_bot_data(context)
     draft_item = (context.bot_data.get("channel_plan_drafts") or {}).get(match_id)
-    logger.info("channel_prompt tg_cover requested: match_id=%s", match_id)
+    content_type = (draft_item or {}).get("content_type") or "pre_match"
+    logger.info(
+        "channel_prompt tg_cover requested: match_id=%s content_type=%s",
+        match_id,
+        content_type,
+    )
     if not draft_item:
         await query.message.reply_text(
             "Черновик не найден. Сначала выбери матч через /channel_plan."
         )
         return
-    if (draft_item.get("content_type") or "pre_match") != "pre_match":
-        await query.message.reply_text("Эта кнопка только для Матча дня.")
+    if content_type == "post_match":
+        prompt = build_recap_tg_cover_prompt(
+            draft_item.get("match") or {},
+            draft_item.get("draft") or "",
+        )
+        title = "🖼 Промпт TG-обложки итогов"
+    elif content_type == "pre_match":
+        prompt = build_matchday_tg_cover_prompt(
+            draft_item.get("match") or {},
+            draft_item.get("draft") or "",
+        )
+        title = "🖼 Промпт TG-обложки"
+    else:
+        await query.message.reply_text("Эта кнопка недоступна для этого черновика.")
         return
 
-    prompt = build_matchday_tg_cover_prompt(
-        draft_item.get("match") or {},
-        draft_item.get("draft") or "",
-    )
     logger.info("channel_prompt length=%s", len(prompt))
     try:
         await send_long_admin_message(
             update,
             context,
             prompt,
-            title="🖼 Промпт TG-обложки",
+            title=title,
         )
     except Exception:
         logger.exception("channel_prompt send failed: match_id=%s", match_id)
@@ -13119,27 +13314,40 @@ async def channel_social_cards_prompt_callback(
     match_id = callback_data.split(":", 1)[1].strip() if ":" in callback_data else ""
     cleanup_channel_bot_data(context)
     draft_item = (context.bot_data.get("channel_plan_drafts") or {}).get(match_id)
-    logger.info("channel_prompt social_cards requested: match_id=%s", match_id)
+    content_type = (draft_item or {}).get("content_type") or "pre_match"
+    logger.info(
+        "channel_prompt social_cards requested: match_id=%s content_type=%s",
+        match_id,
+        content_type,
+    )
     if not draft_item:
         await query.message.reply_text(
             "Черновик не найден. Сначала выбери матч через /channel_plan."
         )
         return
-    if (draft_item.get("content_type") or "pre_match") != "pre_match":
-        await query.message.reply_text("Эта кнопка только для Матча дня.")
+    if content_type == "post_match":
+        prompt = build_recap_social_cards_prompt(
+            draft_item.get("match") or {},
+            draft_item.get("draft") or "",
+        )
+        title = "📱 Промпт 7 карточек итогов"
+    elif content_type == "pre_match":
+        prompt = build_matchday_social_cards_prompt(
+            draft_item.get("match") or {},
+            draft_item.get("draft") or "",
+        )
+        title = "📱 Промпт 7 карточек"
+    else:
+        await query.message.reply_text("Эта кнопка недоступна для этого черновика.")
         return
 
-    prompt = build_matchday_social_cards_prompt(
-        draft_item.get("match") or {},
-        draft_item.get("draft") or "",
-    )
     logger.info("channel_prompt length=%s", len(prompt))
     try:
         await send_long_admin_message(
             update,
             context,
             prompt,
-            title="📱 Промпт 7 карточек",
+            title=title,
         )
     except Exception:
         logger.exception("channel_prompt send failed: match_id=%s", match_id)
