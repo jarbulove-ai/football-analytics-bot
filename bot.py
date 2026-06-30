@@ -2822,9 +2822,49 @@ def extract_risk_lines(structured: dict | None, limit: int = 3) -> list[str]:
     return [str(risk).strip() for risk in risks[:limit] if str(risk).strip()]
 
 
-CHANNEL_DRAFT_DISCLAIMER = (
-    "Это футбольная аналитика на основе данных, а не обещание результата."
-)
+CHANNEL_DRAFT_DISCLAIMER = "Это аналитика на основе данных, а не обещание результата."
+CHANNEL_RECAP_DRAFT_MAX_CHARS = 1400
+
+
+TEAM_FLAG_EMOJI_OVERRIDES = {
+    "Brazil": "🇧🇷",
+    "Japan": "🇯🇵",
+    "South Africa": "🇿🇦",
+    "Canada": "🇨🇦",
+    "Germany": "🇩🇪",
+    "France": "🇫🇷",
+    "England": "🏴",
+    "Spain": "🇪🇸",
+    "Portugal": "🇵🇹",
+    "Argentina": "🇦🇷",
+    "Netherlands": "🇳🇱",
+    "Morocco": "🇲🇦",
+    "Mexico": "🇲🇽",
+    "USA": "🇺🇸",
+    "United States": "🇺🇸",
+    "Belgium": "🇧🇪",
+    "Senegal": "🇸🇳",
+    "Croatia": "🇭🇷",
+    "Switzerland": "🇨🇭",
+    "Australia": "🇦🇺",
+    "Egypt": "🇪🇬",
+    "Ghana": "🇬🇭",
+    "Colombia": "🇨🇴",
+}
+
+
+TEAM_FLAG_EMOJI_OVERRIDES_CASEFOLD = {
+    key.casefold(): value for key, value in TEAM_FLAG_EMOJI_OVERRIDES.items()
+}
+
+
+def get_team_flag_emoji(name: str | None) -> str:
+    team_name = re.sub(r"\s+", " ", str(name or "")).strip()
+    if not team_name:
+        return ""
+    if team_name in TEAM_FLAG_EMOJI_OVERRIDES:
+        return TEAM_FLAG_EMOJI_OVERRIDES[team_name]
+    return TEAM_FLAG_EMOJI_OVERRIDES_CASEFOLD.get(team_name.casefold(), "")
 
 
 def get_channel_short_text(text: str, max_chars: int = 140) -> str:
@@ -3034,78 +3074,265 @@ def get_channel_top_probability_key(structured: dict) -> str:
     return max(values.items(), key=lambda item: item[1])[0]
 
 
-def build_channel_recap_post_draft(match: dict, analysis_result: dict) -> str:
+def get_channel_match_actual_stats(match: dict) -> dict:
+    match_id = normalize_ai_analysis_match_id(match.get("id"))
+    if not match_id:
+        return {}
+    logger.info("channel_recap actual stats fetch started: match_id=%s", match_id)
+
+    try:
+        statistics = format_miniapp_match_statistics(
+            get_fixture_statistics(match_id),
+            match.get("home_id"),
+            match.get("away_id"),
+        )
+        if not statistics.get("available"):
+            return {}
+
+        stats_by_type = {
+            item.get("type"): item
+            for item in statistics.get("items") or []
+            if item.get("type")
+        }
+
+        def get_pair(statistic_type: str) -> tuple[str | None, str | None]:
+            item = stats_by_type.get(statistic_type) or {}
+            return item.get("home"), item.get("away")
+
+        actual_stats = {}
+        mapping = {
+            "Ball Possession": ("home_possession", "away_possession"),
+            "Expected Goals": ("home_xg", "away_xg"),
+            "Big Chances": ("home_big_chances", "away_big_chances"),
+            "Total Shots": ("home_shots", "away_shots"),
+            "Shots on Goal": ("home_shots_on_target", "away_shots_on_target"),
+            "Corner Kicks": ("home_corners", "away_corners"),
+        }
+        for statistic_type, (home_key, away_key) in mapping.items():
+            home_value, away_value = get_pair(statistic_type)
+            if home_value is not None and away_value is not None:
+                actual_stats[home_key] = home_value
+                actual_stats[away_key] = away_value
+        return actual_stats
+    except Exception:
+        logger.warning(
+            "channel_recap actual stats load failed: match_id=%s",
+            match_id,
+            exc_info=True,
+        )
+        return {}
+
+
+def get_channel_recap_probability_line(
+    label: str,
+    value,
+) -> str:
+    return f"{label} — {format_channel_probability(value)}"
+
+
+def get_channel_recap_expected_label(
+    expected_result: str,
+    home: str,
+    away: str,
+) -> str:
+    if expected_result == "home_win":
+        return home
+    if expected_result == "away_win":
+        return away
+    if expected_result == "draw":
+        return "ничью / близкий матч"
+    return "несколько сценариев"
+
+
+def get_channel_recap_result_text(
+    actual_result: str,
+    home: str,
+    away: str,
+) -> str:
+    if actual_result == "home_win":
+        return f"победа команды {home}"
+    if actual_result == "away_win":
+        return f"победа команды {away}"
+    if actual_result == "draw":
+        return "ничья"
+    return "итоговый результат"
+
+
+def is_channel_recap_minimal_margin(match: dict) -> bool:
+    score = match.get("score") or {}
+    home_score = score.get("home")
+    away_score = score.get("away")
+    if home_score is None or away_score is None:
+        return False
+    return abs(home_score - away_score) == 1
+
+
+def get_channel_recap_stat_lines(actual_stats: dict) -> list[str]:
+    stat_specs = [
+        ("Владение", "home_possession", "away_possession"),
+        ("xG", "home_xg", "away_xg"),
+        ("Большие моменты", "home_big_chances", "away_big_chances"),
+        ("Удары", "home_shots", "away_shots"),
+        ("В створ", "home_shots_on_target", "away_shots_on_target"),
+        ("Угловые", "home_corners", "away_corners"),
+    ]
+    lines = []
+    for label, home_key, away_key in stat_specs:
+        home_value = actual_stats.get(home_key)
+        away_value = actual_stats.get(away_key)
+        if home_value is None or away_value is None:
+            continue
+        lines.append(f"{label}: {home_value} — {away_value}")
+    return lines[:6]
+
+
+def build_channel_recap_post_draft(
+    match: dict,
+    analysis_result: dict,
+    actual_stats: dict | None = None,
+) -> str:
     structured = analysis_result.get("structured") or {}
     home_raw = match.get("home") or analysis_result.get("home_team") or ""
     away_raw = match.get("away") or analysis_result.get("away_team") or ""
     home = translate_team_name_ru(home_raw) or "Команда 1"
     away = translate_team_name_ru(away_raw) or "Команда 2"
     score = format_channel_match_score(match)
-    summary = get_channel_short_sentences(
-        structured.get("summary") or "",
-        limit=1,
-        max_chars=150,
-    )
-    scenario = get_channel_short_sentences(
-        structured.get("scenario") or structured.get("tactical_notes") or "",
-        limit=1,
-        max_chars=140,
-    )
-    signals = [
-        get_channel_short_text(signal, 105)
-        for signal in extract_signal_lines(structured, limit=2)
+    home_flag = get_team_flag_emoji(home_raw)
+    away_flag = get_team_flag_emoji(away_raw)
+    header_parts = [
+        f"{home_flag} {home}".strip(),
+        "—",
+        away,
+        score,
+        away_flag,
     ]
-    before_points = [item for item in (summary, scenario, *signals[:1]) if item][:2]
-    if not before_points:
-        before_points = ["До матча MatchLab выделял несколько рабочих сценариев."]
-
+    header = " ".join(part for part in header_parts if part).strip()
+    probabilities = structured.get("outcome_probabilities") or {}
+    actual_stats = actual_stats or {}
+    stat_lines = get_channel_recap_stat_lines(actual_stats)
     actual_result = get_channel_actual_result(match)
     expected_result = get_channel_top_probability_key(structured)
-    if actual_result != "unknown" and expected_result == actual_result:
-        confirmed_points = [
-            "Главное направление AI-оценки совпало с итоговым результатом."
-        ]
-        missed_points = ["Для точной оценки нужны расширенные события матча."]
-    elif actual_result != "unknown" and expected_result != "unknown":
-        confirmed_points = [
-            "Часть контекста по темпу и рискам осталась полезной после финального свистка."
-        ]
-        missed_points = [
-            "Итоговый результат разошёлся с главным направлением AI-оценки."
-        ]
-    else:
-        confirmed_points = [
-            "Сохранённый AI-разбор помогает сравнить ожидания с итогом матча."
-        ]
-        missed_points = ["Для точной оценки нужны расширенные события матча."]
-
-    final_note = (
-        "Итог показывает, где предварительная аналитика совпала с матчем, "
-        "а где футбол оставил пространство для риска."
+    expected_label = get_channel_recap_expected_label(expected_result, home, away)
+    actual_text = get_channel_recap_result_text(actual_result, home, away)
+    logger.info(
+        "channel_recap probabilities: home=%s draw=%s away=%s expected=%s",
+        probabilities.get("home_win"),
+        probabilities.get("draw"),
+        probabilities.get("away_win"),
+        expected_result,
     )
+    logger.info(
+        "channel_recap comparison result: actual_result=%s expected_result=%s",
+        actual_result,
+        expected_result,
+    )
+
+    if actual_result == expected_result and actual_result == "draw":
+        post_match_text = (
+            f"После матча сценарий близкой игры подтвердился: команды "
+            f"завершили встречу вничью {score}."
+        )
+    elif actual_result == expected_result and actual_result != "unknown":
+        winner = home if actual_result == "home_win" else away
+        post_match_text = (
+            f"После матча общий сценарий подтвердился: {winner} выиграла "
+            f"{score} и по ключевым цифрам была впереди."
+        )
+    elif actual_result != "unknown" and expected_result != "unknown":
+        post_match_text = (
+            "После матча итоговый результат разошёлся с главным направлением "
+            f"AI-оценки: {actual_text}."
+        )
+    else:
+        post_match_text = (
+            "После матча можно сравнить сохранённую AI-оценку с итогом, "
+            "но расширенных данных пока мало."
+        )
+
+    if actual_result == expected_result == "draw":
+        matched_text = (
+            "AI-оценка заранее показывала близкий матч, и итоговый счёт это подтвердил."
+        )
+    elif actual_result == expected_result and stat_lines:
+        winner = home if actual_result == "home_win" else away
+        matched_text = (
+            f"{winner} контролировала ключевые фазы, создала больше моментов "
+            "и чаще доводила атаки до ударов."
+        )
+    elif actual_result == expected_result:
+        matched_text = "Главное направление AI-оценки совпало с итоговым результатом."
+    else:
+        matched_text = (
+            "Часть контекста до игры помогла увидеть риски и возможный темп матча."
+        )
+
+    if actual_result != expected_result and expected_result != "unknown":
+        caution_title = "⚠️ Что не совпало:"
+        caution_text = (
+            "Итоговый результат разошёлся с главным направлением AI-оценки. "
+            "Футбол оставил пространство для риска."
+        )
+        conclusion = (
+            "Главный вывод: AI-оценка дала полезный контекст, но итоговый "
+            "результат оказался другим."
+        )
+    elif is_channel_recap_minimal_margin(match):
+        caution_title = "⚠️ Что было ближе по табло:"
+        loser = away if actual_result == "home_win" else home
+        caution_text = (
+            f"{loser} сохранила интригу до конца. Поэтому счёт {score} "
+            "выглядит ближе, чем сама картина матча."
+        )
+        winner = home if actual_result == "home_win" else away
+        conclusion = (
+            f"Главный вывод: AI-оценка верно уловила перевес {winner}, "
+            "но итоговый счёт получился напряжённее, чем статистика."
+        )
+    else:
+        caution_title = "⚠️ Что не совпало:"
+        caution_text = "Для точной оценки нужны расширенные события матча."
+        conclusion = (
+            "Главный вывод: AI-оценка верно уловила направление матча, "
+            "но для глубокой проверки нужны расширенные данные."
+        )
+
     lines = [
-        "✅ Итоги матча дня",
-        f"{home} {score} {away}",
+        header,
+        "Итоги матча дня от MatchLab",
         "",
-        "Что видел MatchLab до матча:",
+        f"До игры AI-оценка выделяла {expected_label}:",
+        "",
+        get_channel_recap_probability_line(home, probabilities.get("home_win")),
+        get_channel_recap_probability_line("Ничья", probabilities.get("draw")),
+        get_channel_recap_probability_line(away, probabilities.get("away_win")),
+        "",
+        post_match_text,
     ]
-    lines.extend(f"• {point}" for point in before_points)
-    lines.extend(["", "Что подтвердилось:"])
-    lines.extend(f"• {point}" for point in confirmed_points[:2])
-    lines.extend(["", "Что не совпало:"])
-    lines.extend(f"• {point}" for point in missed_points[:1])
+    lines.extend(["", "📊 Главные цифры:"])
+    if stat_lines:
+        lines.extend(["", *stat_lines])
+    else:
+        lines.append("Расширенная статистика по матчу ограничена.")
     lines.extend(
         [
             "",
-            "Итог MatchLab:",
-            get_channel_short_text(final_note, 150),
+            "✅ Что совпало:",
+            matched_text,
+            "",
+            caution_title,
+            caution_text,
+            "",
+            conclusion,
             "",
             "Полный AI-разбор: @Match_Stat_bot",
             "",
             CHANNEL_DRAFT_DISCLAIMER,
         ]
     )
-    draft = limit_channel_text_preserving_disclaimer("\n".join(lines), 900)
+    draft = limit_channel_text_preserving_disclaimer(
+        "\n".join(lines),
+        CHANNEL_RECAP_DRAFT_MAX_CHARS,
+    )
     logger.info(
         "channel_recap_draft length chars=%s forbidden_left=%s",
         len(draft),
@@ -12131,7 +12358,18 @@ async def channel_recap_pick_callback(
         )
         return
 
-    draft = build_channel_recap_post_draft(match, analysis_result)
+    actual_stats = await asyncio.to_thread(get_channel_match_actual_stats, match)
+    logger.info(
+        "channel_recap actual stats available %s: match_id=%s keys=%s",
+        bool(actual_stats),
+        match_id,
+        sorted(actual_stats.keys()),
+    )
+    draft = build_channel_recap_post_draft(
+        match,
+        analysis_result,
+        actual_stats,
+    )
     logger.info("channel_recap draft generated: match_id=%s", match_id)
     draft = sanitize_channel_post_text(draft)
     if channel_text_has_forbidden_words(draft):
