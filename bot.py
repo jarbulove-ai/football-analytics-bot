@@ -3304,6 +3304,18 @@ def get_channel_draft_keyboard(
                     callback_data=f"channel_publish:{match_id}",
                 )
             ],
+            *(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "Опубликовать с обложкой",
+                            callback_data=f"channel_publish_cover:{match_id}",
+                        )
+                    ]
+                ]
+                if content_type == "pre_match"
+                else []
+            ),
             [
                 InlineKeyboardButton(
                     "Сделать короче",
@@ -12794,6 +12806,145 @@ async def channel_publish_callback(
     await query.message.reply_text("Пост опубликован в канал.")
 
 
+async def channel_publish_cover_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "AI-агент канала работает только в личке с ботом."
+        )
+        return
+
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    callback_data = query.data or ""
+    match_id = callback_data.split(":", 1)[1].strip() if ":" in callback_data else ""
+    cleanup_channel_bot_data(context)
+    draft_item = (context.bot_data.get("channel_plan_drafts") or {}).get(match_id)
+    content_type = (draft_item or {}).get("content_type") or "pre_match"
+    logger.info(
+        "channel_publish_cover requested: user_id=%s match_id=%s "
+        "content_type=%s",
+        admin_id,
+        match_id,
+        content_type,
+    )
+
+    channel_configured = bool(MATCHLAB_CHANNEL_ID)
+    logger.info(
+        "channel_publish_cover channel_configured %s: match_id=%s",
+        channel_configured,
+        match_id,
+    )
+    if not channel_configured:
+        await query.message.reply_text(
+            "Канал не настроен: добавьте MATCHLAB_CHANNEL_ID в Environment."
+        )
+        return
+
+    if not draft_item:
+        await query.message.reply_text(
+            "Черновик не найден. Выберите матч заново через /channel_plan."
+        )
+        return
+
+    if content_type != "pre_match":
+        await query.message.reply_text(
+            "Публикация с обложкой пока доступна только для Матча дня."
+        )
+        return
+
+    if draft_item.get("cover_published_at"):
+        logger.info(
+            "channel_publish_cover skipped already_published: match_id=%s",
+            match_id,
+        )
+        await query.message.reply_text(
+            "Этот черновик уже опубликован с обложкой."
+        )
+        return
+
+    draft = draft_item.get("draft") or ""
+    draft_to_publish = (
+        limit_channel_text_preserving_disclaimer(draft, 950)
+        if len(draft) > 950
+        else draft
+    )
+    draft_to_publish = sanitize_channel_post_text(draft_to_publish)
+    logger.info(
+        "channel_publish_cover caption_length chars=%s",
+        len(draft_to_publish),
+    )
+    forbidden_left = channel_text_has_forbidden_words(draft_to_publish)
+    logger.info(
+        "channel_publish_cover forbidden_left %s: match_id=%s",
+        forbidden_left,
+        match_id,
+    )
+    if forbidden_left:
+        await query.message.reply_text(
+            "Пост содержит запрещённые слова. Нужна ручная проверка."
+        )
+        return
+
+    cover_path = ""
+    try:
+        cover_path = await asyncio.to_thread(
+            generate_channel_matchday_cover,
+            draft_item.get("match") or {},
+        )
+    except Exception:
+        logger.exception("channel_publish_cover cover generation failed: match_id=%s", match_id)
+        await query.message.reply_text(
+            "Не удалось подготовить обложку. Попробуйте позже."
+        )
+        return
+
+    logger.info("channel_publish_cover generated cover: path=%s", cover_path)
+    try:
+        with open(cover_path, "rb") as cover_file:
+            sent_message = await context.bot.send_photo(
+                chat_id=MATCHLAB_CHANNEL_ID,
+                photo=cover_file,
+                caption=draft_to_publish,
+            )
+    except Exception:
+        logger.exception("channel_publish_cover failed: match_id=%s", match_id)
+        await query.message.reply_text(
+            "Не удалось опубликовать пост с обложкой. Проверьте, что бот "
+            "добавлен админом канала и MATCHLAB_CHANNEL_ID указан правильно."
+        )
+        return
+    finally:
+        if cover_path:
+            try:
+                Path(cover_path).unlink(missing_ok=True)
+            except Exception:
+                logger.debug(
+                    "channel_publish_cover temp cleanup failed: path=%s",
+                    cover_path,
+                    exc_info=True,
+                )
+
+    draft_item["cover_published_at"] = datetime.now(timezone.utc).isoformat()
+    draft_item["cover_published_message_id"] = sent_message.message_id
+    logger.info(
+        "channel_publish_cover success: match_id=%s message_id=%s",
+        match_id,
+        sent_message.message_id,
+    )
+    await query.message.reply_text("Пост с обложкой опубликован в канал.")
+
+
 async def channel_shorten_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -14502,6 +14653,12 @@ def main() -> None:
         CallbackQueryHandler(
             channel_publish_callback,
             pattern=r"^channel_publish:.+$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_publish_cover_callback,
+            pattern=r"^channel_publish_cover:.+$",
         )
     )
     application.add_handler(
