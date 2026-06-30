@@ -2824,6 +2824,18 @@ def extract_risk_lines(structured: dict | None, limit: int = 3) -> list[str]:
 
 CHANNEL_DRAFT_DISCLAIMER = "Это аналитика на основе данных, а не обещание результата."
 CHANNEL_RECAP_DRAFT_MAX_CHARS = 1400
+SAFE_SOCIAL_HASHTAGS = [
+    "#футбол",
+    "#футбольнаяаналитика",
+    "#аналитикафутбола",
+    "#matchlab",
+    "#football",
+    "#footballanalytics",
+    "#soccer",
+    "#socceranalysis",
+    "#матчдня",
+    "#спорт",
+]
 
 
 TEAM_FLAG_EMOJI_OVERRIDES = {
@@ -3021,6 +3033,44 @@ def shorten_channel_post_draft(text: str) -> str:
     return shortened_text
 
 
+def build_social_caption_for_draft(
+    match: dict,
+    content_type: str,
+    draft: str,
+) -> str:
+    home = format_channel_team_display(match.get("home")) or "Команда 1"
+    away = format_channel_team_display(match.get("away")) or "Команда 2"
+    score = format_channel_match_score(match)
+    hashtags = " ".join(SAFE_SOCIAL_HASHTAGS[:6])
+
+    if content_type == "post_match":
+        title = f"{home} — {away} {score}"
+        body = (
+            "Проверяем AI-оценку MatchLab после матча: что подтвердилось, "
+            "какие цифры оказались ключевыми и где игра получилась ближе, "
+            "чем ожидалось."
+        )
+    else:
+        title = f"{home} — {away}"
+        body = (
+            "Матч дня в MatchLab. AI-оценка показывает ключевые вероятности, "
+            "статистические сигналы и риски перед игрой."
+        )
+
+    caption = "\n\n".join(
+        [
+            title,
+            body,
+            "Полный AI-разбор — в Telegram: @Match_Stat_bot",
+            CHANNEL_DRAFT_DISCLAIMER,
+            hashtags,
+        ]
+    )
+    caption = limit_channel_text_preserving_disclaimer(caption, 900)
+    caption = sanitize_channel_post_text(caption)
+    return caption
+
+
 def get_channel_draft_keyboard(
     match_id: str,
     content_type: str = "pre_match",
@@ -3042,6 +3092,12 @@ def get_channel_draft_keyboard(
                 InlineKeyboardButton(
                     "Сделать короче",
                     callback_data=f"channel_shorten:{match_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "Описание TikTok/Instagram",
+                    callback_data=f"channel_social_caption:{match_id}",
                 )
             ],
             [
@@ -12557,6 +12613,63 @@ async def channel_shorten_callback(
     )
 
 
+async def channel_social_caption_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "AI-агент канала работает только в личке с ботом."
+        )
+        return
+
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    callback_data = query.data or ""
+    match_id = callback_data.split(":", 1)[1].strip() if ":" in callback_data else ""
+    cleanup_channel_bot_data(context)
+    draft_item = (context.bot_data.get("channel_plan_drafts") or {}).get(match_id)
+    content_type = (draft_item or {}).get("content_type") or "pre_match"
+    logger.info(
+        "channel_social_caption requested: user_id=%s match_id=%s "
+        "content_type=%s",
+        admin_id,
+        match_id,
+        content_type,
+    )
+
+    if not draft_item:
+        await query.message.reply_text("Черновик не найден. Выберите матч заново.")
+        return
+
+    caption = build_social_caption_for_draft(
+        draft_item.get("match") or {},
+        content_type,
+        draft_item.get("draft") or "",
+    )
+    forbidden_left = channel_text_has_forbidden_words(caption)
+    logger.info(
+        "channel_social_caption length chars=%s forbidden_left=%s",
+        len(caption),
+        forbidden_left,
+    )
+    if forbidden_left:
+        await query.message.reply_text(
+            "Описание содержит запрещённые слова. Нужна ручная проверка."
+        )
+        return
+
+    await query.message.reply_text(caption)
+
+
 async def channel_plan_again_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -14098,6 +14211,12 @@ def main() -> None:
         CallbackQueryHandler(
             channel_shorten_callback,
             pattern=r"^channel_shorten:.+$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_social_caption_callback,
+            pattern=r"^channel_social_caption:.+$",
         )
     )
     application.add_handler(
