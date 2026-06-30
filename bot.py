@@ -3635,42 +3635,6 @@ def get_channel_draft_keyboard(
     )
     return InlineKeyboardMarkup(
         [
-            *(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "📝 Пост для Telegram",
-                            callback_data=f"channel_show_post:{match_id}",
-                        )
-                    ]
-                ]
-                if content_type == "pre_match"
-                else []
-            ),
-            [
-                InlineKeyboardButton(
-                    "📤 Опубликовать в канал",
-                    callback_data=f"channel_publish:{match_id}",
-                )
-            ],
-            *(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "Опубликовать с обложкой",
-                            callback_data=f"channel_publish_cover:{match_id}",
-                        )
-                    ]
-                ]
-                if content_type == "pre_match"
-                else []
-            ),
-            [
-                InlineKeyboardButton(
-                    "Сделать короче",
-                    callback_data=f"channel_shorten:{match_id}",
-                )
-            ],
             [
                 InlineKeyboardButton(
                     "🎬 Описание TikTok/Instagram",
@@ -3699,12 +3663,30 @@ def get_channel_draft_keyboard(
                 [
                     [
                         InlineKeyboardButton(
-                            "Сделать обложку",
-                            callback_data=f"channel_cover:{match_id}",
+                            "📤 Опубликовать в канал",
+                            callback_data=f"channel_publish:{match_id}",
                         )
                     ]
                 ]
                 if content_type == "pre_match"
+                else []
+            ),
+            *(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "Опубликовать в канал",
+                            callback_data=f"channel_publish:{match_id}",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "Сделать короче",
+                            callback_data=f"channel_shorten:{match_id}",
+                        )
+                    ],
+                ]
+                if content_type != "pre_match"
                 else []
             ),
             [
@@ -15191,12 +15173,6 @@ def main() -> None:
     )
     application.add_handler(
         CallbackQueryHandler(
-            channel_show_post_callback,
-            pattern=r"^channel_show_post:.+$",
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(
             channel_tg_cover_prompt_callback,
             pattern=r"^channel_tg_cover_prompt:.+$",
         )
@@ -15221,12 +15197,6 @@ def main() -> None:
     )
     application.add_handler(
         CallbackQueryHandler(
-            channel_publish_cover_callback,
-            pattern=r"^channel_publish_cover:.+$",
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(
             channel_shorten_callback,
             pattern=r"^channel_shorten:.+$",
         )
@@ -15235,12 +15205,6 @@ def main() -> None:
         CallbackQueryHandler(
             channel_social_caption_callback,
             pattern=r"^channel_social_caption:.+$",
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            channel_cover_callback,
-            pattern=r"^channel_cover:.+$",
         )
     )
     application.add_handler(
