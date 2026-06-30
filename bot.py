@@ -2838,6 +2838,27 @@ SAFE_SOCIAL_HASHTAGS = [
 ]
 
 
+TEAM_COLOR_OVERRIDES = {
+    "Brazil": ("#0f7a34", "#f6d54a"),
+    "Japan": ("#c91f37", "#f8fafc"),
+    "South Africa": ("#0b6b3a", "#f3c623"),
+    "Canada": ("#d71920", "#f8fafc"),
+    "France": ("#1d4ed8", "#dc2626"),
+    "Germany": ("#111827", "#dc2626"),
+    "England": ("#f8fafc", "#dc2626"),
+    "Spain": ("#c60b1e", "#ffc400"),
+    "Portugal": ("#c8102e", "#006b3f"),
+    "Argentina": ("#75aadb", "#f8fafc"),
+    "Netherlands": ("#f97316", "#f8fafc"),
+    "Morocco": ("#c1272d", "#006233"),
+    "Mexico": ("#006847", "#ce1126"),
+}
+
+TEAM_COLOR_OVERRIDES_CASEFOLD = {
+    key.casefold(): value for key, value in TEAM_COLOR_OVERRIDES.items()
+}
+
+
 TEAM_FLAG_EMOJI_OVERRIDES = {
     "Brazil": "🇧🇷",
     "Japan": "🇯🇵",
@@ -3071,6 +3092,201 @@ def build_social_caption_for_draft(
     return caption
 
 
+def get_channel_team_colors(name: str | None) -> tuple[str, str]:
+    team_name = re.sub(r"\s+", " ", str(name or "")).strip()
+    if not team_name:
+        return "#0f3f2f", "#0f2f4f"
+    if team_name in TEAM_COLOR_OVERRIDES:
+        return TEAM_COLOR_OVERRIDES[team_name]
+    return TEAM_COLOR_OVERRIDES_CASEFOLD.get(team_name.casefold(), ("#0f3f2f", "#0f2f4f"))
+
+
+def hex_to_rgb(color: str) -> tuple[int, int, int]:
+    normalized = str(color or "").strip().lstrip("#")
+    if len(normalized) != 6:
+        return (22, 163, 74)
+    return tuple(int(normalized[index : index + 2], 16) for index in (0, 2, 4))
+
+
+def mix_rgb(
+    first: tuple[int, int, int],
+    second: tuple[int, int, int],
+    ratio: float,
+) -> tuple[int, int, int]:
+    bounded_ratio = max(0.0, min(1.0, ratio))
+    return tuple(
+        int(first[index] * (1 - bounded_ratio) + second[index] * bounded_ratio)
+        for index in range(3)
+    )
+
+
+def get_channel_cover_font(size: int, bold: bool = False):
+    from PIL import ImageFont
+
+    candidates = (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+    )
+    preferred = candidates if bold else (candidates[1], candidates[0], *candidates[2:])
+    for font_path in preferred:
+        try:
+            return ImageFont.truetype(font_path, size=size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def get_text_size(draw, text: str, font) -> tuple[int, int]:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+
+def fit_channel_cover_font(
+    draw,
+    text: str,
+    max_width: int,
+    start_size: int,
+    min_size: int = 34,
+    bold: bool = True,
+):
+    for size in range(start_size, min_size - 1, -2):
+        font = get_channel_cover_font(size, bold=bold)
+        width, _ = get_text_size(draw, text, font)
+        if width <= max_width:
+            return font
+    return get_channel_cover_font(min_size, bold=bold)
+
+
+def draw_centered_text(
+    draw,
+    xy: tuple[int, int],
+    text: str,
+    font,
+    fill: tuple[int, int, int] | str,
+) -> None:
+    width, height = get_text_size(draw, text, font)
+    draw.text((xy[0] - width / 2, xy[1] - height / 2), text, font=font, fill=fill)
+
+
+def generate_channel_matchday_cover(match: dict) -> str:
+    from PIL import Image, ImageDraw, ImageFilter
+
+    width, height = 1280, 720
+    home_raw = match.get("home") or ""
+    away_raw = match.get("away") or ""
+    home_name = translate_team_name_ru(home_raw) or str(home_raw or "Команда 1")
+    away_name = translate_team_name_ru(away_raw) or str(away_raw or "Команда 2")
+    match_title = f"{home_name} — {away_name}"
+
+    home_primary, home_secondary = get_channel_team_colors(home_raw)
+    away_primary, away_secondary = get_channel_team_colors(away_raw)
+    left_color = hex_to_rgb(home_primary)
+    right_color = hex_to_rgb(away_primary)
+    left_secondary = hex_to_rgb(home_secondary)
+    right_secondary = hex_to_rgb(away_secondary)
+    dark_base = (5, 10, 18)
+    matchlab_accent = (132, 204, 22)
+
+    image = Image.new("RGB", (width, height), dark_base)
+    pixels = image.load()
+    for y in range(height):
+        vertical_ratio = y / max(height - 1, 1)
+        for x in range(width):
+            horizontal_ratio = x / max(width - 1, 1)
+            team_mix = mix_rgb(left_color, right_color, horizontal_ratio)
+            shade = mix_rgb(team_mix, dark_base, 0.55 + vertical_ratio * 0.25)
+            pixels[x, y] = shade
+
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    draw.rectangle((0, 0, width // 2, height), fill=(*left_color, 70))
+    draw.rectangle((width // 2, 0, width, height), fill=(*right_color, 70))
+    draw.polygon(
+        [(0, height), (0, 0), (width * 0.34, 0), (width * 0.18, height)],
+        fill=(*left_secondary, 55),
+    )
+    draw.polygon(
+        [(width, 0), (width, height), (width * 0.66, height), (width * 0.82, 0)],
+        fill=(*right_secondary, 55),
+    )
+    draw.rounded_rectangle((70, 62, 1210, 658), radius=42, fill=(3, 7, 18, 132))
+    draw.rounded_rectangle(
+        (90, 82, 1190, 638),
+        radius=34,
+        outline=(255, 255, 255, 42),
+        width=2,
+    )
+    draw.line((width // 2, 120, width // 2, 600), fill=(255, 255, 255, 34), width=3)
+    draw.ellipse(
+        (width // 2 - 105, height // 2 - 105, width // 2 + 105, height // 2 + 105),
+        outline=(255, 255, 255, 36),
+        width=3,
+    )
+    draw.ellipse(
+        (width // 2 - 11, height // 2 - 11, width // 2 + 11, height // 2 + 11),
+        fill=(*matchlab_accent, 190),
+    )
+    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=0.2))
+    image = Image.alpha_composite(image.convert("RGBA"), overlay)
+    draw = ImageDraw.Draw(image)
+
+    brand_font = get_channel_cover_font(38, bold=True)
+    label_font = get_channel_cover_font(58, bold=True)
+    subtitle_font = get_channel_cover_font(40, bold=False)
+    handle_font = get_channel_cover_font(34, bold=True)
+    title_font = fit_channel_cover_font(draw, match_title, 1040, 78, 42, bold=True)
+
+    draw.text((118, 108), "MatchLab", font=brand_font, fill=(236, 253, 245))
+    brand_width, _ = get_text_size(draw, "MatchLab", brand_font)
+    draw.rounded_rectangle(
+        (118 + brand_width + 20, 111, 118 + brand_width + 92, 146),
+        radius=16,
+        fill=(*matchlab_accent, 220),
+    )
+    draw.text(
+        (118 + brand_width + 38, 113),
+        "AI",
+        font=get_channel_cover_font(24, bold=True),
+        fill=(5, 10, 18),
+    )
+    draw_centered_text(draw, (width // 2, 230), "МАТЧ ДНЯ", label_font, (190, 242, 100))
+    draw_centered_text(draw, (width // 2, 352), match_title, title_font, (248, 250, 252))
+    draw_centered_text(
+        draw,
+        (width // 2, 454),
+        "AI-разбор до матча",
+        subtitle_font,
+        (203, 213, 225),
+    )
+    draw.rounded_rectangle(
+        (width // 2 - 190, 545, width // 2 + 190, 600),
+        radius=22,
+        fill=(15, 23, 42, 210),
+        outline=(*matchlab_accent, 190),
+        width=2,
+    )
+    draw_centered_text(
+        draw,
+        (width // 2, 572),
+        "@Match_Stat_bot",
+        handle_font,
+        (236, 253, 245),
+    )
+
+    cover_file = tempfile.NamedTemporaryFile(
+        prefix="matchlab_matchday_",
+        suffix=".png",
+        delete=False,
+    )
+    cover_path = cover_file.name
+    cover_file.close()
+    image.convert("RGB").save(cover_path, "PNG", optimize=True)
+    return cover_path
+
+
 def get_channel_draft_keyboard(
     match_id: str,
     content_type: str = "pre_match",
@@ -3100,6 +3316,18 @@ def get_channel_draft_keyboard(
                     callback_data=f"channel_social_caption:{match_id}",
                 )
             ],
+            *(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "Сделать обложку",
+                            callback_data=f"channel_cover:{match_id}",
+                        )
+                    ]
+                ]
+                if content_type == "pre_match"
+                else []
+            ),
             [
                 InlineKeyboardButton(
                     "Выбрать другой матч",
@@ -12670,6 +12898,75 @@ async def channel_social_caption_callback(
     await query.message.reply_text(caption)
 
 
+async def channel_cover_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "AI-агент канала работает только в личке с ботом."
+        )
+        return
+
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    callback_data = query.data or ""
+    match_id = callback_data.split(":", 1)[1].strip() if ":" in callback_data else ""
+    cleanup_channel_bot_data(context)
+    draft_item = (context.bot_data.get("channel_plan_drafts") or {}).get(match_id)
+    content_type = (draft_item or {}).get("content_type") or "pre_match"
+    logger.info(
+        "channel_cover requested: user_id=%s match_id=%s content_type=%s",
+        admin_id,
+        match_id,
+        content_type,
+    )
+
+    if not draft_item:
+        await query.message.reply_text("Черновик не найден. Выберите матч заново.")
+        return
+
+    if content_type != "pre_match":
+        await query.message.reply_text("Обложка пока доступна только для Матча дня.")
+        return
+
+    cover_path = ""
+    try:
+        cover_path = await asyncio.to_thread(
+            generate_channel_matchday_cover,
+            draft_item.get("match") or {},
+        )
+        logger.info("channel_cover generated: match_id=%s path=%s", match_id, cover_path)
+        with open(cover_path, "rb") as cover_file:
+            await query.message.reply_photo(
+                photo=cover_file,
+                caption='Обложка "Матч дня" готова.',
+            )
+    except Exception:
+        logger.exception("channel_cover failed: match_id=%s", match_id)
+        await query.message.reply_text(
+            "Не удалось подготовить обложку. Попробуйте позже."
+        )
+    finally:
+        if cover_path:
+            try:
+                Path(cover_path).unlink(missing_ok=True)
+            except Exception:
+                logger.debug(
+                    "channel_cover temp cleanup failed: path=%s",
+                    cover_path,
+                    exc_info=True,
+                )
+
+
 async def channel_plan_again_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -14217,6 +14514,12 @@ def main() -> None:
         CallbackQueryHandler(
             channel_social_caption_callback,
             pattern=r"^channel_social_caption:.+$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_cover_callback,
+            pattern=r"^channel_cover:.+$",
         )
     )
     application.add_handler(

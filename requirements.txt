@@ -3,3 +3,4 @@ requests==2.31.0
 psycopg2-binary
 openai>=1.0.0
 flask
+Pillow
