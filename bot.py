@@ -2265,6 +2265,16 @@ CHANNEL_FORBIDDEN_WORDS = (
     "депозит",
     "вывод",
     "казино",
+    "тб",
+    "тм",
+    "оз",
+    "обз",
+    "итб",
+    "итм",
+    "фора",
+    "тотал",
+    "тотал больше",
+    "тотал меньше",
 )
 
 
@@ -2304,20 +2314,50 @@ CHANNEL_FORBIDDEN_REPLACEMENTS = {
     "депозит": "доступ",
     "вывод": "итог",
     "казино": "игра",
+    "тотал больше": "сценарий с голами",
+    "тотал меньше": "сдержанный темп",
+    "тотал": "сценарий по голам",
+    "фора": "игровое преимущество",
+    "ТБ": "результативный сценарий",
+    "ТМ": "осторожный сценарий",
+    "ОБЗ": "голы с обеих сторон",
+    "ОЗ": "обе команды могут забить",
+    "ИТБ": "высокая индивидуальная активность команды",
+    "ИТМ": "сдержанная индивидуальная активность команды",
 }
+
+
+CHANNEL_STANDALONE_FORBIDDEN_TERMS = (
+    "тб",
+    "тм",
+    "оз",
+    "обз",
+    "итб",
+    "итм",
+)
+
+
+def build_channel_forbidden_pattern(term: str) -> re.Pattern:
+    escaped_term = re.escape(str(term or ""))
+    if term.casefold() in CHANNEL_STANDALONE_FORBIDDEN_TERMS:
+        return re.compile(rf"(?<!\w){escaped_term}(?!\w)", re.IGNORECASE)
+    return re.compile(escaped_term, re.IGNORECASE)
 
 
 def sanitize_channel_post_text(text: str) -> str:
     sanitized = str(text or "")
     for forbidden, replacement in CHANNEL_FORBIDDEN_REPLACEMENTS.items():
-        pattern = re.compile(re.escape(forbidden), re.IGNORECASE)
+        pattern = build_channel_forbidden_pattern(forbidden)
         sanitized = pattern.sub(replacement, sanitized)
     return sanitized.strip()
 
 
 def channel_text_has_forbidden_words(text: str) -> bool:
-    normalized_text = str(text or "").casefold()
-    return any(word.casefold() in normalized_text for word in CHANNEL_FORBIDDEN_WORDS)
+    checked_text = str(text or "")
+    return any(
+        build_channel_forbidden_pattern(word).search(checked_text)
+        for word in CHANNEL_FORBIDDEN_WORDS
+    )
 
 
 TEAM_NAME_RU_OVERRIDES = {
@@ -3112,6 +3152,133 @@ def build_social_caption_for_draft(
     return caption
 
 
+def get_matchday_prompt_team_names(match: dict) -> tuple[str, str]:
+    home_raw = match.get("home") or ""
+    away_raw = match.get("away") or ""
+    home = translate_team_name_ru(home_raw) or str(home_raw or "Команда 1")
+    away = translate_team_name_ru(away_raw) or str(away_raw or "Команда 2")
+    return home, away
+
+
+def build_matchday_tg_cover_prompt(match: dict, draft: str | None = None) -> str:
+    home, away = get_matchday_prompt_team_names(match)
+    return f"""Сделай Telegram-обложку для MatchLab "Матч дня".
+
+Формат:
+
+* горизонтальная картинка 16:9
+* размер 1280x720
+* стиль: премиальная футбольная аналитика, спортивная ТВ-графика, тёмный кинематографичный стадион
+
+Бренд:
+
+* название: MATCHLAB
+* подпись: ФУТБОЛЬНАЯ АНАЛИТИКА
+* основной акцент: лаймово-зелёный
+* стиль: современный спортивный, тёмный, контрастный
+* если я прикрепил референс логотипа MatchLab, используй его стиль
+* не придумывай другое название бренда
+
+Матч:
+
+* {home} — {away}
+
+Текст на обложке:
+MATCHLAB
+ФУТБОЛЬНАЯ АНАЛИТИКА
+МАТЧ ДНЯ
+{home.upper()} — {away.upper()}
+AI-РАЗБОР ДО МАТЧА
+
+Композиция:
+
+* фон: ночной футбольный стадион, прожекторы, дым, футбольное поле внизу
+* логотип/название MatchLab сверху по центру
+* крупный заголовок "МАТЧ ДНЯ" по центру
+* ниже названия команд
+* внизу "AI-РАЗБОР ДО МАТЧА"
+* слева визуальная зона первой команды
+* справа визуальная зона второй команды
+* можно использовать цвета/флаги команд как вдохновение, но не использовать официальные эмблемы федераций
+* текст должен быть крупным и читаемым
+
+Важно:
+
+* не добавлять другие слова
+* не добавлять betting/gambling-лексику, betting-сокращения и коммерческие обещания результата
+* не добавлять водяные знаки
+* не добавлять людей
+* не искажать MATCHLAB
+* не искажать названия команд"""
+
+
+def build_matchday_social_cards_prompt(match: dict, draft: str | None = None) -> str:
+    home, away = get_matchday_prompt_team_names(match)
+    source_text = str(draft or "").strip() or "Источник смысла пока не указан."
+    return f"""Сделай 7 вертикальных карточек для TikTok/Instagram в стиле MatchLab.
+
+Формат:
+
+* 1080x1920
+* вертикальные карточки
+* каждая карточка отдельная
+* стиль: тёмный футбольный стадион, лаймово-зелёные акценты, спортивная аналитика, крупная типографика
+* логотип/название MATCHLAB должно быть на каждой карточке одинаковым по стилю
+* если я прикрепил референс MatchLab, используй его как стиль бренда
+
+Матч:
+{home} — {away}
+
+Карточка 1/7 — Обложка:
+MATCHLAB
+МАТЧ ДНЯ
+{home.upper()} — {away.upper()}
+AI-РАЗБОР ДО МАТЧА
+
+Карточка 2/7 — AI-вероятности:
+AI-ВЕРОЯТНОСТИ
+Используй вероятности из источника смысла ниже.
+Если вероятностей нет, не выдумывай проценты и сделай карточку без чисел.
+
+Карточка 3/7 — Почему одна команда выше:
+ПОЧЕМУ ОДНА КОМАНДА ВЫШЕ
+3 коротких причины из источника смысла.
+
+Карточка 4/7 — Статистические сигналы:
+СТАТИСТИЧЕСКИЕ СИГНАЛЫ
+3 коротких пункта из источника смысла:
+
+* атака / xG
+* оборона / риски
+* форма / темп / моменты
+
+Карточка 5/7 — Осторожные сигналы:
+ОСТОРОЖНЫЕ СИГНАЛЫ
+2–3 коротких риска из источника смысла.
+
+Карточка 6/7 — Риски матча:
+РИСКИ МАТЧА
+2–3 фактора, которые могут изменить сценарий.
+
+Карточка 7/7 — Итоговый сценарий:
+ИТОГОВЫЙ СЦЕНАРИЙ
+1 короткий вывод.
+Полный AI-разбор: @Match_Stat_bot
+Это аналитика на основе данных, а не обещание результата.
+
+Важно:
+
+* не использовать запрещённую betting/gambling-лексику, betting-сокращения, коммерческие обещания результата и денежные формулировки
+* не добавлять лишний текст
+* если текст не помещается, сокращать, но не менять смысл
+* не добавлять водяные знаки
+* не искажать MATCHLAB
+* не искажать названия команд
+
+Источник смысла:
+{source_text}"""
+
+
 def get_channel_team_colors(name: str | None) -> tuple[str, str]:
     team_name = re.sub(r"\s+", " ", str(name or "")).strip()
     if not team_name:
@@ -3468,9 +3635,21 @@ def get_channel_draft_keyboard(
     )
     return InlineKeyboardMarkup(
         [
+            *(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "📝 Пост для Telegram",
+                            callback_data=f"channel_show_post:{match_id}",
+                        )
+                    ]
+                ]
+                if content_type == "pre_match"
+                else []
+            ),
             [
                 InlineKeyboardButton(
-                    "Опубликовать в канал",
+                    "📤 Опубликовать в канал",
                     callback_data=f"channel_publish:{match_id}",
                 )
             ],
@@ -3494,10 +3673,28 @@ def get_channel_draft_keyboard(
             ],
             [
                 InlineKeyboardButton(
-                    "Описание TikTok/Instagram",
+                    "🎬 Описание TikTok/Instagram",
                     callback_data=f"channel_social_caption:{match_id}",
                 )
             ],
+            *(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🖼 Промпт TG-обложки",
+                            callback_data=f"channel_tg_cover_prompt:{match_id}",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "📱 Промпт 7 карточек",
+                            callback_data=f"channel_social_cards_prompt:{match_id}",
+                        )
+                    ],
+                ]
+                if content_type == "pre_match"
+                else []
+            ),
             *(
                 [
                     [
@@ -12691,6 +12888,42 @@ async def show_channel_recap_again(
     )
 
 
+async def send_long_admin_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    title: str | None = None,
+) -> None:
+    message = update.callback_query.message if update.callback_query else update.effective_message
+    if not message:
+        return
+
+    full_text = str(text or "")
+    if title:
+        full_text = f"{title}\n\n{full_text}".strip()
+
+    max_chars = 3500
+    if len(full_text) <= max_chars:
+        await message.reply_text(full_text)
+        return
+
+    parts = []
+    remaining = full_text
+    while remaining:
+        if len(remaining) <= max_chars:
+            parts.append(remaining)
+            break
+        split_at = remaining.rfind("\n", 0, max_chars)
+        if split_at < int(max_chars * 0.6):
+            split_at = max_chars
+        parts.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
+
+    total_parts = len(parts)
+    for index, part in enumerate(parts, start=1):
+        await message.reply_text(f"Часть {index}/{total_parts}\n\n{part}")
+
+
 async def channel_pick_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -12786,6 +13019,149 @@ async def channel_pick_callback(
         draft,
         reply_markup=get_channel_draft_keyboard(match_id),
     )
+
+
+async def channel_show_post_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "AI-агент канала работает только в личке с ботом."
+        )
+        return
+
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    callback_data = query.data or ""
+    match_id = callback_data.split(":", 1)[1].strip() if ":" in callback_data else ""
+    cleanup_channel_bot_data(context)
+    draft_item = (context.bot_data.get("channel_plan_drafts") or {}).get(match_id)
+    if not draft_item:
+        await query.message.reply_text(
+            "Черновик не найден. Сначала выбери матч через /channel_plan."
+        )
+        return
+    if (draft_item.get("content_type") or "pre_match") != "pre_match":
+        await query.message.reply_text("Эта кнопка только для Матча дня.")
+        return
+
+    await send_long_admin_message(
+        update,
+        context,
+        draft_item.get("draft") or "",
+        title="📝 Пост для Telegram",
+    )
+
+
+async def channel_tg_cover_prompt_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "AI-агент канала работает только в личке с ботом."
+        )
+        return
+
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    callback_data = query.data or ""
+    match_id = callback_data.split(":", 1)[1].strip() if ":" in callback_data else ""
+    cleanup_channel_bot_data(context)
+    draft_item = (context.bot_data.get("channel_plan_drafts") or {}).get(match_id)
+    logger.info("channel_prompt tg_cover requested: match_id=%s", match_id)
+    if not draft_item:
+        await query.message.reply_text(
+            "Черновик не найден. Сначала выбери матч через /channel_plan."
+        )
+        return
+    if (draft_item.get("content_type") or "pre_match") != "pre_match":
+        await query.message.reply_text("Эта кнопка только для Матча дня.")
+        return
+
+    prompt = build_matchday_tg_cover_prompt(
+        draft_item.get("match") or {},
+        draft_item.get("draft") or "",
+    )
+    logger.info("channel_prompt length=%s", len(prompt))
+    try:
+        await send_long_admin_message(
+            update,
+            context,
+            prompt,
+            title="🖼 Промпт TG-обложки",
+        )
+    except Exception:
+        logger.exception("channel_prompt send failed: match_id=%s", match_id)
+        await query.message.reply_text("Не удалось отправить промпт. Попробуйте позже.")
+
+
+async def channel_social_cards_prompt_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "AI-агент канала работает только в личке с ботом."
+        )
+        return
+
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    callback_data = query.data or ""
+    match_id = callback_data.split(":", 1)[1].strip() if ":" in callback_data else ""
+    cleanup_channel_bot_data(context)
+    draft_item = (context.bot_data.get("channel_plan_drafts") or {}).get(match_id)
+    logger.info("channel_prompt social_cards requested: match_id=%s", match_id)
+    if not draft_item:
+        await query.message.reply_text(
+            "Черновик не найден. Сначала выбери матч через /channel_plan."
+        )
+        return
+    if (draft_item.get("content_type") or "pre_match") != "pre_match":
+        await query.message.reply_text("Эта кнопка только для Матча дня.")
+        return
+
+    prompt = build_matchday_social_cards_prompt(
+        draft_item.get("match") or {},
+        draft_item.get("draft") or "",
+    )
+    logger.info("channel_prompt length=%s", len(prompt))
+    try:
+        await send_long_admin_message(
+            update,
+            context,
+            prompt,
+            title="📱 Промпт 7 карточек",
+        )
+    except Exception:
+        logger.exception("channel_prompt send failed: match_id=%s", match_id)
+        await query.message.reply_text("Не удалось отправить промпт. Попробуйте позже.")
 
 
 async def channel_recap_pick_callback(
@@ -14811,6 +15187,24 @@ def main() -> None:
         CallbackQueryHandler(
             channel_pick_callback,
             pattern=r"^channel_pick:.+$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_show_post_callback,
+            pattern=r"^channel_show_post:.+$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_tg_cover_prompt_callback,
+            pattern=r"^channel_tg_cover_prompt:.+$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_social_cards_prompt_callback,
+            pattern=r"^channel_social_cards_prompt:.+$",
         )
     )
     application.add_handler(
