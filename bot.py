@@ -9,7 +9,7 @@ import hmac
 import json
 import threading
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -680,6 +680,41 @@ def init_db() -> None:
                 ON channel_agent_matchdays (status);
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS channel_auto_posts (
+                    id BIGSERIAL PRIMARY KEY,
+                    content_type TEXT NOT NULL,
+                    date_key TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    draft TEXT,
+                    published_at TIMESTAMPTZ,
+                    published_message_id BIGINT,
+                    error_text TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE (content_type, date_key)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_channel_auto_posts_content_type
+                ON channel_auto_posts (content_type);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_channel_auto_posts_date_key
+                ON channel_auto_posts (date_key);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_channel_auto_posts_status
+                ON channel_auto_posts (status);
+                """
+            )
         connection.commit()
     except Exception:
         logger.exception("Failed to initialize database")
@@ -738,6 +773,64 @@ def ensure_channel_agent_matchdays_table() -> bool:
         return True
     except Exception:
         logger.exception("channel_agent db table ensure failed")
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def ensure_channel_auto_posts_table() -> bool:
+    database_url = get_database_url()
+    if not database_url:
+        logger.warning(
+            "DATABASE_URL is not configured; channel auto posts DB disabled"
+        )
+        return False
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS channel_auto_posts (
+                    id BIGSERIAL PRIMARY KEY,
+                    content_type TEXT NOT NULL,
+                    date_key TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    draft TEXT,
+                    published_at TIMESTAMPTZ,
+                    published_message_id BIGINT,
+                    error_text TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE (content_type, date_key)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_channel_auto_posts_content_type
+                ON channel_auto_posts (content_type);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_channel_auto_posts_date_key
+                ON channel_auto_posts (date_key);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_channel_auto_posts_status
+                ON channel_auto_posts (status);
+                """
+            )
+        connection.commit()
+        logger.info("channel_auto_posts db table ensured")
+        return True
+    except Exception:
+        logger.exception("channel_auto_posts db table ensure failed")
         return False
     finally:
         if connection is not None:
@@ -2858,6 +2951,172 @@ def build_channel_agent_selection_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def get_channel_digest_reason(match: dict, index: int) -> str:
+    reasons = [
+        str(reason).strip()
+        for reason in (match.get("agent_reasons") or match.get("_channel_reasons") or [])
+        if str(reason).strip()
+    ]
+    fallback_reasons = [
+        "важный турнирный контекст",
+        "интересный инфоповод",
+        "матч может быть интересен аудитории",
+        "удобное время для просмотра",
+        "контраст команд и игровых стилей",
+    ]
+    reason = reasons[0] if reasons else fallback_reasons[index % len(fallback_reasons)]
+    reason = sanitize_channel_post_text(reason)
+    if channel_text_has_forbidden_words(reason):
+        return fallback_reasons[index % len(fallback_reasons)]
+    return reason.rstrip(".") + "."
+
+
+def get_channel_morning_digest_matches(limit: int = 5) -> list[dict]:
+    try:
+        candidates = get_channel_plan_candidates(10)
+    except Exception:
+        logger.exception("channel_morning_digest candidate fetch failed")
+        return []
+
+    ranked = []
+    for match in candidates:
+        score, reasons = score_channel_matchday_candidate(match)
+        enriched_match = dict(match)
+        enriched_match["agent_score"] = score
+        enriched_match["agent_reasons"] = reasons
+        kickoff = parse_match_kickoff_datetime(enriched_match) or datetime.max.replace(
+            tzinfo=ALMATY_TZ
+        )
+        ranked.append((score, kickoff, enriched_match))
+
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return [item[2] for item in ranked[:limit]]
+
+
+def build_channel_morning_digest_draft(matches: list[dict]) -> str:
+    selected_matches = matches[:5]
+    lines = [
+        "🌅 Футбольное утро от MatchLab",
+        "",
+        "Коротко, что важно сегодня:",
+        "",
+    ]
+    for index, match in enumerate(selected_matches, start=1):
+        home = translate_team_name_ru(match.get("home")) or "Команда 1"
+        away = translate_team_name_ru(match.get("away")) or "Команда 2"
+        lines.extend(
+            [
+                f"{index}. {home} — {away}",
+                f"    {get_channel_digest_reason(match, index - 1)}",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "👀 За чем следить:",
+            "— форма фаворитов",
+            "— молодые игроки",
+            "— неожиданные игровые сценарии",
+            "— кто лучше использует моменты",
+            "",
+            "Полный AI-разбор Матча дня — в @Match_Stat_bot",
+            "",
+            CHANNEL_DRAFT_DISCLAIMER,
+        ]
+    )
+    draft = sanitize_channel_post_text("\n".join(lines))
+    return limit_channel_text_preserving_disclaimer(draft, 1100)
+
+
+async def publish_channel_morning_digest(
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    content_type = "morning_digest"
+    date_key = datetime.now(ALMATY_TZ).strftime("%Y-%m-%d")
+    logger.info("channel_morning_digest started: date_key=%s", date_key)
+
+    local_key = f"{content_type}:{date_key}:published"
+    if context.bot_data.get(local_key):
+        logger.info("channel_morning_digest already published: date_key=%s", date_key)
+        return
+
+    if not MATCHLAB_CHANNEL_ID:
+        logger.warning("channel_morning_digest skipped: reason=no_channel_id")
+        save_channel_auto_post_status(
+            content_type,
+            date_key,
+            "failed",
+            error_text="MATCHLAB_CHANNEL_ID is not configured",
+        )
+        return
+
+    if has_channel_auto_post_been_published(content_type, date_key):
+        context.bot_data[local_key] = True
+        logger.info("channel_morning_digest already published: date_key=%s", date_key)
+        return
+
+    matches = await asyncio.to_thread(get_channel_morning_digest_matches, 5)
+    logger.info("channel_morning_digest candidates found: count=%s", len(matches))
+    if not matches:
+        save_channel_auto_post_status(
+            content_type,
+            date_key,
+            "skipped",
+            error_text="no_matches",
+        )
+        logger.info("channel_morning_digest skipped: reason=no_matches")
+        return
+
+    draft = build_channel_morning_digest_draft(matches)
+    draft = sanitize_channel_post_text(draft)
+    logger.info("channel_morning_digest draft generated: length=%s", len(draft))
+    forbidden_left = channel_text_has_forbidden_words(draft)
+    logger.info("channel_morning_digest forbidden_left=%s", forbidden_left)
+    if forbidden_left:
+        save_channel_auto_post_status(
+            content_type,
+            date_key,
+            "failed",
+            draft=draft,
+            error_text="forbidden_words_left",
+        )
+        logger.warning("channel_morning_digest failed: forbidden_words_left")
+        return
+
+    save_channel_auto_post_status(content_type, date_key, "draft_created", draft=draft)
+    try:
+        sent_message = await context.bot.send_message(
+            chat_id=MATCHLAB_CHANNEL_ID,
+            text=draft,
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        logger.exception("channel_morning_digest failed: send_message")
+        save_channel_auto_post_status(
+            content_type,
+            date_key,
+            "failed",
+            draft=draft,
+            error_text="send_message_failed",
+        )
+        return
+
+    context.bot_data[local_key] = True
+    save_channel_auto_post_status(
+        content_type,
+        date_key,
+        "published",
+        draft=draft,
+        published_message_id=sent_message.message_id,
+    )
+    logger.info(
+        "channel_morning_digest published: date_key=%s message_id=%s",
+        date_key,
+        sent_message.message_id,
+    )
+
+
 def build_channel_agent_recap_manual_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -3073,6 +3332,121 @@ def load_channel_agent_last_matchday_from_db() -> dict | None:
     except Exception:
         logger.exception("channel_agent last_matchday db load failed")
         return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def has_channel_auto_post_been_published(
+    content_type: str,
+    date_key: str,
+) -> bool:
+    database_url = get_database_url()
+    if not database_url:
+        logger.warning("channel_auto_posts publish lookup skipped: no DATABASE_URL")
+        return False
+    if not ensure_channel_auto_posts_table():
+        return False
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT 1
+                FROM channel_auto_posts
+                WHERE content_type = %s
+                AND date_key = %s
+                AND status = 'published'
+                LIMIT 1;
+                """,
+                (content_type, date_key),
+            )
+            return cursor.fetchone() is not None
+    except Exception:
+        logger.exception("channel_auto_posts publish lookup failed")
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def save_channel_auto_post_status(
+    content_type: str,
+    date_key: str,
+    status: str,
+    draft: str | None = None,
+    published_message_id: int | None = None,
+    error_text: str | None = None,
+) -> None:
+    database_url = get_database_url()
+    if not database_url:
+        logger.warning("channel_auto_posts status save skipped: no DATABASE_URL")
+        return
+    if not ensure_channel_auto_posts_table():
+        logger.warning("channel_auto_posts status save failed: ensure_failed")
+        return
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO channel_auto_posts (
+                    content_type,
+                    date_key,
+                    status,
+                    draft,
+                    published_at,
+                    published_message_id,
+                    error_text,
+                    updated_at
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    CASE WHEN %s = 'published' THEN now() ELSE NULL END,
+                    %s,
+                    %s,
+                    now()
+                )
+                ON CONFLICT (content_type, date_key)
+                DO UPDATE SET
+                    status = EXCLUDED.status,
+                    draft = COALESCE(EXCLUDED.draft, channel_auto_posts.draft),
+                    published_at = CASE
+                        WHEN EXCLUDED.status = 'published'
+                        THEN COALESCE(EXCLUDED.published_at, now())
+                        ELSE channel_auto_posts.published_at
+                    END,
+                    published_message_id = COALESCE(
+                        EXCLUDED.published_message_id,
+                        channel_auto_posts.published_message_id
+                    ),
+                    error_text = EXCLUDED.error_text,
+                    updated_at = now();
+                """,
+                (
+                    content_type,
+                    date_key,
+                    status,
+                    draft,
+                    status,
+                    published_message_id,
+                    error_text,
+                ),
+            )
+        connection.commit()
+    except Exception:
+        logger.exception(
+            "channel_auto_posts status save failed: content_type=%s date_key=%s",
+            content_type,
+            date_key,
+        )
     finally:
         if connection is not None:
             connection.close()
@@ -6412,6 +6786,26 @@ async def stop_miniapp_match_reminders_loop(application: Application) -> None:
         await task
     except asyncio.CancelledError:
         pass
+
+
+def schedule_channel_morning_digest(application: Application) -> None:
+    job_queue = application.job_queue
+    if job_queue is None:
+        logger.warning(
+            "channel_morning_digest schedule skipped: JobQueue is not available"
+        )
+        return
+
+    if job_queue.get_jobs_by_name("channel_morning_digest"):
+        logger.info("channel_morning_digest schedule already exists")
+        return
+
+    job_queue.run_daily(
+        publish_channel_morning_digest,
+        time=time(hour=9, minute=0, tzinfo=ALMATY_TZ),
+        name="channel_morning_digest",
+    )
+    logger.info("channel_morning_digest scheduled for 09:00 Asia/Almaty")
 
 
 def get_current_favorite_team(
@@ -13455,6 +13849,12 @@ def build_channel_admin_keyboard() -> InlineKeyboardMarkup:
         [
             [
                 InlineKeyboardButton(
+                    "🌅 Опубликовать утренний обзор",
+                    callback_data="channel_admin_publish_morning_digest",
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     "🧠 Подготовить Матч дня",
                     callback_data="channel_admin_plan",
                 )
@@ -13478,6 +13878,11 @@ def build_channel_admin_keyboard() -> InlineKeyboardMarkup:
 def build_channel_admin_status_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     draft_count = len(context.bot_data.get("channel_plan_drafts") or {})
     last_matchday = get_channel_agent_last_matchday(context)
+    morning_date_key = datetime.now(ALMATY_TZ).strftime("%Y-%m-%d")
+    morning_published = has_channel_auto_post_been_published(
+        "morning_digest",
+        morning_date_key,
+    ) or bool(context.bot_data.get(f"morning_digest:{morning_date_key}:published"))
     lines = [
         "📊 Статус MatchLab Channel Agent",
         "",
@@ -13485,6 +13890,8 @@ def build_channel_admin_status_text(context: ContextTypes.DEFAULT_TYPE) -> str:
         f"Mini App URL: {'настроен' if WEBAPP_URL else 'не настроен'}",
         f"OpenAI API: {'настроен' if OPENAI_API_KEY else 'не настроен'}",
         f"Черновиков в памяти: {draft_count}",
+        "Утренний обзор: авто 09:00 Алматы, без approve",
+        f"Сегодняшний обзор: {'опубликован' if morning_published else 'не опубликован'}",
         "Режим: подготовка → approve → публикация",
         "",
     ]
@@ -13663,6 +14070,32 @@ async def channel_admin_status_callback(
         return
 
     await query.message.reply_text(build_channel_admin_status_text(context))
+
+
+async def channel_admin_publish_morning_digest_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "Админ-панель доступна только в личке с ботом."
+        )
+        return
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    await publish_channel_morning_digest(context)
+    await query.message.reply_text(
+        "Запустил публикацию утреннего обзора. Проверь канал и логи."
+    )
 
 
 async def channel_plan_command(
@@ -16338,6 +16771,7 @@ def run_miniapp_api_server() -> None:
 def main() -> None:
     init_db()
     ensure_channel_agent_matchdays_table()
+    ensure_channel_auto_posts_table()
     if WEBAPP_URL:
         logger.info("Mini App WEBAPP_URL configured: %s", WEBAPP_URL)
 
@@ -16401,6 +16835,12 @@ def main() -> None:
         CallbackQueryHandler(
             channel_admin_plan_callback,
             pattern=r"^channel_admin_plan$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_admin_publish_morning_digest_callback,
+            pattern=r"^channel_admin_publish_morning_digest$",
         )
     )
     application.add_handler(
@@ -16515,6 +16955,8 @@ def main() -> None:
         ).start()
     else:
         logger.info("🌐 Mini App API disabled")
+
+    schedule_channel_morning_digest(application)
 
     application.run_polling(
     drop_pending_updates=True
