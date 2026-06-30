@@ -2769,6 +2769,49 @@ def build_channel_agent_selection_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def build_channel_agent_recap_manual_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🔎 Показать завершённые матчи вручную",
+                    callback_data="channel_admin_recap_manual",
+                )
+            ]
+        ]
+    )
+
+
+def get_channel_agent_last_matchday(
+    context: ContextTypes.DEFAULT_TYPE,
+) -> dict | None:
+    last_matchday = context.bot_data.get("channel_agent_last_matchday")
+    if not isinstance(last_matchday, dict):
+        return None
+    if not last_matchday.get("match_id") or not last_matchday.get("match"):
+        return None
+    return last_matchday
+
+
+def find_recap_candidate_for_last_matchday(
+    last_matchday: dict,
+    recap_candidates: list[dict],
+) -> dict | None:
+    match_id = str(last_matchday.get("match_id") or "").strip()
+    if not match_id:
+        return None
+
+    for candidate in recap_candidates:
+        candidate_id = str(candidate.get("id") or "").strip()
+        if candidate_id == match_id:
+            return candidate
+
+    stored_match = last_matchday.get("match")
+    if isinstance(stored_match, dict) and is_channel_match_finished(stored_match):
+        return stored_match
+    return None
+
+
 def get_channel_recap_cached_analysis(
     admin_id: int,
     match_id: str,
@@ -13130,19 +13173,41 @@ def build_channel_admin_keyboard() -> InlineKeyboardMarkup:
 
 def build_channel_admin_status_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     draft_count = len(context.bot_data.get("channel_plan_drafts") or {})
-    return "\n".join(
+    last_matchday = get_channel_agent_last_matchday(context)
+    lines = [
+        "📊 Статус MatchLab Channel Agent",
+        "",
+        f"Канал: {'настроен' if MATCHLAB_CHANNEL_ID else 'не настроен'}",
+        f"Mini App URL: {'настроен' if WEBAPP_URL else 'не настроен'}",
+        f"OpenAI API: {'настроен' if OPENAI_API_KEY else 'не настроен'}",
+        f"Черновиков в памяти: {draft_count}",
+        "Режим: подготовка → approve → публикация",
+        "",
+    ]
+    if last_matchday:
+        match = last_matchday.get("match") or {}
+        home = translate_team_name_ru(match.get("home")) or "Команда 1"
+        away = translate_team_name_ru(match.get("away")) or "Команда 2"
+        lines.extend(
+            [
+                f"Матч дня: {home} — {away}",
+                f"match_id: {last_matchday.get('match_id')}",
+                f"status: {last_matchday.get('status') or 'unknown'}",
+                f"selected_at: {last_matchday.get('selected_at') or 'не указано'}",
+            ]
+        )
+        if last_matchday.get("agent_score") is not None:
+            lines.append(f"agent_score: {last_matchday.get('agent_score')}")
+    else:
+        lines.append("Матч дня: не выбран")
+
+    lines.extend(
         [
-            "📊 Статус MatchLab Channel Agent",
-            "",
-            f"Канал: {'настроен' if MATCHLAB_CHANNEL_ID else 'не настроен'}",
-            f"Mini App URL: {'настроен' if WEBAPP_URL else 'не настроен'}",
-            f"OpenAI API: {'настроен' if OPENAI_API_KEY else 'не настроен'}",
-            f"Черновиков в памяти: {draft_count}",
-            "Режим: подготовка → approve → публикация",
             "",
             "Матч дня и Итоги сейчас готовятся по кнопке, публикация только после approve.",
         ]
     )
+    return "\n".join(lines)
 
 
 async def channel_admin_command(
@@ -13222,6 +13287,31 @@ async def channel_admin_plan_manual_callback(
 
 
 async def channel_admin_recap_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "Админ-панель доступна только в личке с ботом."
+        )
+        return
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    if not query.message:
+        return
+    await auto_prepare_channel_recap(query.message, context, admin_id)
+
+
+async def channel_admin_recap_manual_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
@@ -13466,6 +13556,14 @@ async def auto_prepare_channel_matchday(
         "channel_agent auto matchday draft created: match_id=%s",
         draft_match_id,
     )
+    context.bot_data["channel_agent_last_matchday"] = {
+        "match_id": draft_match_id,
+        "match": best_match,
+        "selected_at": datetime.now(timezone.utc).timestamp(),
+        "status": "pre_match_draft_created",
+        "agent_score": best_match.get("agent_score"),
+        "agent_reasons": best_match.get("agent_reasons") or [],
+    }
     await message.reply_text(
         build_channel_agent_selection_message(best_match, top_matches),
         reply_markup=build_channel_agent_selection_keyboard(),
@@ -13544,6 +13642,175 @@ async def show_channel_recap_again(
         return
     admin_id = query.from_user.id if query.from_user else None
     await send_channel_recap_candidates(query.message, context, admin_id)
+
+
+async def create_and_store_channel_recap_draft(
+    message,
+    context: ContextTypes.DEFAULT_TYPE,
+    admin_id: int,
+    match: dict,
+    progress_text: bool = True,
+) -> tuple[str | None, str | None]:
+    match_id = str(match.get("id") or "").strip()
+    if not match_id:
+        await message.reply_text("У матча нет ID, итоговый черновик не готов.")
+        return None, None
+
+    if progress_text:
+        home = format_channel_team_display(match.get("home")) or "Команда 1"
+        away = format_channel_team_display(match.get("away")) or "Команда 2"
+        await message.reply_text(
+            f"Готовлю итоги матча дня по матчу {home} — {away}…"
+        )
+
+    analysis_result, _ = await asyncio.to_thread(
+        get_channel_recap_cached_analysis,
+        admin_id,
+        match_id,
+    )
+    if not analysis_result:
+        await message.reply_text(
+            "Для этого матча нет сохранённого AI-разбора до игры, "
+            "поэтому корректные итоги подготовить нельзя."
+        )
+        return None, None
+
+    actual_stats = await asyncio.to_thread(get_channel_match_actual_stats, match)
+    logger.info(
+        "channel_recap actual stats available %s: match_id=%s keys=%s",
+        bool(actual_stats),
+        match_id,
+        sorted(actual_stats.keys()),
+    )
+    draft = build_channel_recap_post_draft(
+        match,
+        analysis_result,
+        actual_stats,
+    )
+    logger.info("channel_recap draft generated: match_id=%s", match_id)
+    draft = sanitize_channel_post_text(draft)
+    if channel_text_has_forbidden_words(draft):
+        await message.reply_text(
+            "Черновик содержит запрещённые слова после фильтра. "
+            "Нужна ручная проверка."
+        )
+        return None, None
+
+    drafts = context.bot_data.setdefault("channel_plan_drafts", {})
+    drafts[match_id] = {
+        "draft": draft,
+        "match": match,
+        "content_type": "post_match",
+        "created_at": datetime.now(timezone.utc).timestamp(),
+    }
+    return match_id, draft
+
+
+def build_channel_agent_recap_ready_message(match: dict) -> str:
+    home = translate_team_name_ru(match.get("home")) or "Команда 1"
+    away = translate_team_name_ru(match.get("away")) or "Команда 2"
+    return "\n".join(
+        [
+            "🏁 MatchLab Agent подготовил Итоги матча дня",
+            "",
+            "Матч:",
+            f"{home} — {away}",
+            f"Счёт: {format_channel_match_score(match)}",
+            "",
+            "Ниже готовый итоговый Telegram-пост.",
+        ]
+    )
+
+
+def build_channel_agent_recap_not_ready_message(last_matchday: dict) -> str:
+    match = last_matchday.get("match") or {}
+    home = translate_team_name_ru(match.get("home")) or "Команда 1"
+    away = translate_team_name_ru(match.get("away")) or "Команда 2"
+    return "\n".join(
+        [
+            "Матч дня пока не найден среди завершённых матчей.",
+            "Возможно, он ещё не закончился или статистика ещё не обновилась.",
+            "",
+            f"Ждём матч: {home} — {away}",
+            f"match_id: {last_matchday.get('match_id')}",
+        ]
+    )
+
+
+async def auto_prepare_channel_recap(
+    message,
+    context: ContextTypes.DEFAULT_TYPE,
+    admin_id: int,
+) -> None:
+    logger.info("channel_agent recap started: user_id=%s", admin_id)
+    await message.reply_text("🏁 Проверяю выбранный Матч дня для итогов…")
+    last_matchday = get_channel_agent_last_matchday(context)
+    if not last_matchday:
+        logger.info("channel_agent last_matchday found: match_id=None status=None")
+        await message.reply_text(
+            "Пока нет выбранного агентом Матча дня. Сначала нажми "
+            "🧠 Подготовить Матч дня или используй /channel_recap вручную.",
+            reply_markup=build_channel_agent_recap_manual_keyboard(),
+        )
+        return
+
+    match_id = str(last_matchday.get("match_id") or "").strip()
+    logger.info(
+        "channel_agent last_matchday found: match_id=%s status=%s",
+        match_id,
+        last_matchday.get("status"),
+    )
+    try:
+        candidates = await asyncio.to_thread(get_channel_recap_candidates, admin_id)
+    except Exception:
+        logger.exception(
+            "channel_agent recap failed: stage=candidates match_id=%s",
+            match_id,
+        )
+        await message.reply_text(
+            "Не удалось проверить завершённые матчи. Попробуйте позже.",
+            reply_markup=build_channel_agent_recap_manual_keyboard(),
+        )
+        return
+
+    logger.info("channel_agent recap candidates found: count=%s", len(candidates))
+    recap_match = find_recap_candidate_for_last_matchday(last_matchday, candidates)
+    if not recap_match:
+        logger.info("channel_agent recap not ready: match_id=%s", match_id)
+        await message.reply_text(
+            build_channel_agent_recap_not_ready_message(last_matchday),
+            reply_markup=build_channel_agent_recap_manual_keyboard(),
+        )
+        return
+
+    logger.info("channel_agent recap matched: match_id=%s", match_id)
+    draft_match_id, draft = await create_and_store_channel_recap_draft(
+        message,
+        context,
+        admin_id,
+        recap_match,
+        progress_text=False,
+    )
+    if not draft_match_id or not draft:
+        logger.warning("channel_agent recap failed: stage=draft match_id=%s", match_id)
+        return
+
+    last_matchday["status"] = "post_match_draft_created"
+    last_matchday["post_match_draft_created_at"] = datetime.now(
+        timezone.utc
+    ).timestamp()
+    last_matchday["match"] = recap_match
+    context.bot_data["channel_agent_last_matchday"] = last_matchday
+    logger.info("channel_agent recap draft created: match_id=%s", draft_match_id)
+
+    await message.reply_text(build_channel_agent_recap_ready_message(recap_match))
+    await message.reply_text(
+        draft,
+        reply_markup=get_channel_draft_keyboard(
+            draft_match_id,
+            content_type="post_match",
+        ),
+    )
 
 
 async def send_long_admin_message(
@@ -13836,49 +14103,18 @@ async def channel_recap_pick_callback(
         )
         return
 
-    analysis_result, _ = await asyncio.to_thread(
-        get_channel_recap_cached_analysis,
+    draft_match_id, draft = await create_and_store_channel_recap_draft(
+        query.message,
+        context,
         admin_id,
-        match_id,
-    )
-    if not analysis_result:
-        await query.message.reply_text(
-            "Для этого матча нет сохранённого AI-разбора до игры, "
-            "итоги сравнения сделать нельзя."
-        )
-        return
-
-    actual_stats = await asyncio.to_thread(get_channel_match_actual_stats, match)
-    logger.info(
-        "channel_recap actual stats available %s: match_id=%s keys=%s",
-        bool(actual_stats),
-        match_id,
-        sorted(actual_stats.keys()),
-    )
-    draft = build_channel_recap_post_draft(
         match,
-        analysis_result,
-        actual_stats,
     )
-    logger.info("channel_recap draft generated: match_id=%s", match_id)
-    draft = sanitize_channel_post_text(draft)
-    if channel_text_has_forbidden_words(draft):
-        await query.message.reply_text(
-            "Черновик содержит запрещённые слова после фильтра. "
-            "Нужна ручная проверка."
-        )
+    if not draft_match_id or not draft:
         return
 
-    drafts = context.bot_data.setdefault("channel_plan_drafts", {})
-    drafts[match_id] = {
-        "draft": draft,
-        "match": match,
-        "content_type": "post_match",
-        "created_at": datetime.now(timezone.utc).timestamp(),
-    }
     await query.message.reply_text(
         draft,
-        reply_markup=get_channel_draft_keyboard(match_id, "post_match"),
+        reply_markup=get_channel_draft_keyboard(draft_match_id, "post_match"),
     )
 
 
@@ -13980,6 +14216,18 @@ async def channel_publish_callback(
 
     draft_item["published_at"] = datetime.now(timezone.utc).isoformat()
     draft_item["published_message_id"] = sent_message.message_id
+    last_matchday = get_channel_agent_last_matchday(context)
+    if (
+        content_type == "pre_match"
+        and last_matchday
+        and str(last_matchday.get("match_id") or "").strip() == match_id
+    ):
+        last_matchday["status"] = "pre_match_published"
+        last_matchday["pre_match_published_at"] = datetime.now(
+            timezone.utc
+        ).timestamp()
+        last_matchday["pre_match_message_id"] = sent_message.message_id
+        context.bot_data["channel_agent_last_matchday"] = last_matchday
     logger.info(
         "channel_publish success: match_id=%s content_type=%s message_id=%s",
         match_id,
@@ -15837,6 +16085,12 @@ def main() -> None:
         CallbackQueryHandler(
             channel_admin_recap_callback,
             pattern=r"^channel_admin_recap$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_admin_recap_manual_callback,
+            pattern=r"^channel_admin_recap_manual$",
         )
     )
     application.add_handler(
