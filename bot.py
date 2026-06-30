@@ -647,9 +647,98 @@ def init_db() -> None:
                 );
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS channel_agent_matchdays (
+                    id BIGSERIAL PRIMARY KEY,
+                    agent_key TEXT NOT NULL DEFAULT 'default',
+                    match_id TEXT NOT NULL,
+                    match_json JSONB NOT NULL,
+                    status TEXT NOT NULL,
+                    agent_score INTEGER,
+                    agent_reasons JSONB,
+                    selected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    pre_match_published_at TIMESTAMPTZ,
+                    pre_match_message_id BIGINT,
+                    post_match_draft_created_at TIMESTAMPTZ,
+                    post_match_published_at TIMESTAMPTZ,
+                    post_match_message_id BIGINT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE (agent_key)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_channel_agent_matchdays_match_id
+                ON channel_agent_matchdays (match_id);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_channel_agent_matchdays_status
+                ON channel_agent_matchdays (status);
+                """
+            )
         connection.commit()
     except Exception:
         logger.exception("Failed to initialize database")
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def ensure_channel_agent_matchdays_table() -> bool:
+    database_url = get_database_url()
+    if not database_url:
+        logger.warning(
+            "DATABASE_URL is not configured; channel agent DB memory disabled"
+        )
+        return False
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS channel_agent_matchdays (
+                    id BIGSERIAL PRIMARY KEY,
+                    agent_key TEXT NOT NULL DEFAULT 'default',
+                    match_id TEXT NOT NULL,
+                    match_json JSONB NOT NULL,
+                    status TEXT NOT NULL,
+                    agent_score INTEGER,
+                    agent_reasons JSONB,
+                    selected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    pre_match_published_at TIMESTAMPTZ,
+                    pre_match_message_id BIGINT,
+                    post_match_draft_created_at TIMESTAMPTZ,
+                    post_match_published_at TIMESTAMPTZ,
+                    post_match_message_id BIGINT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE (agent_key)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_channel_agent_matchdays_match_id
+                ON channel_agent_matchdays (match_id);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_channel_agent_matchdays_status
+                ON channel_agent_matchdays (status);
+                """
+            )
+        connection.commit()
+        logger.info("channel_agent db table ensured")
+        return True
+    except Exception:
+        logger.exception("channel_agent db table ensure failed")
+        return False
     finally:
         if connection is not None:
             connection.close()
@@ -2782,15 +2871,230 @@ def build_channel_agent_recap_manual_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def channel_agent_timestamp_to_datetime(value) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return datetime.fromtimestamp(float(value), timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def channel_agent_datetime_to_timestamp(value) -> float | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).timestamp()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).timestamp()
+    except Exception:
+        return None
+
+
+def save_channel_agent_last_matchday_to_db(last_matchday: dict) -> None:
+    database_url = get_database_url()
+    if not database_url:
+        return
+    if not ensure_channel_agent_matchdays_table():
+        logger.warning("channel_agent last_matchday db save failed")
+        return
+
+    match_id = str((last_matchday or {}).get("match_id") or "").strip()
+    match = (last_matchday or {}).get("match")
+    if not match_id or not isinstance(match, dict):
+        return
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO channel_agent_matchdays (
+                    agent_key,
+                    match_id,
+                    match_json,
+                    status,
+                    agent_score,
+                    agent_reasons,
+                    selected_at,
+                    pre_match_published_at,
+                    pre_match_message_id,
+                    post_match_draft_created_at,
+                    post_match_published_at,
+                    post_match_message_id,
+                    updated_at
+                )
+                VALUES (
+                    'default',
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    COALESCE(%s, now()),
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    now()
+                )
+                ON CONFLICT (agent_key)
+                DO UPDATE SET
+                    match_id = EXCLUDED.match_id,
+                    match_json = EXCLUDED.match_json,
+                    status = EXCLUDED.status,
+                    agent_score = EXCLUDED.agent_score,
+                    agent_reasons = EXCLUDED.agent_reasons,
+                    selected_at = EXCLUDED.selected_at,
+                    pre_match_published_at = EXCLUDED.pre_match_published_at,
+                    pre_match_message_id = EXCLUDED.pre_match_message_id,
+                    post_match_draft_created_at =
+                        EXCLUDED.post_match_draft_created_at,
+                    post_match_published_at =
+                        EXCLUDED.post_match_published_at,
+                    post_match_message_id = EXCLUDED.post_match_message_id,
+                    updated_at = now();
+                """,
+                (
+                    match_id,
+                    Json(make_json_safe(match) or {}),
+                    str(last_matchday.get("status") or "unknown"),
+                    last_matchday.get("agent_score"),
+                    Json(last_matchday.get("agent_reasons") or []),
+                    channel_agent_timestamp_to_datetime(
+                        last_matchday.get("selected_at")
+                    ),
+                    channel_agent_timestamp_to_datetime(
+                        last_matchday.get("pre_match_published_at")
+                    ),
+                    last_matchday.get("pre_match_message_id"),
+                    channel_agent_timestamp_to_datetime(
+                        last_matchday.get("post_match_draft_created_at")
+                    ),
+                    channel_agent_timestamp_to_datetime(
+                        last_matchday.get("post_match_published_at")
+                    ),
+                    last_matchday.get("post_match_message_id"),
+                ),
+            )
+        connection.commit()
+        logger.info(
+            "channel_agent last_matchday saved to db: match_id=%s status=%s",
+            match_id,
+            last_matchday.get("status"),
+        )
+    except Exception:
+        logger.exception("channel_agent last_matchday db save failed")
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def load_channel_agent_last_matchday_from_db() -> dict | None:
+    database_url = get_database_url()
+    if not database_url:
+        return None
+    if not ensure_channel_agent_matchdays_table():
+        logger.warning("channel_agent last_matchday db load failed")
+        return None
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    match_id,
+                    match_json,
+                    status,
+                    agent_score,
+                    agent_reasons,
+                    selected_at,
+                    pre_match_published_at,
+                    pre_match_message_id,
+                    post_match_draft_created_at,
+                    post_match_published_at,
+                    post_match_message_id
+                FROM channel_agent_matchdays
+                WHERE agent_key = 'default'
+                LIMIT 1;
+                """
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+
+        last_matchday = {
+            "match_id": row.get("match_id"),
+            "match": row.get("match_json") or {},
+            "selected_at": channel_agent_datetime_to_timestamp(
+                row.get("selected_at")
+            ),
+            "status": row.get("status"),
+            "agent_score": row.get("agent_score"),
+            "agent_reasons": row.get("agent_reasons") or [],
+            "pre_match_published_at": channel_agent_datetime_to_timestamp(
+                row.get("pre_match_published_at")
+            ),
+            "pre_match_message_id": row.get("pre_match_message_id"),
+            "post_match_draft_created_at": channel_agent_datetime_to_timestamp(
+                row.get("post_match_draft_created_at")
+            ),
+            "post_match_published_at": channel_agent_datetime_to_timestamp(
+                row.get("post_match_published_at")
+            ),
+            "post_match_message_id": row.get("post_match_message_id"),
+            "_source": "db",
+        }
+        logger.info(
+            "channel_agent last_matchday loaded from db: match_id=%s",
+            last_matchday.get("match_id"),
+        )
+        return last_matchday
+    except Exception:
+        logger.exception("channel_agent last_matchday db load failed")
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def get_channel_agent_last_matchday(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> dict | None:
     last_matchday = context.bot_data.get("channel_agent_last_matchday")
-    if not isinstance(last_matchday, dict):
-        return None
-    if not last_matchday.get("match_id") or not last_matchday.get("match"):
-        return None
-    return last_matchday
+    if (
+        isinstance(last_matchday, dict)
+        and last_matchday.get("match_id")
+        and last_matchday.get("match")
+    ):
+        last_matchday.setdefault("_source", "memory")
+        return last_matchday
+
+    loaded_matchday = load_channel_agent_last_matchday_from_db()
+    if loaded_matchday and loaded_matchday.get("match_id") and loaded_matchday.get("match"):
+        context.bot_data["channel_agent_last_matchday"] = loaded_matchday
+        return loaded_matchday
+    return None
 
 
 def find_recap_candidate_for_last_matchday(
@@ -13193,6 +13497,7 @@ def build_channel_admin_status_text(context: ContextTypes.DEFAULT_TYPE) -> str:
                 f"Матч дня: {home} — {away}",
                 f"match_id: {last_matchday.get('match_id')}",
                 f"status: {last_matchday.get('status') or 'unknown'}",
+                f"Память агента: {last_matchday.get('_source') or 'memory'}",
                 f"selected_at: {last_matchday.get('selected_at') or 'не указано'}",
             ]
         )
@@ -13200,6 +13505,7 @@ def build_channel_admin_status_text(context: ContextTypes.DEFAULT_TYPE) -> str:
             lines.append(f"agent_score: {last_matchday.get('agent_score')}")
     else:
         lines.append("Матч дня: не выбран")
+        lines.append("Память агента: empty")
 
     lines.extend(
         [
@@ -13563,7 +13869,11 @@ async def auto_prepare_channel_matchday(
         "status": "pre_match_draft_created",
         "agent_score": best_match.get("agent_score"),
         "agent_reasons": best_match.get("agent_reasons") or [],
+        "_source": "memory",
     }
+    save_channel_agent_last_matchday_to_db(
+        context.bot_data["channel_agent_last_matchday"]
+    )
     await message.reply_text(
         build_channel_agent_selection_message(best_match, top_matches),
         reply_markup=build_channel_agent_selection_keyboard(),
@@ -13800,7 +14110,9 @@ async def auto_prepare_channel_recap(
         timezone.utc
     ).timestamp()
     last_matchday["match"] = recap_match
+    last_matchday["_source"] = "memory"
     context.bot_data["channel_agent_last_matchday"] = last_matchday
+    save_channel_agent_last_matchday_to_db(last_matchday)
     logger.info("channel_agent recap draft created: match_id=%s", draft_match_id)
 
     await message.reply_text(build_channel_agent_recap_ready_message(recap_match))
@@ -14227,7 +14539,22 @@ async def channel_publish_callback(
             timezone.utc
         ).timestamp()
         last_matchday["pre_match_message_id"] = sent_message.message_id
+        last_matchday["_source"] = "memory"
         context.bot_data["channel_agent_last_matchday"] = last_matchday
+        save_channel_agent_last_matchday_to_db(last_matchday)
+    elif (
+        content_type == "post_match"
+        and last_matchday
+        and str(last_matchday.get("match_id") or "").strip() == match_id
+    ):
+        last_matchday["status"] = "post_match_published"
+        last_matchday["post_match_published_at"] = datetime.now(
+            timezone.utc
+        ).timestamp()
+        last_matchday["post_match_message_id"] = sent_message.message_id
+        last_matchday["_source"] = "memory"
+        context.bot_data["channel_agent_last_matchday"] = last_matchday
+        save_channel_agent_last_matchday_to_db(last_matchday)
     logger.info(
         "channel_publish success: match_id=%s content_type=%s message_id=%s",
         match_id,
@@ -16010,6 +16337,7 @@ def run_miniapp_api_server() -> None:
 
 def main() -> None:
     init_db()
+    ensure_channel_agent_matchdays_table()
     if WEBAPP_URL:
         logger.info("Mini App WEBAPP_URL configured: %s", WEBAPP_URL)
 
