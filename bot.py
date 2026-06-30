@@ -4062,7 +4062,8 @@ def build_social_caption_for_draft(
         [
             title,
             body,
-            "Полный AI-разбор — в Telegram: @Match_Stat_bot",
+            "Полный AI-разбор: @Match_Stat_bot\n"
+            "Канал MatchLab: https://t.me/matchlab_ai",
             CHANNEL_DRAFT_DISCLAIMER,
             hashtags,
         ]
