@@ -3029,6 +3029,54 @@ def build_channel_morning_digest_draft(matches: list[dict]) -> str:
     return limit_channel_text_preserving_disclaimer(draft, 1100)
 
 
+def build_channel_daily_radar_draft(matches: list[dict]) -> str:
+    selected_matches = matches[:5]
+    lines = [
+        "🛰 Футбольный радар MatchLab",
+        "",
+        "Дневной радар без внешних новостных источников: отмечаем футбольные темы, за которыми стоит следить сегодня.",
+        "",
+    ]
+    if selected_matches:
+        lines.append("В фокусе дня:")
+        lines.append("")
+        for index, match in enumerate(selected_matches, start=1):
+            home = translate_team_name_ru(match.get("home")) or "Команда 1"
+            away = translate_team_name_ru(match.get("away")) or "Команда 2"
+            lines.extend(
+                [
+                    f"{index}. {home} — {away}",
+                    f"    {get_channel_digest_reason(match, index - 1)}",
+                ]
+            )
+    else:
+        lines.extend(
+            [
+                "Что отслеживать сегодня:",
+                "",
+                "1. Форма фаворитов в важных турнирах.",
+                "2. Темп матчей после первых минут.",
+                "3. Молодые игроки и их роль в атаке.",
+                "4. Кто лучше использует моменты.",
+                "5. Неожиданные игровые сценарии.",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "Это не подтверждённая новостная лента: без внешних источников не добавляем интервью, трансферы, травмы или инсайды.",
+            "",
+            "Полный AI-разбор: @Match_Stat_bot",
+            "Канал MatchLab: https://t.me/matchlab_ai",
+            "",
+            CHANNEL_DRAFT_DISCLAIMER,
+        ]
+    )
+    draft = sanitize_channel_post_text("\n".join(lines))
+    return limit_channel_text_preserving_disclaimer(draft, 1200)
+
+
 async def publish_channel_morning_digest(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
@@ -3112,6 +3160,87 @@ async def publish_channel_morning_digest(
     )
     logger.info(
         "channel_morning_digest published: date_key=%s message_id=%s",
+        date_key,
+        sent_message.message_id,
+    )
+
+
+async def publish_channel_daily_football_radar(
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    content_type = "daily_football_radar"
+    date_key = datetime.now(ALMATY_TZ).strftime("%Y-%m-%d")
+    logger.info("channel_daily_football_radar publish started: date_key=%s", date_key)
+
+    local_key = f"{content_type}:{date_key}:published"
+    if context.bot_data.get(local_key):
+        logger.info(
+            "channel_daily_football_radar already published: date_key=%s",
+            date_key,
+        )
+        return
+
+    if not MATCHLAB_CHANNEL_ID:
+        logger.warning("channel_daily_football_radar failed: no_channel_id")
+        save_channel_auto_post_status(
+            content_type,
+            date_key,
+            "failed",
+            error_text="MATCHLAB_CHANNEL_ID is not configured",
+        )
+        return
+
+    if has_channel_auto_post_been_published(content_type, date_key):
+        context.bot_data[local_key] = True
+        logger.info(
+            "channel_daily_football_radar already published: date_key=%s",
+            date_key,
+        )
+        return
+
+    matches = await asyncio.to_thread(get_channel_morning_digest_matches, 5)
+    draft = build_channel_daily_radar_draft(matches)
+    draft = sanitize_channel_post_text(draft)
+    forbidden_left = channel_text_has_forbidden_words(draft)
+    if forbidden_left:
+        logger.warning("channel_daily_football_radar failed: forbidden_words_left")
+        save_channel_auto_post_status(
+            content_type,
+            date_key,
+            "failed",
+            draft=draft,
+            error_text="forbidden_words_left",
+        )
+        return
+
+    save_channel_auto_post_status(content_type, date_key, "draft_created", draft=draft)
+    try:
+        sent_message = await context.bot.send_message(
+            chat_id=MATCHLAB_CHANNEL_ID,
+            text=draft,
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        logger.exception("channel_daily_football_radar failed: send_message")
+        save_channel_auto_post_status(
+            content_type,
+            date_key,
+            "failed",
+            draft=draft,
+            error_text="send_message_failed",
+        )
+        return
+
+    context.bot_data[local_key] = True
+    save_channel_auto_post_status(
+        content_type,
+        date_key,
+        "published",
+        draft=draft,
+        published_message_id=sent_message.message_id,
+    )
+    logger.info(
+        "channel_daily_football_radar published: date_key=%s message_id=%s",
         date_key,
         sent_message.message_id,
     )
@@ -6807,6 +6936,26 @@ def schedule_channel_morning_digest(application: Application) -> None:
         name="channel_morning_digest",
     )
     logger.info("channel_morning_digest scheduled for 09:00 Asia/Almaty")
+
+
+def schedule_channel_daily_football_radar(application: Application) -> None:
+    job_queue = application.job_queue
+    if job_queue is None:
+        logger.warning(
+            "channel_daily_football_radar schedule skipped: JobQueue is not available"
+        )
+        return
+
+    if job_queue.get_jobs_by_name("channel_daily_football_radar"):
+        logger.info("channel_daily_football_radar schedule already exists")
+        return
+
+    job_queue.run_daily(
+        publish_channel_daily_football_radar,
+        time=time(hour=14, minute=0, tzinfo=ALMATY_TZ),
+        name="channel_daily_football_radar",
+    )
+    logger.info("channel_daily_football_radar scheduled for 14:00 Asia/Almaty")
 
 
 def get_current_favorite_team(
@@ -13856,6 +14005,12 @@ def build_channel_admin_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    "🛰 Опубликовать дневной радар",
+                    callback_data="channel_admin_publish_daily_radar",
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     "🧠 Подготовить Матч дня",
                     callback_data="channel_admin_plan",
                 )
@@ -13884,6 +14039,13 @@ def build_channel_admin_status_text(context: ContextTypes.DEFAULT_TYPE) -> str:
         "morning_digest",
         morning_date_key,
     ) or bool(context.bot_data.get(f"morning_digest:{morning_date_key}:published"))
+    radar_date_key = morning_date_key
+    radar_published = has_channel_auto_post_been_published(
+        "daily_football_radar",
+        radar_date_key,
+    ) or bool(
+        context.bot_data.get(f"daily_football_radar:{radar_date_key}:published")
+    )
     lines = [
         "📊 Статус MatchLab Channel Agent",
         "",
@@ -13893,6 +14055,8 @@ def build_channel_admin_status_text(context: ContextTypes.DEFAULT_TYPE) -> str:
         f"Черновиков в памяти: {draft_count}",
         "Утренний обзор: авто 09:00 Алматы, без approve",
         f"Сегодняшний обзор: {'опубликован' if morning_published else 'не опубликован'}",
+        "Дневной радар: авто 14:00 Алматы, без approve",
+        f"Сегодняшний радар: {'опубликован' if radar_published else 'не опубликован'}",
         "Режим: подготовка → approve → публикация",
         "",
     ]
@@ -14096,6 +14260,32 @@ async def channel_admin_publish_morning_digest_callback(
     await publish_channel_morning_digest(context)
     await query.message.reply_text(
         "Запустил публикацию утреннего обзора. Проверь канал и логи."
+    )
+
+
+async def channel_admin_publish_daily_radar_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "Админ-панель доступна только в личке с ботом."
+        )
+        return
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    await publish_channel_daily_football_radar(context)
+    await query.message.reply_text(
+        "Запустил публикацию дневного радара. Проверь канал и логи."
     )
 
 
@@ -16846,6 +17036,12 @@ def main() -> None:
     )
     application.add_handler(
         CallbackQueryHandler(
+            channel_admin_publish_daily_radar_callback,
+            pattern=r"^channel_admin_publish_daily_radar$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
             channel_admin_plan_manual_callback,
             pattern=r"^channel_admin_plan_manual$",
         )
@@ -16958,6 +17154,7 @@ def main() -> None:
         logger.info("🌐 Mini App API disabled")
 
     schedule_channel_morning_digest(application)
+    schedule_channel_daily_football_radar(application)
 
     application.run_polling(
     drop_pending_updates=True
