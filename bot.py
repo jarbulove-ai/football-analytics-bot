@@ -59,6 +59,26 @@ OPENAI_AI_REASONING_EFFORT_PREMIUM = os.getenv(
 ).strip()
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
 MATCHLAB_CHANNEL_ID = os.getenv("MATCHLAB_CHANNEL_ID", "").strip()
+MATCHDAY_COVER_TEMPLATE_PATH = os.getenv(
+    "MATCHDAY_COVER_TEMPLATE_PATH",
+    "assets/matchday_cover_bg.png",
+)
+MATCHLAB_LOGO_PATH = os.getenv(
+    "MATCHLAB_LOGO_PATH",
+    "assets/matchlab_logo.png",
+)
+MATCHLAB_LOGO_MARK_PATH = os.getenv(
+    "MATCHLAB_LOGO_MARK_PATH",
+    "assets/matchlab_logo_mark.png",
+)
+MATCHLAB_FONT_PATH = os.getenv(
+    "MATCHLAB_FONT_PATH",
+    "assets/fonts/matchlab_title.ttf",
+)
+MATCHLAB_CONDENSED_FONT_PATH = os.getenv(
+    "MATCHLAB_CONDENSED_FONT_PATH",
+    "assets/fonts/matchlab_condensed.ttf",
+)
 # Render Background Worker:
 # RUN_TELEGRAM_BOT=true
 # ENABLE_MINIAPP_API=false
@@ -3123,6 +3143,10 @@ def mix_rgb(
 def get_channel_cover_font(size: int, bold: bool = False):
     from PIL import ImageFont
 
+    custom_candidates = []
+    if bold:
+        custom_candidates.append(MATCHLAB_CONDENSED_FONT_PATH)
+    custom_candidates.append(MATCHLAB_FONT_PATH)
     candidates = (
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -3130,13 +3154,73 @@ def get_channel_cover_font(size: int, bold: bool = False):
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
         "/Library/Fonts/Arial Unicode.ttf",
     )
-    preferred = candidates if bold else (candidates[1], candidates[0], *candidates[2:])
+    preferred = (
+        *custom_candidates,
+        *(candidates if bold else (candidates[1], candidates[0], *candidates[2:])),
+    )
     for font_path in preferred:
+        if not font_path or not Path(font_path).exists():
+            continue
         try:
             return ImageFont.truetype(font_path, size=size)
         except Exception:
+            logger.debug(
+                "channel_cover font load failed: path=%s",
+                font_path,
+                exc_info=True,
+            )
             continue
     return ImageFont.load_default()
+
+
+def load_cover_image(path: str, target_width: int, target_height: int):
+    from PIL import Image
+
+    image_path = Path(str(path or ""))
+    if not image_path.exists():
+        return None
+    try:
+        image = Image.open(image_path).convert("RGBA")
+        source_width, source_height = image.size
+        if source_width <= 0 or source_height <= 0:
+            return None
+
+        scale = max(target_width / source_width, target_height / source_height)
+        resized_width = max(target_width, int(source_width * scale))
+        resized_height = max(target_height, int(source_height * scale))
+        resampling = getattr(Image, "Resampling", Image).LANCZOS
+        image = image.resize((resized_width, resized_height), resampling)
+
+        left = max((resized_width - target_width) // 2, 0)
+        top = max((resized_height - target_height) // 2, 0)
+        return image.crop((left, top, left + target_width, top + target_height))
+    except Exception:
+        logger.debug(
+            "channel_cover template load failed: path=%s",
+            path,
+            exc_info=True,
+        )
+        return None
+
+
+def load_cover_logo(path: str, max_width: int, max_height: int):
+    from PIL import Image
+
+    logo_path = Path(str(path or ""))
+    if not logo_path.exists():
+        return None
+    try:
+        logo = Image.open(logo_path).convert("RGBA")
+        resampling = getattr(Image, "Resampling", Image).LANCZOS
+        logo.thumbnail((max_width, max_height), resampling)
+        return logo
+    except Exception:
+        logger.debug(
+            "channel_cover logo load failed: path=%s",
+            path,
+            exc_info=True,
+        )
+        return None
 
 
 def get_text_size(draw, text: str, font) -> tuple[int, int]:
@@ -3171,6 +3255,39 @@ def draw_centered_text(
     draw.text((xy[0] - width / 2, xy[1] - height / 2), text, font=font, fill=fill)
 
 
+def draw_text_with_shadow(
+    draw,
+    xy: tuple[int, int],
+    text: str,
+    font,
+    fill: tuple[int, int, int] | str,
+    anchor: str = "mm",
+    shadow_fill: tuple[int, int, int, int] | str = (0, 0, 0, 180),
+    shadow_offset: int = 3,
+) -> None:
+    try:
+        for x_offset, y_offset in (
+            (-shadow_offset, 0),
+            (shadow_offset, 0),
+            (0, -shadow_offset),
+            (0, shadow_offset),
+            (shadow_offset, shadow_offset),
+        ):
+            draw.text(
+                (xy[0] + x_offset, xy[1] + y_offset),
+                text,
+                font=font,
+                fill=shadow_fill,
+                anchor=anchor,
+            )
+        draw.text(xy, text, font=font, fill=fill, anchor=anchor)
+    except Exception:
+        if anchor == "mm":
+            draw_centered_text(draw, xy, text, font, fill)
+        else:
+            draw.text(xy, text, font=font, fill=fill)
+
+
 def generate_channel_matchday_cover(match: dict) -> str:
     from PIL import Image, ImageDraw, ImageFilter
 
@@ -3190,29 +3307,48 @@ def generate_channel_matchday_cover(match: dict) -> str:
     dark_base = (5, 10, 18)
     matchlab_accent = (132, 204, 22)
 
-    image = Image.new("RGB", (width, height), dark_base)
-    pixels = image.load()
-    for y in range(height):
-        vertical_ratio = y / max(height - 1, 1)
-        for x in range(width):
-            horizontal_ratio = x / max(width - 1, 1)
-            team_mix = mix_rgb(left_color, right_color, horizontal_ratio)
-            shade = mix_rgb(team_mix, dark_base, 0.55 + vertical_ratio * 0.25)
-            pixels[x, y] = shade
+    background = load_cover_image(MATCHDAY_COVER_TEMPLATE_PATH, width, height)
+    if background:
+        logger.info(
+            "channel_cover template used: path=%s",
+            MATCHDAY_COVER_TEMPLATE_PATH,
+        )
+        image = background
+    else:
+        logger.info(
+            "channel_cover template missing, fallback generated: path=%s",
+            MATCHDAY_COVER_TEMPLATE_PATH,
+        )
+        image = Image.new("RGB", (width, height), dark_base)
+        pixels = image.load()
+        for y in range(height):
+            vertical_ratio = y / max(height - 1, 1)
+            for x in range(width):
+                horizontal_ratio = x / max(width - 1, 1)
+                team_mix = mix_rgb(left_color, right_color, horizontal_ratio)
+                shade = mix_rgb(team_mix, dark_base, 0.55 + vertical_ratio * 0.25)
+                pixels[x, y] = shade
+        image = image.convert("RGBA")
 
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    draw.rectangle((0, 0, width // 2, height), fill=(*left_color, 70))
-    draw.rectangle((width // 2, 0, width, height), fill=(*right_color, 70))
+    draw.rectangle((0, 0, width, height), fill=(0, 0, 0, 44))
+    draw.rectangle((0, 0, width // 2, height), fill=(*left_color, 54))
+    draw.rectangle((width // 2, 0, width, height), fill=(*right_color, 54))
     draw.polygon(
         [(0, height), (0, 0), (width * 0.34, 0), (width * 0.18, height)],
-        fill=(*left_secondary, 55),
+        fill=(*left_secondary, 42),
     )
     draw.polygon(
         [(width, 0), (width, height), (width * 0.66, height), (width * 0.82, 0)],
-        fill=(*right_secondary, 55),
+        fill=(*right_secondary, 42),
     )
-    draw.rounded_rectangle((70, 62, 1210, 658), radius=42, fill=(3, 7, 18, 132))
+    for y in range(height):
+        edge_ratio = max(0, (160 - min(y, height - y)) / 160)
+        if edge_ratio:
+            alpha = int(120 * edge_ratio)
+            draw.line((0, y, width, y), fill=(0, 0, 0, alpha))
+    draw.rounded_rectangle((70, 62, 1210, 658), radius=42, fill=(3, 7, 18, 112))
     draw.rounded_rectangle(
         (90, 82, 1190, 638),
         radius=34,
@@ -3232,6 +3368,21 @@ def generate_channel_matchday_cover(match: dict) -> str:
     overlay = overlay.filter(ImageFilter.GaussianBlur(radius=0.2))
     image = Image.alpha_composite(image.convert("RGBA"), overlay)
     draw = ImageDraw.Draw(image)
+    logo = load_cover_logo(MATCHLAB_LOGO_PATH, max_width=420, max_height=120)
+    logger.info(
+        "channel_cover logo_used %s path=%s",
+        bool(logo),
+        MATCHLAB_LOGO_PATH,
+    )
+    custom_font_configured = any(
+        Path(path).exists()
+        for path in (MATCHLAB_FONT_PATH, MATCHLAB_CONDENSED_FONT_PATH)
+        if path
+    )
+    logger.info(
+        "channel_cover custom_font_configured %s",
+        custom_font_configured,
+    )
 
     brand_font = get_channel_cover_font(38, bold=True)
     label_font = get_channel_cover_font(58, bold=True)
@@ -3239,27 +3390,45 @@ def generate_channel_matchday_cover(match: dict) -> str:
     handle_font = get_channel_cover_font(34, bold=True)
     title_font = fit_channel_cover_font(draw, match_title, 1040, 78, 42, bold=True)
 
-    draw.text((118, 108), "MatchLab", font=brand_font, fill=(236, 253, 245))
-    brand_width, _ = get_text_size(draw, "MatchLab", brand_font)
-    draw.rounded_rectangle(
-        (118 + brand_width + 20, 111, 118 + brand_width + 92, 146),
-        radius=16,
-        fill=(*matchlab_accent, 220),
+    if logo:
+        image.alpha_composite(logo, ((width - logo.width) // 2, 96))
+    else:
+        draw.text((118, 108), "MatchLab", font=brand_font, fill=(236, 253, 245))
+        brand_width, _ = get_text_size(draw, "MatchLab", brand_font)
+        draw.rounded_rectangle(
+            (118 + brand_width + 20, 111, 118 + brand_width + 92, 146),
+            radius=16,
+            fill=(*matchlab_accent, 220),
+        )
+        draw.text(
+            (118 + brand_width + 38, 113),
+            "AI",
+            font=get_channel_cover_font(24, bold=True),
+            fill=(5, 10, 18),
+        )
+    draw_text_with_shadow(
+        draw,
+        (width // 2, 230),
+        "МАТЧ ДНЯ",
+        label_font,
+        (190, 242, 100),
+        shadow_offset=4,
     )
-    draw.text(
-        (118 + brand_width + 38, 113),
-        "AI",
-        font=get_channel_cover_font(24, bold=True),
-        fill=(5, 10, 18),
+    draw_text_with_shadow(
+        draw,
+        (width // 2, 352),
+        match_title,
+        title_font,
+        (248, 250, 252),
+        shadow_offset=5,
     )
-    draw_centered_text(draw, (width // 2, 230), "МАТЧ ДНЯ", label_font, (190, 242, 100))
-    draw_centered_text(draw, (width // 2, 352), match_title, title_font, (248, 250, 252))
-    draw_centered_text(
+    draw_text_with_shadow(
         draw,
         (width // 2, 454),
-        "AI-разбор до матча",
+        "AI-РАЗБОР ДО МАТЧА",
         subtitle_font,
         (203, 213, 225),
+        shadow_offset=3,
     )
     draw.rounded_rectangle(
         (width // 2 - 190, 545, width // 2 + 190, 600),
@@ -3268,12 +3437,13 @@ def generate_channel_matchday_cover(match: dict) -> str:
         outline=(*matchlab_accent, 190),
         width=2,
     )
-    draw_centered_text(
+    draw_text_with_shadow(
         draw,
         (width // 2, 572),
         "@Match_Stat_bot",
         handle_font,
         (236, 253, 245),
+        shadow_offset=2,
     )
 
     cover_file = tempfile.NamedTemporaryFile(
