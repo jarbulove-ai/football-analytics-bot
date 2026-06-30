@@ -9,7 +9,9 @@ import hmac
 import json
 import threading
 import tempfile
+import xml.etree.ElementTree as ET
 from datetime import datetime, time, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -3075,6 +3077,208 @@ def build_channel_daily_radar_draft(matches: list[dict]) -> str:
     )
     draft = sanitize_channel_post_text("\n".join(lines))
     return limit_channel_text_preserving_disclaimer(draft, 1200)
+
+
+CHANNEL_FOOTBALL_NEWS_SOURCES = (
+    ("BBC Sport Football", "https://feeds.bbci.co.uk/sport/football/rss.xml"),
+    ("Sky Sports Football", "https://www.skysports.com/rss/12040"),
+    ("The Guardian Football", "https://www.theguardian.com/football/rss"),
+    ("ESPN Soccer", "https://www.espn.com/espn/rss/soccer/news"),
+)
+
+
+def strip_html_tags(text: str | None) -> str:
+    compact_text = re.sub(r"<[^>]+>", " ", str(text or ""))
+    return re.sub(r"\s+", " ", compact_text).strip()
+
+
+def parse_channel_news_datetime(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = parsedate_to_datetime(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat()
+    except Exception:
+        return text
+
+
+def get_rss_child_text(item, names: tuple[str, ...]) -> str:
+    for child in list(item):
+        child_name = child.tag.rsplit("}", 1)[-1].lower()
+        if child_name in names:
+            return str(child.text or "").strip()
+    return ""
+
+
+def fetch_channel_football_news_items() -> list[dict]:
+    items = []
+    seen_urls = set()
+    headers = {"User-Agent": "MatchLabBot/1.0"}
+    for source_name, source_url in CHANNEL_FOOTBALL_NEWS_SOURCES:
+        try:
+            response = requests.get(
+                source_url,
+                headers=headers,
+                timeout=10,
+            )
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+        except Exception:
+            logger.warning(
+                "channel_news_radar source fetch failed: source=%s",
+                source_name,
+                exc_info=True,
+            )
+            continue
+
+        for rss_item in root.findall(".//item")[:12]:
+            title = strip_html_tags(get_rss_child_text(rss_item, ("title",)))
+            url = get_rss_child_text(rss_item, ("link",))
+            summary = strip_html_tags(
+                get_rss_child_text(rss_item, ("description", "summary"))
+            )
+            published_at = parse_channel_news_datetime(
+                get_rss_child_text(rss_item, ("pubdate", "published", "updated"))
+            )
+            if not title or not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            items.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "source": source_name,
+                    "published_at": published_at,
+                    "summary": summary,
+                }
+            )
+    return items
+
+
+def score_channel_news_item(item: dict) -> int:
+    text = " ".join(
+        str(item.get(key) or "")
+        for key in ("title", "summary", "source")
+    ).casefold()
+    score = 10
+    positive_keywords = {
+        "liverpool": 14,
+        "england": 12,
+        "world cup": 16,
+        "champions league": 16,
+        "premier league": 14,
+        "real madrid": 14,
+        "barcelona": 14,
+        "man city": 13,
+        "manchester city": 13,
+        "arsenal": 12,
+        "chelsea": 12,
+        "man united": 12,
+        "manchester united": 12,
+        "bayern": 12,
+        "psg": 12,
+        "transfer": 10,
+        "injury": 8,
+        "interview": 7,
+        "press conference": 7,
+        "coach": 7,
+        "manager": 7,
+        "quote": 7,
+        "young player": 7,
+        "record": 8,
+        "official": 9,
+        "agreement": 8,
+        "talks": 7,
+        "interest": 6,
+        "considering": 6,
+        "bid": 8,
+        "medical": 8,
+    }
+    negative_keywords = {
+        "betting": 35,
+        "odds": 35,
+        "casino": 35,
+        "fantasy": 25,
+        "quiz": 20,
+        "gossip": 10,
+        "cricket": 25,
+        "tennis": 25,
+        "rugby": 25,
+        "nba": 25,
+        "nfl": 25,
+        "formula 1": 25,
+    }
+    for keyword, points in positive_keywords.items():
+        if keyword in text:
+            score += points
+    for keyword, points in negative_keywords.items():
+        if keyword in text:
+            score -= points
+    return max(0, min(100, score))
+
+
+def build_channel_news_radar_draft(items: list[dict]) -> str:
+    ranked_items = sorted(
+        items,
+        key=lambda item: int(item.get("score") or score_channel_news_item(item)),
+        reverse=True,
+    )
+    selected_items = ranked_items[:5]
+    lines = [
+        "📰 Футбольный радар MatchLab",
+        "",
+        "Свежие инфоповоды из открытых источников. Не добавляем факты сверх заголовка, описания и источника.",
+        "",
+    ]
+    for index, item in enumerate(selected_items, start=1):
+        title = sanitize_channel_post_text(strip_html_tags(item.get("title")))
+        summary = sanitize_channel_post_text(strip_html_tags(item.get("summary")))
+        source = sanitize_channel_post_text(str(item.get("source") or "Источник"))
+        if summary:
+            summary = get_channel_short_text(summary, 150)
+        lines.append(f"{index}. {title}")
+        if summary:
+            lines.append(f"    {summary}")
+        lines.append(f"    Источник: {source}")
+
+    lines.extend(
+        [
+            "",
+            "Почему это важно:",
+            "— новости могут повлиять на контекст ближайших матчей",
+            "— следим за командами, тренерами и формой игроков",
+            "— осторожно относимся к ранним сообщениям и ждём подтверждений",
+            "",
+            "Полный AI-разбор: @Match_Stat_bot",
+            "Канал MatchLab: https://t.me/matchlab_ai",
+            "",
+            CHANNEL_DRAFT_DISCLAIMER,
+        ]
+    )
+    draft = sanitize_channel_post_text("\n".join(lines))
+    return limit_channel_text_preserving_disclaimer(draft, 1200)
+
+
+def build_channel_news_draft_keyboard(draft_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Опубликовать новостной радар",
+                    callback_data=f"channel_news_publish:{draft_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "❌ Пропустить",
+                    callback_data=f"channel_news_skip:{draft_id}",
+                )
+            ],
+        ]
+    )
 
 
 async def publish_channel_morning_digest(
@@ -14011,6 +14215,12 @@ def build_channel_admin_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    "📰 Проверить новости",
+                    callback_data="channel_admin_check_news",
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     "🧠 Подготовить Матч дня",
                     callback_data="channel_admin_plan",
                 )
@@ -14287,6 +14497,164 @@ async def channel_admin_publish_daily_radar_callback(
     await query.message.reply_text(
         "Запустил публикацию дневного радара. Проверь канал и логи."
     )
+
+
+async def channel_admin_check_news_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "Админ-панель доступна только в личке с ботом."
+        )
+        return
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    await query.message.reply_text("Проверяю футбольные новости из открытых источников…")
+    items = await asyncio.to_thread(fetch_channel_football_news_items)
+    if not items:
+        await query.message.reply_text(
+            "Свежих новостей из доступных источников не найдено."
+        )
+        return
+
+    for item in items:
+        item["score"] = score_channel_news_item(item)
+    items = [item for item in items if int(item.get("score") or 0) > 0]
+    if not items:
+        await query.message.reply_text(
+            "Свежих новостей из доступных источников не найдено."
+        )
+        return
+
+    items = sorted(items, key=lambda item: int(item.get("score") or 0), reverse=True)
+    items = items[:5]
+    draft = build_channel_news_radar_draft(items)
+    draft = sanitize_channel_post_text(draft)
+    if channel_text_has_forbidden_words(draft):
+        await query.message.reply_text(
+            "Черновик заблокирован фильтром безопасности."
+        )
+        return
+
+    draft_id = f"news_{datetime.now(ALMATY_TZ).strftime('%Y%m%d_%H%M%S')}"
+    cleanup_channel_bot_data(context)
+    news_drafts = context.bot_data.setdefault("channel_news_drafts", {})
+    news_drafts[draft_id] = {
+        "draft": draft,
+        "items": items,
+        "created_at": datetime.now(ALMATY_TZ).isoformat(),
+        "published": False,
+    }
+    await query.message.reply_text(
+        draft,
+        reply_markup=build_channel_news_draft_keyboard(draft_id),
+    )
+
+
+async def channel_news_publish_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "Админ-панель доступна только в личке с ботом."
+        )
+        return
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    logger.info("channel_news_radar publish started")
+    callback_data = query.data or ""
+    draft_id = callback_data.split(":", 1)[1].strip() if ":" in callback_data else ""
+    draft_item = (context.bot_data.get("channel_news_drafts") or {}).get(draft_id)
+    if not draft_item:
+        await query.message.reply_text("Черновик не найден или устарел.")
+        return
+    if draft_item.get("published"):
+        await query.message.reply_text("Этот новостной радар уже опубликован.")
+        return
+    if not MATCHLAB_CHANNEL_ID:
+        await query.message.reply_text(
+            "Канал не настроен: добавьте MATCHLAB_CHANNEL_ID в Environment."
+        )
+        return
+
+    draft = sanitize_channel_post_text(draft_item.get("draft") or "")
+    if channel_text_has_forbidden_words(draft):
+        await query.message.reply_text(
+            "Пост содержит запрещённые слова. Нужна ручная проверка."
+        )
+        return
+
+    try:
+        sent_message = await context.bot.send_message(
+            chat_id=MATCHLAB_CHANNEL_ID,
+            text=draft,
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        logger.exception("channel_news_radar failed")
+        await query.message.reply_text(
+            "Не удалось опубликовать новостной радар. Проверь канал и логи."
+        )
+        return
+
+    draft_item["published"] = True
+    draft_item["published_at"] = datetime.now(ALMATY_TZ).isoformat()
+    draft_item["published_message_id"] = sent_message.message_id
+    logger.info(
+        "channel_news_radar published: draft_id=%s message_id=%s",
+        draft_id,
+        sent_message.message_id,
+    )
+    await query.message.reply_text("Новостной радар опубликован в канал.")
+
+
+async def channel_news_skip_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "Админ-панель доступна только в личке с ботом."
+        )
+        return
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    callback_data = query.data or ""
+    draft_id = callback_data.split(":", 1)[1].strip() if ":" in callback_data else ""
+    news_drafts = context.bot_data.get("channel_news_drafts") or {}
+    if draft_id in news_drafts:
+        news_drafts[draft_id]["skipped"] = True
+        news_drafts[draft_id]["skipped_at"] = datetime.now(ALMATY_TZ).isoformat()
+    await query.message.reply_text("Новостной радар пропущен.")
 
 
 async def channel_plan_command(
@@ -17038,6 +17406,24 @@ def main() -> None:
         CallbackQueryHandler(
             channel_admin_publish_daily_radar_callback,
             pattern=r"^channel_admin_publish_daily_radar$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_admin_check_news_callback,
+            pattern=r"^channel_admin_check_news$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_news_publish_callback,
+            pattern=r"^channel_news_publish:.+$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_news_skip_callback,
+            pattern=r"^channel_news_skip:.+$",
         )
     )
     application.add_handler(
