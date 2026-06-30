@@ -2684,8 +2684,8 @@ def get_channel_recap_candidates(
 def build_channel_plan_message(candidates: list[dict]) -> str:
     lines = ["🤖 Кандидаты на матч дня:", ""]
     for index, match in enumerate(candidates, start=1):
-        home = translate_team_name_ru(match.get("home")) or "Команда 1"
-        away = translate_team_name_ru(match.get("away")) or "Команда 2"
+        home = format_channel_team_display(match.get("home")) or "Команда 1"
+        away = format_channel_team_display(match.get("away")) or "Команда 2"
         lines.extend(
             [
                 f"{index}. {home} — {away}",
@@ -2722,8 +2722,8 @@ def build_channel_recap_message(candidates: list[dict]) -> str:
 def build_channel_plan_keyboard(candidates: list[dict]) -> InlineKeyboardMarkup:
     keyboard = []
     for index, match in enumerate(candidates, start=1):
-        home = translate_team_name_ru(match.get("home")) or "Команда 1"
-        away = translate_team_name_ru(match.get("away")) or "Команда 2"
+        home = format_channel_team_display(match.get("home")) or "Команда 1"
+        away = format_channel_team_display(match.get("away")) or "Команда 2"
         keyboard.append(
             [
                 InlineKeyboardButton(
@@ -2867,6 +2867,17 @@ def get_team_flag_emoji(name: str | None) -> str:
     return TEAM_FLAG_EMOJI_OVERRIDES_CASEFOLD.get(team_name.casefold(), "")
 
 
+def format_channel_team_display(name: str | None) -> str:
+    raw_name = re.sub(r"\s+", " ", str(name or "")).strip()
+    if not raw_name:
+        return ""
+    translated_name = translate_team_name_ru(raw_name) or raw_name
+    flag = get_team_flag_emoji(raw_name)
+    if flag:
+        return f"{flag} {translated_name}"
+    return translated_name
+
+
 def get_channel_short_text(text: str, max_chars: int = 140) -> str:
     compact_text = re.sub(r"\s+", " ", str(text or "")).strip()
     if len(compact_text) <= max_chars:
@@ -2919,11 +2930,11 @@ def build_channel_post_draft(match: dict, analysis_result: dict) -> str:
     probabilities = structured.get("outcome_probabilities") or {}
     home_raw = match.get("home") or analysis_result.get("home_team") or ""
     away_raw = match.get("away") or analysis_result.get("away_team") or ""
-    home = translate_team_name_ru(home_raw) or "Команда 1"
-    away = translate_team_name_ru(away_raw) or "Команда 2"
+    home = format_channel_team_display(home_raw) or "Команда 1"
+    away = format_channel_team_display(away_raw) or "Команда 2"
     logger.info(
-        "channel_draft display teams: home_raw=%s home_ru=%s "
-        "away_raw=%s away_ru=%s",
+        "channel_draft display teams: home_raw=%s home_display=%s "
+        "away_raw=%s away_display=%s",
         home_raw,
         home,
         away_raw,
@@ -12249,8 +12260,8 @@ async def channel_pick_callback(
         )
         return
 
-    home = translate_team_name_ru(match.get("home")) or "Команда 1"
-    away = translate_team_name_ru(match.get("away")) or "Команда 2"
+    home = format_channel_team_display(match.get("home")) or "Команда 1"
+    away = format_channel_team_display(match.get("away")) or "Команда 2"
     await query.message.reply_text(
         f"Готовлю черновик поста для канала по матчу {home} — {away}…"
     )
