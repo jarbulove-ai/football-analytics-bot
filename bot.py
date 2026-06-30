@@ -12922,6 +12922,147 @@ async def admin_payment_confirm_callback(
         )
 
 
+def build_channel_admin_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🧠 Подготовить Матч дня",
+                    callback_data="channel_admin_plan",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🏁 Подготовить Итоги матча дня",
+                    callback_data="channel_admin_recap",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📊 Статус агента",
+                    callback_data="channel_admin_status",
+                )
+            ],
+        ]
+    )
+
+
+def build_channel_admin_status_text(context: ContextTypes.DEFAULT_TYPE) -> str:
+    draft_count = len(context.bot_data.get("channel_plan_drafts") or {})
+    return "\n".join(
+        [
+            "📊 Статус MatchLab Channel Agent",
+            "",
+            f"Канал: {'настроен' if MATCHLAB_CHANNEL_ID else 'не настроен'}",
+            f"Mini App URL: {'настроен' if WEBAPP_URL else 'не настроен'}",
+            f"OpenAI API: {'настроен' if OPENAI_API_KEY else 'не настроен'}",
+            f"Черновиков в памяти: {draft_count}",
+            "Режим: подготовка → approve → публикация",
+            "",
+            "Матч дня и Итоги сейчас готовятся по кнопке, публикация только после approve.",
+        ]
+    )
+
+
+async def channel_admin_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not is_private_chat(update):
+        if update.message:
+            await update.message.reply_text(
+                "Админ-панель доступна только в личке с ботом."
+            )
+        return
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if admin_id is None or not is_admin_user(admin_id):
+        if update.message:
+            await update.message.reply_text("Команда доступна только администратору.")
+        return
+
+    if not update.message:
+        return
+
+    await update.message.reply_text(
+        "🤖 MatchLab Channel Agent\n\nВыбери действие:",
+        reply_markup=build_channel_admin_keyboard(),
+    )
+
+
+async def channel_admin_plan_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "Админ-панель доступна только в личке с ботом."
+        )
+        return
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    if not query.message:
+        return
+    await send_channel_plan_candidates(query.message, context)
+
+
+async def channel_admin_recap_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "Админ-панель доступна только в личке с ботом."
+        )
+        return
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    if not query.message:
+        return
+    await send_channel_recap_candidates(query.message, context, admin_id)
+
+
+async def channel_admin_status_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "Админ-панель доступна только в личке с ботом."
+        )
+        return
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    await query.message.reply_text(build_channel_admin_status_text(context))
+
+
 async def channel_plan_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -12951,17 +13092,24 @@ async def channel_plan_command(
     if not update.message:
         return
 
-    await update.message.reply_text("Подбираю кандидатов на матч дня…")
+    await send_channel_plan_candidates(update.message, context)
+
+
+async def send_channel_plan_candidates(
+    message,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await message.reply_text("Подбираю кандидатов на матч дня…")
     candidates = await asyncio.to_thread(get_channel_plan_candidates)
     logger.info("channel_plan candidates found: count=%s", len(candidates))
     if not candidates:
-        await update.message.reply_text(
+        await message.reply_text(
             "Не нашёл подходящие ближайшие матчи. Попробуйте позже."
         )
         return
 
     store_channel_candidates(context, candidates)
-    await update.message.reply_text(
+    await message.reply_text(
         build_channel_plan_message(candidates),
         reply_markup=build_channel_plan_keyboard(candidates),
     )
@@ -12971,19 +13119,9 @@ async def show_channel_plan_again(
     query,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    candidates = await asyncio.to_thread(get_channel_plan_candidates)
-    logger.info("channel_plan candidates found: count=%s", len(candidates))
-    if not candidates:
-        await query.message.reply_text(
-            "Не нашёл подходящие ближайшие матчи. Попробуйте позже."
-        )
+    if not query.message:
         return
-
-    store_channel_candidates(context, candidates)
-    await query.message.reply_text(
-        build_channel_plan_message(candidates),
-        reply_markup=build_channel_plan_keyboard(candidates),
-    )
+    await send_channel_plan_candidates(query.message, context)
 
 
 async def channel_recap_command(
@@ -13015,18 +13153,29 @@ async def channel_recap_command(
     if not update.message:
         return
 
-    await update.message.reply_text("Подбираю завершённые матчи для итогов…")
-    admin_id = update.effective_user.id
+    await send_channel_recap_candidates(
+        update.message,
+        context,
+        update.effective_user.id,
+    )
+
+
+async def send_channel_recap_candidates(
+    message,
+    context: ContextTypes.DEFAULT_TYPE,
+    admin_id: int | None,
+) -> None:
+    await message.reply_text("Подбираю завершённые матчи для итогов…")
     candidates = await asyncio.to_thread(get_channel_recap_candidates, admin_id)
     logger.info("channel_recap candidates found: count=%s", len(candidates))
     if not candidates:
-        await update.message.reply_text(
+        await message.reply_text(
             "Не нашёл завершённые матчи для итогов. Попробуйте позже."
         )
         return
 
     store_channel_candidates(context, candidates)
-    await update.message.reply_text(
+    await message.reply_text(
         build_channel_recap_message(candidates),
         reply_markup=build_channel_recap_keyboard(candidates),
     )
@@ -13036,20 +13185,10 @@ async def show_channel_recap_again(
     query,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    admin_id = query.from_user.id if query.from_user else None
-    candidates = await asyncio.to_thread(get_channel_recap_candidates, admin_id)
-    logger.info("channel_recap candidates found: count=%s", len(candidates))
-    if not candidates:
-        await query.message.reply_text(
-            "Не нашёл завершённые матчи для итогов. Попробуйте позже."
-        )
+    if not query.message:
         return
-
-    store_channel_candidates(context, candidates)
-    await query.message.reply_text(
-        build_channel_recap_message(candidates),
-        reply_markup=build_channel_recap_keyboard(candidates),
-    )
+    admin_id = query.from_user.id if query.from_user else None
+    await send_channel_recap_candidates(query.message, context, admin_id)
 
 
 async def send_long_admin_message(
@@ -15371,8 +15510,27 @@ def main() -> None:
     application.add_handler(CommandHandler("revoke_premium", revoke_premium_command))
     application.add_handler(CommandHandler("add_ai_limit", add_ai_limit_command))
     application.add_handler(CommandHandler("subscription", subscription_command))
+    application.add_handler(CommandHandler("channel_admin", channel_admin_command))
     application.add_handler(CommandHandler("channel_plan", channel_plan_command))
     application.add_handler(CommandHandler("channel_recap", channel_recap_command))
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_admin_plan_callback,
+            pattern=r"^channel_admin_plan$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_admin_recap_callback,
+            pattern=r"^channel_admin_recap$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_admin_status_callback,
+            pattern=r"^channel_admin_status$",
+        )
+    )
     application.add_handler(
         CallbackQueryHandler(
             channel_pick_callback,
