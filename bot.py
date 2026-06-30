@@ -2410,6 +2410,20 @@ def is_channel_match_not_started(match: dict) -> bool:
     return kickoff is None or kickoff > datetime.now(ALMATY_TZ)
 
 
+def is_channel_match_finished(match: dict) -> bool:
+    status = str(match.get("status") or "").strip().upper()
+    return status in MINIAPP_FINISHED_STATUSES
+
+
+def format_channel_match_score(match: dict) -> str:
+    score = match.get("score") or {}
+    home_score = score.get("home")
+    away_score = score.get("away")
+    if home_score is None or away_score is None:
+        return "счёт не указан"
+    return f"{home_score}:{away_score}"
+
+
 def get_channel_match_priority(match: dict) -> tuple[int, list[str]]:
     score = 0
     reasons = []
@@ -2459,6 +2473,30 @@ def get_channel_match_priority(match: dict) -> tuple[int, list[str]]:
     return score, reasons[:3]
 
 
+def get_channel_recap_match_priority(match: dict) -> tuple[int, list[str]]:
+    score = 0
+    reasons = []
+    league_id = match.get("league_id")
+    league_name = str(match.get("league") or "")
+    match_score = match.get("score") or {}
+
+    if league_id in TOP_LEAGUE_IDS:
+        score += 24
+        reasons.append("топ-турнир MatchLab")
+    if match_score.get("home") is not None and match_score.get("away") is not None:
+        score += 18
+        reasons.append("есть итоговый счёт")
+    if match.get("home") and match.get("away") and league_name:
+        score += 12
+        reasons.append("есть команды и турнир")
+    if match.get("_channel_cache_available"):
+        score += 35
+        reasons.append("есть сохранённый AI-разбор до игры")
+    if not reasons:
+        reasons.append("завершённый матч подходит для итогов")
+    return score, reasons[:3]
+
+
 def get_channel_plan_candidates(limit: int = 3) -> list[dict]:
     candidates_by_id = {}
     for match_type in ("top", "today", "tomorrow"):
@@ -2490,6 +2528,159 @@ def get_channel_plan_candidates(limit: int = 3) -> list[dict]:
     return candidates
 
 
+def get_channel_recap_cached_analysis(
+    admin_id: int,
+    match_id: str,
+) -> tuple[dict | None, str | None]:
+    normalized_match_id = normalize_ai_analysis_match_id(match_id)
+    for lookup_mode in ("premium", "default"):
+        logger.info(
+            "channel_recap cache lookup mode=%s match_id=%s",
+            lookup_mode,
+            normalized_match_id,
+        )
+        saved_analysis = None
+        try:
+            saved_analysis, normalized_match_id = lookup_saved_miniapp_ai_analysis(
+                admin_id,
+                normalized_match_id,
+                lookup_mode,
+            )
+        except Exception:
+            logger.warning(
+                "channel_recap personal AI lookup failed: match_id=%s "
+                "analysis_mode=%s",
+                normalized_match_id,
+                lookup_mode,
+                exc_info=True,
+            )
+        logger.info(
+            "channel_recap personal saved found %s: match_id=%s mode=%s",
+            bool(saved_analysis),
+            normalized_match_id,
+            lookup_mode,
+        )
+        if saved_analysis:
+            source_name = f"personal_cache_{lookup_mode}"
+            logger.info(
+                "channel_recap AI source selected %s: match_id=%s",
+                source_name,
+                normalized_match_id,
+            )
+            return saved_analysis, source_name
+
+        global_analysis = get_global_miniapp_ai_analysis(
+            normalized_match_id,
+            lookup_mode,
+        )
+        logger.info(
+            "channel_recap global cache found %s: match_id=%s mode=%s",
+            bool(global_analysis),
+            normalized_match_id,
+            lookup_mode,
+        )
+        if global_analysis:
+            source_name = f"global_cache_{lookup_mode}"
+            logger.info(
+                "channel_recap AI source selected %s: match_id=%s",
+                source_name,
+                normalized_match_id,
+            )
+            return global_analysis, source_name
+
+    return None, None
+
+
+def get_channel_recent_finished_matches() -> list[dict]:
+    now_almaty = datetime.now(ALMATY_TZ)
+    fixtures = get_api_football_matches_between(
+        now_almaty - timedelta(hours=48),
+        now_almaty,
+        only_top=False,
+        allowed_only=True,
+    )
+    items = []
+    for fixture_item in fixtures:
+        formatted_item = format_miniapp_fixture_item(fixture_item)
+        if formatted_item and is_channel_match_finished(formatted_item):
+            items.append(formatted_item)
+    return items
+
+
+def get_channel_recap_candidates(
+    admin_id: int | None = None,
+    limit: int = 3,
+) -> list[dict]:
+    candidates_by_id = {}
+    for match_type in ("top", "today", "yesterday"):
+        try:
+            for match in get_miniapp_matches(match_type):
+                match_id = str(match.get("id") or "").strip()
+                if match_id and match_id not in candidates_by_id:
+                    candidates_by_id[match_id] = match
+        except Exception:
+            logger.warning(
+                "channel_recap match list failed: match_type=%s",
+                match_type,
+                exc_info=True,
+            )
+    try:
+        for match in get_channel_recent_finished_matches():
+            match_id = str(match.get("id") or "").strip()
+            if match_id and match_id not in candidates_by_id:
+                candidates_by_id[match_id] = match
+    except Exception:
+        logger.warning("channel_recap recent finished fetch failed", exc_info=True)
+
+    now_almaty = datetime.now(ALMATY_TZ)
+    ranked = []
+    for match in candidates_by_id.values():
+        if not is_channel_match_finished(match):
+            continue
+        kickoff = parse_match_kickoff_datetime(match)
+        if kickoff and not (
+            now_almaty - timedelta(hours=48) <= kickoff <= now_almaty
+        ):
+            continue
+
+        match_id = str(match.get("id") or "")
+        cache_available = False
+        for lookup_mode in ("premium", "default"):
+            personal_cached = False
+            if admin_id is not None:
+                try:
+                    personal_cached = bool(
+                        get_saved_miniapp_ai_analysis(
+                            admin_id,
+                            normalize_ai_analysis_match_id(match_id),
+                            lookup_mode,
+                        )
+                    )
+                except Exception:
+                    logger.warning(
+                        "channel_recap candidate personal cache lookup failed: "
+                        "match_id=%s mode=%s",
+                        match_id,
+                        lookup_mode,
+                        exc_info=True,
+                    )
+            if personal_cached or get_global_miniapp_ai_analysis(match_id, lookup_mode):
+                cache_available = True
+                break
+        enriched_match = dict(match)
+        enriched_match["_channel_cache_available"] = cache_available
+        score, reasons = get_channel_recap_match_priority(enriched_match)
+        ranked.append((score, kickoff or datetime.min.replace(tzinfo=ALMATY_TZ), reasons, enriched_match))
+
+    ranked.sort(key=lambda item: (-item[0], item[1]), reverse=False)
+    candidates = []
+    for _, _, reasons, match in ranked[:limit]:
+        enriched_match = dict(match)
+        enriched_match["_channel_reasons"] = reasons
+        candidates.append(enriched_match)
+    return candidates
+
+
 def build_channel_plan_message(candidates: list[dict]) -> str:
     lines = ["🤖 Кандидаты на матч дня:", ""]
     for index, match in enumerate(candidates, start=1):
@@ -2509,6 +2700,25 @@ def build_channel_plan_message(candidates: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def build_channel_recap_message(candidates: list[dict]) -> str:
+    lines = ["✅ Кандидаты для итогов матча дня:", ""]
+    for index, match in enumerate(candidates, start=1):
+        home = translate_team_name_ru(match.get("home")) or "Команда 1"
+        away = translate_team_name_ru(match.get("away")) or "Команда 2"
+        lines.extend(
+            [
+                f"{index}. {home} {format_channel_match_score(match)} {away}",
+                f"   Время: {format_channel_match_time(match)}",
+                f"   Турнир: {match.get('league') or 'не указан'}",
+                "   Почему подходит: "
+                + "; ".join(match.get("_channel_reasons") or ["подходит для итогов"]),
+                "",
+            ]
+        )
+    lines.append("Выбери матч для черновика итогов:")
+    return "\n".join(lines)
+
+
 def build_channel_plan_keyboard(candidates: list[dict]) -> InlineKeyboardMarkup:
     keyboard = []
     for index, match in enumerate(candidates, start=1):
@@ -2519,6 +2729,23 @@ def build_channel_plan_keyboard(candidates: list[dict]) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     f"{index}. {home} — {away}"[:64],
                     callback_data=f"channel_pick:{match.get('id')}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(keyboard)
+
+
+def build_channel_recap_keyboard(candidates: list[dict]) -> InlineKeyboardMarkup:
+    keyboard = []
+    for index, match in enumerate(candidates, start=1):
+        home = translate_team_name_ru(match.get("home")) or "Команда 1"
+        away = translate_team_name_ru(match.get("away")) or "Команда 2"
+        score = format_channel_match_score(match)
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    f"{index}. {home} {score} {away}"[:64],
+                    callback_data=f"channel_recap_pick:{match.get('id')}",
                 )
             ]
         )
@@ -2743,7 +2970,15 @@ def shorten_channel_post_draft(text: str) -> str:
     return shortened_text
 
 
-def get_channel_draft_keyboard(match_id: str) -> InlineKeyboardMarkup:
+def get_channel_draft_keyboard(
+    match_id: str,
+    content_type: str = "pre_match",
+) -> InlineKeyboardMarkup:
+    choose_callback = (
+        "channel_recap_again"
+        if content_type == "post_match"
+        else "channel_plan_again"
+    )
     return InlineKeyboardMarkup(
         [
             [
@@ -2761,11 +2996,122 @@ def get_channel_draft_keyboard(match_id: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     "Выбрать другой матч",
-                    callback_data="channel_plan_again",
+                    callback_data=choose_callback,
                 )
             ],
         ]
     )
+
+
+def get_channel_actual_result(match: dict) -> str:
+    score = match.get("score") or {}
+    home_score = score.get("home")
+    away_score = score.get("away")
+    if home_score is None or away_score is None:
+        return "unknown"
+    if home_score > away_score:
+        return "home_win"
+    if away_score > home_score:
+        return "away_win"
+    return "draw"
+
+
+def get_channel_top_probability_key(structured: dict) -> str:
+    probabilities = structured.get("outcome_probabilities") or {}
+    values = {}
+    for key in ("home_win", "draw", "away_win"):
+        value = probabilities.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            values[key] = float(value)
+            continue
+        value_text = str(value or "").replace("%", "").strip()
+        try:
+            values[key] = float(value_text)
+        except ValueError:
+            continue
+    if not values:
+        return "unknown"
+    return max(values.items(), key=lambda item: item[1])[0]
+
+
+def build_channel_recap_post_draft(match: dict, analysis_result: dict) -> str:
+    structured = analysis_result.get("structured") or {}
+    home_raw = match.get("home") or analysis_result.get("home_team") or ""
+    away_raw = match.get("away") or analysis_result.get("away_team") or ""
+    home = translate_team_name_ru(home_raw) or "Команда 1"
+    away = translate_team_name_ru(away_raw) or "Команда 2"
+    score = format_channel_match_score(match)
+    summary = get_channel_short_sentences(
+        structured.get("summary") or "",
+        limit=1,
+        max_chars=150,
+    )
+    scenario = get_channel_short_sentences(
+        structured.get("scenario") or structured.get("tactical_notes") or "",
+        limit=1,
+        max_chars=140,
+    )
+    signals = [
+        get_channel_short_text(signal, 105)
+        for signal in extract_signal_lines(structured, limit=2)
+    ]
+    before_points = [item for item in (summary, scenario, *signals[:1]) if item][:2]
+    if not before_points:
+        before_points = ["До матча MatchLab выделял несколько рабочих сценариев."]
+
+    actual_result = get_channel_actual_result(match)
+    expected_result = get_channel_top_probability_key(structured)
+    if actual_result != "unknown" and expected_result == actual_result:
+        confirmed_points = [
+            "Главное направление AI-оценки совпало с итоговым результатом."
+        ]
+        missed_points = ["Для точной оценки нужны расширенные события матча."]
+    elif actual_result != "unknown" and expected_result != "unknown":
+        confirmed_points = [
+            "Часть контекста по темпу и рискам осталась полезной после финального свистка."
+        ]
+        missed_points = [
+            "Итоговый результат разошёлся с главным направлением AI-оценки."
+        ]
+    else:
+        confirmed_points = [
+            "Сохранённый AI-разбор помогает сравнить ожидания с итогом матча."
+        ]
+        missed_points = ["Для точной оценки нужны расширенные события матча."]
+
+    final_note = (
+        "Итог показывает, где предварительная аналитика совпала с матчем, "
+        "а где футбол оставил пространство для риска."
+    )
+    lines = [
+        "✅ Итоги матча дня",
+        f"{home} {score} {away}",
+        "",
+        "Что видел MatchLab до матча:",
+    ]
+    lines.extend(f"• {point}" for point in before_points)
+    lines.extend(["", "Что подтвердилось:"])
+    lines.extend(f"• {point}" for point in confirmed_points[:2])
+    lines.extend(["", "Что не совпало:"])
+    lines.extend(f"• {point}" for point in missed_points[:1])
+    lines.extend(
+        [
+            "",
+            "Итог MatchLab:",
+            get_channel_short_text(final_note, 150),
+            "",
+            "Полный AI-разбор: @Match_Stat_bot",
+            "",
+            CHANNEL_DRAFT_DISCLAIMER,
+        ]
+    )
+    draft = limit_channel_text_preserving_disclaimer("\n".join(lines), 900)
+    logger.info(
+        "channel_recap_draft length chars=%s forbidden_left=%s",
+        len(draft),
+        channel_text_has_forbidden_words(draft),
+    )
+    return draft
 
 
 def get_or_create_channel_match_ai_analysis(
@@ -11575,6 +11921,72 @@ async def show_channel_plan_again(
     )
 
 
+async def channel_recap_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    logger.info(
+        "channel_recap requested: user_id=%s",
+        update.effective_user.id if update.effective_user else None,
+    )
+    if not is_private_chat(update):
+        if update.message:
+            await update.message.reply_text(
+                "AI-агент канала работает только в личке с ботом."
+            )
+        return
+
+    if not update.effective_user or not is_admin_user(update.effective_user.id):
+        logger.info(
+            "channel_recap denied non-admin: user_id=%s",
+            update.effective_user.id if update.effective_user else None,
+        )
+        if update.message:
+            await update.message.reply_text(
+                "Команда доступна только администратору."
+            )
+        return
+
+    if not update.message:
+        return
+
+    await update.message.reply_text("Подбираю завершённые матчи для итогов…")
+    admin_id = update.effective_user.id
+    candidates = await asyncio.to_thread(get_channel_recap_candidates, admin_id)
+    logger.info("channel_recap candidates found: count=%s", len(candidates))
+    if not candidates:
+        await update.message.reply_text(
+            "Не нашёл завершённые матчи для итогов. Попробуйте позже."
+        )
+        return
+
+    store_channel_candidates(context, candidates)
+    await update.message.reply_text(
+        build_channel_recap_message(candidates),
+        reply_markup=build_channel_recap_keyboard(candidates),
+    )
+
+
+async def show_channel_recap_again(
+    query,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    admin_id = query.from_user.id if query.from_user else None
+    candidates = await asyncio.to_thread(get_channel_recap_candidates, admin_id)
+    logger.info("channel_recap candidates found: count=%s", len(candidates))
+    if not candidates:
+        await query.message.reply_text(
+            "Не нашёл завершённые матчи для итогов. Попробуйте позже."
+        )
+        return
+
+    store_channel_candidates(context, candidates)
+    await query.message.reply_text(
+        build_channel_recap_message(candidates),
+        reply_markup=build_channel_recap_keyboard(candidates),
+    )
+
+
 async def channel_pick_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -11669,6 +12081,76 @@ async def channel_pick_callback(
     await query.message.reply_text(
         draft,
         reply_markup=get_channel_draft_keyboard(match_id),
+    )
+
+
+async def channel_recap_pick_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "AI-агент канала работает только в личке с ботом."
+        )
+        return
+
+    if admin_id is None or not is_admin_user(admin_id):
+        logger.info("channel_recap denied non-admin: user_id=%s", admin_id)
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    callback_data = query.data or ""
+    match_id = callback_data.split(":", 1)[1].strip() if ":" in callback_data else ""
+    logger.info(
+        "channel_recap candidate selected: user_id=%s match_id=%s",
+        admin_id,
+        match_id,
+    )
+    match = await asyncio.to_thread(get_stored_channel_match, context, match_id)
+    if not match:
+        await query.message.reply_text(
+            "Матч не найден или уже недоступен. Запустите /channel_recap ещё раз."
+        )
+        return
+
+    analysis_result, _ = await asyncio.to_thread(
+        get_channel_recap_cached_analysis,
+        admin_id,
+        match_id,
+    )
+    if not analysis_result:
+        await query.message.reply_text(
+            "Для этого матча нет сохранённого AI-разбора до игры, "
+            "итоги сравнения сделать нельзя."
+        )
+        return
+
+    draft = build_channel_recap_post_draft(match, analysis_result)
+    logger.info("channel_recap draft generated: match_id=%s", match_id)
+    draft = sanitize_channel_post_text(draft)
+    if channel_text_has_forbidden_words(draft):
+        await query.message.reply_text(
+            "Черновик содержит запрещённые слова после фильтра. "
+            "Нужна ручная проверка."
+        )
+        return
+
+    drafts = context.bot_data.setdefault("channel_plan_drafts", {})
+    drafts[match_id] = {
+        "draft": draft,
+        "match": match,
+        "content_type": "post_match",
+        "created_at": datetime.now(timezone.utc).timestamp(),
+    }
+    await query.message.reply_text(
+        draft,
+        reply_markup=get_channel_draft_keyboard(match_id, "post_match"),
     )
 
 
@@ -11819,7 +12301,10 @@ async def channel_shorten_callback(
     draft_item["created_at"] = datetime.now(timezone.utc).timestamp()
     await query.message.reply_text(
         shortened,
-        reply_markup=get_channel_draft_keyboard(match_id),
+        reply_markup=get_channel_draft_keyboard(
+            match_id,
+            draft_item.get("content_type") or "pre_match",
+        ),
     )
 
 
@@ -11844,6 +12329,29 @@ async def channel_plan_again_callback(
         return
 
     await show_channel_plan_again(query, context)
+
+
+async def channel_recap_again_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    admin_id = update.effective_user.id if update.effective_user else None
+    if not is_private_chat(update):
+        await query.message.reply_text(
+            "AI-агент канала работает только в личке с ботом."
+        )
+        return
+
+    if admin_id is None or not is_admin_user(admin_id):
+        await query.message.reply_text("Команда доступна только администратору.")
+        return
+
+    await show_channel_recap_again(query, context)
 
 
 @miniapp_api.get("/api/health")
@@ -13318,10 +13826,17 @@ def main() -> None:
     application.add_handler(CommandHandler("add_ai_limit", add_ai_limit_command))
     application.add_handler(CommandHandler("subscription", subscription_command))
     application.add_handler(CommandHandler("channel_plan", channel_plan_command))
+    application.add_handler(CommandHandler("channel_recap", channel_recap_command))
     application.add_handler(
         CallbackQueryHandler(
             channel_pick_callback,
             pattern=r"^channel_pick:.+$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_recap_pick_callback,
+            pattern=r"^channel_recap_pick:.+$",
         )
     )
     application.add_handler(
@@ -13340,6 +13855,12 @@ def main() -> None:
         CallbackQueryHandler(
             channel_plan_again_callback,
             pattern=r"^channel_plan_again$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            channel_recap_again_callback,
+            pattern=r"^channel_recap_again$",
         )
     )
     application.add_handler(
