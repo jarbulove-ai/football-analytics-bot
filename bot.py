@@ -3292,8 +3292,7 @@ def build_channel_news_item_ru_with_openai(item: dict) -> dict | None:
         "Формат JSON:\n"
         "{\n"
         '  "headline": "короткий русский заголовок до 90 символов",\n'
-        '  "summary": "1-2 предложения русского пересказа",\n'
-        '  "importance": ["короткая причина 1", "короткая причина 2"]\n'
+        '  "summary": "1-2 предложения русского пересказа"\n'
         "}\n\n"
         f"title: {title}\n"
         f"summary: {summary}\n"
@@ -3378,15 +3377,12 @@ def render_channel_news_radar_draft(selected_items: list[dict]) -> str:
     for index, item in enumerate(selected_items, start=1):
         news_item = build_channel_news_item_ru(item)
         lines.append(f"{index}. {news_item['headline']}")
-        lines.append(f"    {news_item['summary']}")
         lines.append("")
-        lines.append("    Почему важно:")
-        for reason in news_item["importance"][:2]:
-            lines.append(f"    — {reason}")
+        lines.append(news_item["summary"])
         lines.append("")
-        lines.append(f"    Источник: {news_item['source']}")
+        lines.append(f"Источник: {news_item['source']}")
         if news_item["url"]:
-            lines.append(f"    Подробнее: {news_item['url']}")
+            lines.append(f"Подробнее: {news_item['url']}")
         lines.append("")
 
     lines.extend(
