@@ -3220,13 +3220,155 @@ def score_channel_news_item(item: dict) -> int:
     return max(0, min(100, score))
 
 
-def build_channel_news_radar_draft(items: list[dict]) -> str:
-    ranked_items = sorted(
-        items,
-        key=lambda item: int(item.get("score") or score_channel_news_item(item)),
-        reverse=True,
+def build_channel_news_item_fallback_ru(item: dict) -> dict:
+    title = sanitize_channel_post_text(strip_html_tags(item.get("title")))
+    source = sanitize_channel_post_text(str(item.get("source") or "Источник"))
+    url = str(item.get("url") or "").strip()
+    headline = f"Инфоповод: {title}" if title else "Футбольный инфоповод"
+    return {
+        "headline": headline,
+        "summary": (
+            "Источник сообщает футбольный инфоповод. Подробности лучше "
+            "проверить по ссылке."
+        ),
+        "importance": [
+            "сохраняем конкретику из заголовка источника",
+            "детали стоит сверять с первоисточником",
+        ],
+        "source": source,
+        "url": url,
+    }
+
+
+def normalize_channel_news_item_ru_payload(payload: dict, item: dict) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+
+    headline = get_channel_short_text(
+        sanitize_channel_post_text(str(payload.get("headline") or "").strip()),
+        120,
     )
-    selected_items = ranked_items[:5]
+    summary = get_channel_short_text(
+        sanitize_channel_post_text(str(payload.get("summary") or "").strip()),
+        350,
+    )
+    importance = [
+        get_channel_short_text(sanitize_channel_post_text(str(reason).strip()), 120)
+        for reason in payload.get("importance") or []
+        if str(reason).strip()
+    ]
+    if not headline or not summary:
+        return None
+
+    fallback = build_channel_news_item_fallback_ru(item)
+    return {
+        "headline": headline,
+        "summary": summary,
+        "importance": importance[:2] or fallback["importance"],
+        "source": fallback["source"],
+        "url": fallback["url"],
+    }
+
+
+def build_channel_news_item_ru_with_openai(item: dict) -> dict | None:
+    if not OPENAI_API_KEY:
+        return None
+
+    title = strip_html_tags(item.get("title"))
+    summary = strip_html_tags(item.get("summary"))
+    source = str(item.get("source") or "Источник").strip()
+    prompt = (
+        "Ты редактор футбольного Telegram-канала MatchLab. Сделай короткий "
+        "русский пересказ новости строго по данным ниже.\n"
+        "Требования:\n"
+        "- ответ строго на русском;\n"
+        "- сохрани имена игроков, клубов, тренеров и турниров как в источнике;\n"
+        "- не добавляй факты сверх title, summary и source;\n"
+        "- не используй betting/gambling-лексику и коммерческие обещания результата;\n"
+        "- если это слух, интерес, переговоры, запрос, medical, bid или agreement, "
+        "пиши осторожно: по данным источника, сообщается, ситуация развивается, "
+        "официального подтверждения в тексте нет;\n"
+        "- верни только JSON без markdown.\n\n"
+        "Формат JSON:\n"
+        "{\n"
+        '  "headline": "короткий русский заголовок до 90 символов",\n'
+        '  "summary": "1-2 предложения русского пересказа",\n'
+        '  "importance": ["короткая причина 1", "короткая причина 2"]\n'
+        "}\n\n"
+        f"title: {title}\n"
+        f"summary: {summary}\n"
+        f"source: {source}"
+    )
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        try:
+            completion = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты аккуратно переводишь и пересказываешь футбольные "
+                            "новости для MatchLab без домыслов."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_completion_tokens=500,
+            )
+        except TypeError:
+            completion = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты аккуратно переводишь и пересказываешь футбольные "
+                            "новости для MatchLab без домыслов."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=500,
+            )
+        content = completion.choices[0].message.content or ""
+        payload = parse_ai_analysis_json(content)
+        normalized = normalize_channel_news_item_ru_payload(payload or {}, item)
+        if normalized:
+            combined_text = "\n".join(
+                [
+                    normalized.get("headline", ""),
+                    normalized.get("summary", ""),
+                    "\n".join(normalized.get("importance") or []),
+                ]
+            )
+            if not channel_text_has_forbidden_words(combined_text):
+                return normalized
+            logger.warning(
+                "channel_news_radar OpenAI summary blocked by forbidden filter: "
+                "source=%s",
+                source,
+            )
+    except Exception:
+        logger.warning(
+            "channel_news_radar OpenAI summary failed: source=%s",
+            source,
+            exc_info=True,
+        )
+    return None
+
+
+def build_channel_news_item_ru(item: dict) -> dict:
+    return build_channel_news_item_ru_with_openai(
+        item
+    ) or build_channel_news_item_fallback_ru(item)
+
+
+def render_channel_news_radar_draft(selected_items: list[dict]) -> str:
     lines = [
         "📰 Футбольный радар MatchLab",
         "",
@@ -3234,32 +3376,45 @@ def build_channel_news_radar_draft(items: list[dict]) -> str:
         "",
     ]
     for index, item in enumerate(selected_items, start=1):
-        title = sanitize_channel_post_text(strip_html_tags(item.get("title")))
-        summary = sanitize_channel_post_text(strip_html_tags(item.get("summary")))
-        source = sanitize_channel_post_text(str(item.get("source") or "Источник"))
-        if summary:
-            summary = get_channel_short_text(summary, 150)
-        lines.append(f"{index}. {title}")
-        if summary:
-            lines.append(f"    {summary}")
-        lines.append(f"    Источник: {source}")
+        news_item = build_channel_news_item_ru(item)
+        lines.append(f"{index}. {news_item['headline']}")
+        lines.append(f"    {news_item['summary']}")
+        lines.append("")
+        lines.append("    Почему важно:")
+        for reason in news_item["importance"][:2]:
+            lines.append(f"    — {reason}")
+        lines.append("")
+        lines.append(f"    Источник: {news_item['source']}")
+        if news_item["url"]:
+            lines.append(f"    Подробнее: {news_item['url']}")
+        lines.append("")
 
     lines.extend(
         [
-            "",
-            "Почему это важно:",
-            "— новости могут повлиять на контекст ближайших матчей",
-            "— следим за командами, тренерами и формой игроков",
-            "— осторожно относимся к ранним сообщениям и ждём подтверждений",
-            "",
             "Полный AI-разбор: @Match_Stat_bot",
             "Канал MatchLab: https://t.me/matchlab_ai",
             "",
             CHANNEL_DRAFT_DISCLAIMER,
         ]
     )
-    draft = sanitize_channel_post_text("\n".join(lines))
-    return limit_channel_text_preserving_disclaimer(draft, 1200)
+    return sanitize_channel_post_text("\n".join(lines))
+
+
+def build_channel_news_radar_draft(items: list[dict]) -> str:
+    ranked_items = sorted(
+        items,
+        key=lambda item: int(item.get("score") or score_channel_news_item(item)),
+        reverse=True,
+    )
+    selected_items = ranked_items[:3]
+    for item_count in range(len(selected_items), 0, -1):
+        draft = render_channel_news_radar_draft(selected_items[:item_count])
+        if len(draft) <= 1400 or item_count == 1:
+            return limit_channel_text_preserving_disclaimer(draft, 1400)
+    return limit_channel_text_preserving_disclaimer(
+        render_channel_news_radar_draft(selected_items[:1]),
+        1400,
+    )
 
 
 def build_channel_news_draft_keyboard(draft_id: str) -> InlineKeyboardMarkup:
@@ -14537,8 +14692,8 @@ async def channel_admin_check_news_callback(
         return
 
     items = sorted(items, key=lambda item: int(item.get("score") or 0), reverse=True)
-    items = items[:5]
-    draft = build_channel_news_radar_draft(items)
+    items = items[:3]
+    draft = await asyncio.to_thread(build_channel_news_radar_draft, items)
     draft = sanitize_channel_post_text(draft)
     if channel_text_has_forbidden_words(draft):
         await query.message.reply_text(
