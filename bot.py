@@ -3371,8 +3371,6 @@ def render_channel_news_radar_draft(selected_items: list[dict]) -> str:
     lines = [
         "📰 Футбольный радар MatchLab",
         "",
-        "Свежие инфоповоды из открытых источников. Не добавляем факты сверх заголовка, описания и источника.",
-        "",
     ]
     for index, item in enumerate(selected_items, start=1):
         news_item = build_channel_news_item_ru(item)
