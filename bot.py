@@ -2995,40 +2995,264 @@ def get_channel_morning_digest_matches(limit: int = 5) -> list[dict]:
     return [item[2] for item in ranked[:limit]]
 
 
-def build_channel_morning_digest_draft(matches: list[dict]) -> str:
-    selected_matches = matches[:5]
+def get_channel_morning_recap_window() -> tuple[datetime, datetime]:
+    yesterday = (datetime.now(ALMATY_TZ) - timedelta(days=1)).date()
+    return (
+        datetime.combine(yesterday, datetime.min.time(), tzinfo=ALMATY_TZ),
+        datetime.combine(yesterday, datetime.max.time(), tzinfo=ALMATY_TZ),
+    )
+
+
+def score_channel_morning_recap_match(match: dict) -> int:
+    score = 0
+    league_context = (
+        f"{match.get('league') or ''} {match.get('country') or ''} "
+        f"{match.get('round') or ''}"
+    ).casefold()
+    home = str(match.get("home") or "")
+    away = str(match.get("away") or "")
+    if any(
+        keyword in league_context
+        for keyword in ("world cup", "champions league", "euro", "nations", "cup")
+    ):
+        score += 35
+    if any(
+        keyword in league_context
+        for keyword in ("final", "semi", "quarter", "round", "playoff", "knockout")
+    ):
+        score += 20
+    if translate_team_name_ru(home) != home or translate_team_name_ru(away) != away:
+        score += 12
+    if home.casefold() == "england" or away.casefold() == "england":
+        score += 18
+    score_data = match.get("score") or {}
+    home_score = score_data.get("home")
+    away_score = score_data.get("away")
+    if isinstance(home_score, int) and isinstance(away_score, int):
+        score += 10 + min(abs(home_score - away_score), 3) * 3
+    kickoff = parse_match_kickoff_datetime(match)
+    if kickoff:
+        score += max(0, 10 - abs((datetime.now(ALMATY_TZ) - kickoff).total_seconds()) // 7200)
+    return int(score)
+
+
+def get_channel_morning_recap_matches(limit: int = 6) -> list[dict]:
+    logger.info("channel_morning_recap matches fetch started")
+    start_almaty, end_almaty = get_channel_morning_recap_window()
+
+    def load_finished_between(start_value: datetime, end_value: datetime) -> list[dict]:
+        fixtures = get_api_football_matches_between(
+            start_value,
+            end_value,
+            only_top=False,
+            allowed_only=True,
+        )
+        loaded_matches = []
+        for fixture_item in fixtures:
+            formatted_item = format_miniapp_fixture_item(fixture_item)
+            if not formatted_item or not is_channel_match_finished(formatted_item):
+                continue
+            score = formatted_item.get("score") or {}
+            if score.get("home") is None or score.get("away") is None:
+                continue
+            loaded_matches.append(formatted_item)
+        return loaded_matches
+
+    matches = load_finished_between(start_almaty, end_almaty)
+    if not matches:
+        now_almaty = datetime.now(ALMATY_TZ)
+        matches = load_finished_between(now_almaty - timedelta(hours=36), now_almaty)
+
+    ranked = []
+    for match in matches:
+        kickoff = parse_match_kickoff_datetime(match) or datetime.min.replace(
+            tzinfo=ALMATY_TZ
+        )
+        ranked.append((score_channel_morning_recap_match(match), kickoff, match))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    result = [item[2] for item in ranked[:limit]]
+    logger.info("channel_morning_recap matches found: %s", len(result))
+    return result
+
+
+def format_channel_recap_date_label() -> str:
+    start_almaty, _ = get_channel_morning_recap_window()
+    month_names = {
+        1: "января",
+        2: "февраля",
+        3: "марта",
+        4: "апреля",
+        5: "мая",
+        6: "июня",
+        7: "июля",
+        8: "августа",
+        9: "сентября",
+        10: "октября",
+        11: "ноября",
+        12: "декабря",
+    }
+    return f"{start_almaty.day} {month_names.get(start_almaty.month, '')}".strip()
+
+
+def get_channel_morning_match_short_note(match: dict) -> str:
+    score = match.get("score") or {}
+    home_score = score.get("home")
+    away_score = score.get("away")
+    home = translate_team_name_ru(match.get("home")) or "Команда 1"
+    away = translate_team_name_ru(match.get("away")) or "Команда 2"
+    if not isinstance(home_score, int) or not isinstance(away_score, int):
+        return "матч завершён, но подробный счёт в источнике не указан."
+    if home_score == away_score:
+        return "команды завершили матч вничью."
+    winner = home if home_score > away_score else away
+    diff = abs(home_score - away_score)
+    if diff >= 3:
+        return f"{winner} одержала крупную победу по счёту."
+    if diff == 2:
+        return f"{winner} выиграла уверенно, с разницей в два мяча."
+    return f"{winner} выиграла минимально, матч остался близким по счёту."
+
+
+def is_channel_knockout_context(match: dict) -> bool:
+    context = f"{match.get('league') or ''} {match.get('round') or ''}".casefold()
+    return any(
+        keyword in context
+        for keyword in ("final", "semi", "quarter", "round", "playoff", "knockout")
+    )
+
+
+def build_channel_morning_recap_draft(
+    matches: list[dict],
+    upcoming_matches: list[dict] | None = None,
+) -> str:
+    selected_matches = matches[:6]
+    upcoming_matches = upcoming_matches or []
     lines = [
-        "🌅 Футбольное утро от MatchLab",
+        f"🇰🇿 ЧМ-2026 — итоги игрового дня ({format_channel_recap_date_label()}, время Алматы)",
         "",
-        "Коротко, что важно сегодня:",
+        "⚽ Результаты дня",
         "",
     ]
     for index, match in enumerate(selected_matches, start=1):
         home = translate_team_name_ru(match.get("home")) or "Команда 1"
         away = translate_team_name_ru(match.get("away")) or "Команда 2"
+        score = format_channel_match_score(match)
         lines.extend(
             [
-                f"{index}. {home} — {away}",
-                f"    {get_channel_digest_reason(match, index - 1)}",
+                f"{index}. {home} {score} {away}",
+                f"   Коротко: {get_channel_morning_match_short_note(match)}",
             ]
         )
+
+    moments = []
+    for match in selected_matches:
+        home = translate_team_name_ru(match.get("home")) or "Команда 1"
+        away = translate_team_name_ru(match.get("away")) or "Команда 2"
+        score = match.get("score") or {}
+        home_score = score.get("home")
+        away_score = score.get("away")
+        if isinstance(home_score, int) and isinstance(away_score, int):
+            diff = abs(home_score - away_score)
+            if diff >= 2:
+                winner = home if home_score > away_score else away
+                moments.append(f"{winner} выиграла с заметным преимуществом по счёту.")
+            elif diff == 1:
+                moments.append(f"{home} — {away}: близкий матч с минимальной разницей.")
+            elif home_score == away_score:
+                moments.append(f"{home} — {away}: равный счёт после основного времени.")
+    moments = moments[:4] or [
+        "Подробных событий матча в источнике нет, поэтому фиксируем только результаты."
+    ]
+    lines.extend(["", "🌟 Главные моменты"])
+    lines.extend(f"— {moment}" for moment in moments)
+
+    tournament_notes = []
+    for match in selected_matches:
+        if not is_channel_knockout_context(match):
+            continue
+        score = match.get("score") or {}
+        home_score = score.get("home")
+        away_score = score.get("away")
+        if not isinstance(home_score, int) or not isinstance(away_score, int):
+            continue
+        if home_score == away_score:
+            continue
+        winner = (
+            translate_team_name_ru(match.get("home"))
+            if home_score > away_score
+            else translate_team_name_ru(match.get("away"))
+        ) or "Победитель"
+        tournament_notes.append(
+            f"{winner} получила преимущество в плей-офф по итоговому счёту."
+        )
+    lines.extend(["", "📈 Влияние на турнир"])
+    if tournament_notes:
+        lines.extend(f"— {note}" for note in tournament_notes[:3])
+    else:
+        lines.append("— Подробных данных о турнирных последствиях в источнике нет.")
 
     lines.extend(
         [
             "",
-            "👀 За чем следить:",
-            "— форма фаворитов",
-            "— молодые игроки",
-            "— неожиданные игровые сценарии",
-            "— кто лучше использует моменты",
+            "⭐ Игроки и молодые имена",
+            "— Подробных индивидуальных данных в источнике нет.",
             "",
-            "Полный AI-разбор Матча дня — в @Match_Stat_bot",
+            "🔴 Англия / Liverpool-фокус",
+        ]
+    )
+    england_matches = [
+        match
+        for match in selected_matches
+        if str(match.get("home") or "").casefold() == "england"
+        or str(match.get("away") or "").casefold() == "england"
+    ]
+    upcoming_england = [
+        match
+        for match in upcoming_matches
+        if str(match.get("home") or "").casefold() == "england"
+        or str(match.get("away") or "").casefold() == "england"
+    ]
+    if england_matches:
+        match = england_matches[0]
+        home = translate_team_name_ru(match.get("home")) or "Англия"
+        away = translate_team_name_ru(match.get("away")) or "соперник"
+        lines.append(
+            f"— Англия играла: {home} {format_channel_match_score(match)} {away}."
+        )
+    elif upcoming_england:
+        match = upcoming_england[0]
+        home = translate_team_name_ru(match.get("home")) or "Англия"
+        away = translate_team_name_ru(match.get("away")) or "соперник"
+        lines.append(f"— Матч Англии впереди: {home} — {away}.")
+    else:
+        lines.append("— Матча Англии в найденных данных нет.")
+    lines.append("— Отдельных данных по игрокам Liverpool в источнике нет.")
+
+    lines.extend(["", "👀 Что смотреть дальше"])
+    if upcoming_matches:
+        for match in upcoming_matches[:3]:
+            home = translate_team_name_ru(match.get("home")) or "Команда 1"
+            away = translate_team_name_ru(match.get("away")) or "Команда 2"
+            marker = " 🔴" if "england" in f"{match.get('home')} {match.get('away')}".casefold() else ""
+            lines.append(f"— {home} — {away}, {format_channel_match_time(match)}{marker}")
+    else:
+        lines.append("— Ближайшие важные матчи в источнике не найдены.")
+
+    lines.extend(
+        [
+            "",
+            "Полный AI-разбор: @Match_Stat_bot",
+            "Канал MatchLab: https://t.me/matchlab_ai",
             "",
             CHANNEL_DRAFT_DISCLAIMER,
         ]
     )
     draft = sanitize_channel_post_text("\n".join(lines))
-    return limit_channel_text_preserving_disclaimer(draft, 1100)
+    return limit_channel_text_preserving_disclaimer(draft, 1400)
+
+
+def build_channel_morning_digest_draft(matches: list[dict]) -> str:
+    return build_channel_morning_recap_draft(matches)
 
 
 def build_channel_daily_radar_draft(matches: list[dict]) -> str:
@@ -3432,7 +3656,7 @@ def build_channel_news_draft_keyboard(draft_id: str) -> InlineKeyboardMarkup:
 
 async def publish_channel_morning_digest(
     context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+) -> dict:
     content_type = "morning_digest"
     date_key = datetime.now(ALMATY_TZ).strftime("%Y-%m-%d")
     logger.info("channel_morning_digest started: date_key=%s", date_key)
@@ -3440,7 +3664,14 @@ async def publish_channel_morning_digest(
     local_key = f"{content_type}:{date_key}:published"
     if context.bot_data.get(local_key):
         logger.info("channel_morning_digest already published: date_key=%s", date_key)
-        return
+        return {
+            "ok": False,
+            "status": "already_published",
+            "message": (
+                "ℹ️ Утренний обзор сегодня уже был опубликован. Если ты удалил "
+                "пост из канала, в памяти бота он всё равно считается опубликованным."
+            ),
+        }
 
     if not MATCHLAB_CHANNEL_ID:
         logger.warning("channel_morning_digest skipped: reason=no_channel_id")
@@ -3450,15 +3681,38 @@ async def publish_channel_morning_digest(
             "failed",
             error_text="MATCHLAB_CHANNEL_ID is not configured",
         )
-        return
+        return {
+            "ok": False,
+            "status": "no_channel_id",
+            "message": (
+                "❌ Утренний обзор не опубликован: MATCHLAB_CHANNEL_ID не настроен."
+            ),
+        }
 
     if has_channel_auto_post_been_published(content_type, date_key):
         context.bot_data[local_key] = True
         logger.info("channel_morning_digest already published: date_key=%s", date_key)
-        return
+        return {
+            "ok": False,
+            "status": "already_published",
+            "message": (
+                "ℹ️ Утренний обзор сегодня уже был опубликован. Если ты удалил "
+                "пост из канала, в БД он всё равно считается опубликованным."
+            ),
+        }
 
-    matches = await asyncio.to_thread(get_channel_morning_digest_matches, 5)
-    logger.info("channel_morning_digest candidates found: count=%s", len(matches))
+    try:
+        matches = await asyncio.to_thread(get_channel_morning_recap_matches, 6)
+    except Exception:
+        logger.exception("channel_morning_digest failed: matches_fetch")
+        return {
+            "ok": False,
+            "status": "failed",
+            "message": (
+                "❌ Утренний обзор не опубликован: ошибка при подборе завершённых матчей."
+            ),
+        }
+    logger.info("channel_morning_recap matches found: %s", len(matches))
     if not matches:
         save_channel_auto_post_status(
             content_type,
@@ -3466,10 +3720,26 @@ async def publish_channel_morning_digest(
             "skipped",
             error_text="no_matches",
         )
-        logger.info("channel_morning_digest skipped: reason=no_matches")
-        return
+        logger.info("channel_morning_digest no finished matches")
+        return {
+            "ok": False,
+            "status": "no_matches",
+            "message": (
+                "⚠️ Утренний обзор не опубликован: завершённые матчи за прошедший игровой день не найдены."
+            ),
+        }
 
-    draft = build_channel_morning_digest_draft(matches)
+    try:
+        upcoming_matches = await asyncio.to_thread(get_channel_morning_digest_matches, 3)
+    except Exception:
+        logger.warning(
+            "channel_morning_recap upcoming fetch failed",
+            exc_info=True,
+        )
+        upcoming_matches = []
+    logger.info("channel_morning_recap upcoming found: %s", len(upcoming_matches))
+
+    draft = build_channel_morning_recap_draft(matches, upcoming_matches)
     draft = sanitize_channel_post_text(draft)
     logger.info("channel_morning_digest draft generated: length=%s", len(draft))
     forbidden_left = channel_text_has_forbidden_words(draft)
@@ -3483,7 +3753,13 @@ async def publish_channel_morning_digest(
             error_text="forbidden_words_left",
         )
         logger.warning("channel_morning_digest failed: forbidden_words_left")
-        return
+        return {
+            "ok": False,
+            "status": "forbidden_words",
+            "message": (
+                "❌ Утренний обзор не опубликован: текст заблокирован фильтром безопасности."
+            ),
+        }
 
     save_channel_auto_post_status(content_type, date_key, "draft_created", draft=draft)
     try:
@@ -3501,7 +3777,13 @@ async def publish_channel_morning_digest(
             draft=draft,
             error_text="send_message_failed",
         )
-        return
+        return {
+            "ok": False,
+            "status": "send_failed",
+            "message": (
+                "❌ Не удалось отправить утренний обзор в канал. Проверь права бота и логи."
+            ),
+        }
 
     context.bot_data[local_key] = True
     save_channel_auto_post_status(
@@ -3516,11 +3798,20 @@ async def publish_channel_morning_digest(
         date_key,
         sent_message.message_id,
     )
+    return {
+        "ok": True,
+        "status": "published",
+        "message": (
+            "✅ Утренний обзор опубликован в канал. "
+            f"message_id={sent_message.message_id}"
+        ),
+        "message_id": sent_message.message_id,
+    }
 
 
 async def publish_channel_daily_football_radar(
     context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+) -> dict:
     content_type = "daily_football_radar"
     date_key = datetime.now(ALMATY_TZ).strftime("%Y-%m-%d")
     logger.info("channel_daily_football_radar publish started: date_key=%s", date_key)
@@ -3531,7 +3822,14 @@ async def publish_channel_daily_football_radar(
             "channel_daily_football_radar already published: date_key=%s",
             date_key,
         )
-        return
+        return {
+            "ok": False,
+            "status": "already_published",
+            "message": (
+                "ℹ️ Дневной радар сегодня уже был опубликован. Если ты удалил "
+                "пост из канала, в памяти бота он всё равно считается опубликованным."
+            ),
+        }
 
     if not MATCHLAB_CHANNEL_ID:
         logger.warning("channel_daily_football_radar failed: no_channel_id")
@@ -3541,7 +3839,13 @@ async def publish_channel_daily_football_radar(
             "failed",
             error_text="MATCHLAB_CHANNEL_ID is not configured",
         )
-        return
+        return {
+            "ok": False,
+            "status": "no_channel_id",
+            "message": (
+                "❌ Дневной радар не опубликован: MATCHLAB_CHANNEL_ID не настроен."
+            ),
+        }
 
     if has_channel_auto_post_been_published(content_type, date_key):
         context.bot_data[local_key] = True
@@ -3549,9 +3853,24 @@ async def publish_channel_daily_football_radar(
             "channel_daily_football_radar already published: date_key=%s",
             date_key,
         )
-        return
+        return {
+            "ok": False,
+            "status": "already_published",
+            "message": (
+                "ℹ️ Дневной радар сегодня уже был опубликован. Если ты удалил "
+                "пост из канала, в БД он всё равно считается опубликованным."
+            ),
+        }
 
-    matches = await asyncio.to_thread(get_channel_morning_digest_matches, 5)
+    try:
+        matches = await asyncio.to_thread(get_channel_morning_digest_matches, 5)
+    except Exception:
+        logger.exception("channel_daily_football_radar failed: matches_fetch")
+        return {
+            "ok": False,
+            "status": "failed",
+            "message": "❌ Дневной радар не опубликован: ошибка при подборе матчей.",
+        }
     draft = build_channel_daily_radar_draft(matches)
     draft = sanitize_channel_post_text(draft)
     forbidden_left = channel_text_has_forbidden_words(draft)
@@ -3564,7 +3883,13 @@ async def publish_channel_daily_football_radar(
             draft=draft,
             error_text="forbidden_words_left",
         )
-        return
+        return {
+            "ok": False,
+            "status": "forbidden_words",
+            "message": (
+                "❌ Дневной радар не опубликован: текст заблокирован фильтром безопасности."
+            ),
+        }
 
     save_channel_auto_post_status(content_type, date_key, "draft_created", draft=draft)
     try:
@@ -3582,7 +3907,13 @@ async def publish_channel_daily_football_radar(
             draft=draft,
             error_text="send_message_failed",
         )
-        return
+        return {
+            "ok": False,
+            "status": "send_failed",
+            "message": (
+                "❌ Не удалось отправить дневной радар в канал. Проверь права бота и логи."
+            ),
+        }
 
     context.bot_data[local_key] = True
     save_channel_auto_post_status(
@@ -3597,6 +3928,15 @@ async def publish_channel_daily_football_radar(
         date_key,
         sent_message.message_id,
     )
+    return {
+        "ok": True,
+        "status": "published",
+        "message": (
+            "✅ Дневной радар опубликован в канал. "
+            f"message_id={sent_message.message_id}"
+        ),
+        "message_id": sent_message.message_id,
+    }
 
 
 def build_channel_agent_recap_manual_keyboard() -> InlineKeyboardMarkup:
@@ -14616,9 +14956,9 @@ async def channel_admin_publish_morning_digest_callback(
         await query.message.reply_text("Команда доступна только администратору.")
         return
 
-    await publish_channel_morning_digest(context)
+    result = await publish_channel_morning_digest(context)
     await query.message.reply_text(
-        "Запустил публикацию утреннего обзора. Проверь канал и логи."
+        result.get("message") or "Публикация утреннего обзора завершена."
     )
 
 
@@ -14642,9 +14982,9 @@ async def channel_admin_publish_daily_radar_callback(
         await query.message.reply_text("Команда доступна только администратору.")
         return
 
-    await publish_channel_daily_football_radar(context)
+    result = await publish_channel_daily_football_radar(context)
     await query.message.reply_text(
-        "Запустил публикацию дневного радара. Проверь канал и логи."
+        result.get("message") or "Публикация дневного радара завершена."
     )
 
 
