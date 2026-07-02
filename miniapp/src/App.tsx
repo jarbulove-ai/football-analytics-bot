@@ -1104,6 +1104,11 @@ function MatchesScreen({
   const [activeType, setActiveType] = useState<MatchListType>(initialType);
   const [activeView, setActiveView] = useState<MatchesView>("matches");
   const [matches, setMatches] = useState<MatchItem[]>([]);
+  const [dailyFocusFallbackMatches, setDailyFocusFallbackMatches] = useState<
+    MatchItem[]
+  >([]);
+  const [dailyFocusFallbackLoading, setDailyFocusFallbackLoading] =
+    useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
@@ -1135,6 +1140,13 @@ function MatchesScreen({
         })
         .slice(0, 5),
     [matches],
+  );
+  const dailyFocusDisplayMatches = useMemo(
+    () =>
+      focusMatches.length > 0
+        ? focusMatches
+        : dailyFocusFallbackMatches.slice(0, 5),
+    [dailyFocusFallbackMatches, focusMatches],
   );
   const groupedMatches = useMemo(() => {
     const groups = new Map<string, MatchItem[]>();
@@ -1219,6 +1231,64 @@ function MatchesScreen({
     };
   }, [activeType, reloadKey]);
 
+  useEffect(() => {
+    let active = true;
+
+    if (!dailyFocusMode) {
+      setDailyFocusFallbackMatches([]);
+      setDailyFocusFallbackLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+
+    setDailyFocusFallbackLoading(true);
+
+    Promise.allSettled([getMatches("top"), getMatches("tomorrow")])
+      .then((results) => {
+        if (!active) return;
+
+        const uniqueMatches = new Map<string, MatchItem>();
+        results.forEach((result) => {
+          if (result.status !== "fulfilled" || !result.value.ok) return;
+          result.value.items.forEach((match) => {
+            uniqueMatches.set(match.id, match);
+          });
+        });
+
+        const upcomingMatches = Array.from(uniqueMatches.values())
+          .filter((match) => {
+            if (!match.kickoff) return true;
+            const kickoffTime = new Date(match.kickoff).getTime();
+            return (
+              !Number.isFinite(kickoffTime) ||
+              kickoffTime >= Date.now() - 2 * 60 * 60 * 1000
+            );
+          })
+          .sort((left, right) => {
+            const leftTime = left.kickoff
+              ? new Date(left.kickoff).getTime()
+              : Number.POSITIVE_INFINITY;
+            const rightTime = right.kickoff
+              ? new Date(right.kickoff).getTime()
+              : Number.POSITIVE_INFINITY;
+            return leftTime - rightTime;
+          });
+
+        setDailyFocusFallbackMatches(upcomingMatches);
+      })
+      .catch(() => {
+        if (active) setDailyFocusFallbackMatches([]);
+      })
+      .finally(() => {
+        if (active) setDailyFocusFallbackLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [dailyFocusMode, reloadKey]);
+
   return (
     <div className="animate-rise">
       <AppHeader compact />
@@ -1233,7 +1303,7 @@ function MatchesScreen({
         </div>
         {!loading && !error && (
           <span className="rounded-full bg-panelSoft px-2.5 py-1 text-xs font-semibold text-slate-300">
-            {dailyFocusMode ? focusMatches.length : matches.length}
+            {dailyFocusMode ? dailyFocusDisplayMatches.length : matches.length}
           </span>
         )}
       </div>
@@ -1369,7 +1439,10 @@ function MatchesScreen({
       )}
 
       <div className="space-y-3">
-        {loading &&
+        {(loading ||
+          (dailyFocusMode &&
+            dailyFocusDisplayMatches.length === 0 &&
+            dailyFocusFallbackLoading)) &&
           Array.from({ length: 4 }, (_, index) => (
             <MatchSkeleton key={index} />
           ))}
@@ -1395,14 +1468,18 @@ function MatchesScreen({
           </div>
         )}
 
-        {!loading && !error && dailyFocusMode && focusMatches.length === 0 && (
+        {!loading &&
+          !dailyFocusFallbackLoading &&
+          !error &&
+          dailyFocusMode &&
+          dailyFocusDisplayMatches.length === 0 && (
           <div className="rounded-lg border border-line bg-panel px-4 py-8 text-center shadow-card">
             <CalendarDays className="mx-auto h-8 w-8 text-slate-600" />
             <p className="mt-4 text-sm font-semibold text-white">
-              Пока нет выделенных матчей дня.
+              Пока нет доступных матчей.
             </p>
             <p className="mx-auto mt-2 max-w-64 text-xs leading-5 text-slate-400">
-              Посмотри общий список матчей.
+              Попробуй открыть общий список позже.
             </p>
             <button
               type="button"
@@ -1434,9 +1511,11 @@ function MatchesScreen({
         )}
 
         {!loading &&
+          (!dailyFocusFallbackLoading ||
+            dailyFocusDisplayMatches.length > 0) &&
           !error &&
           dailyFocusMode &&
-          focusMatches.map((match, index) => (
+          dailyFocusDisplayMatches.map((match, index) => (
             <DailyFocusMatchCard
               key={match.id}
               match={match}
