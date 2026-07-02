@@ -1021,17 +1021,20 @@ function DailyFocusMatchCard({
       style={{ animationDelay: `${Math.min(index * 55, 220)}ms` }}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase text-slate-500">
-            {match.league || "Турнир"}
-          </p>
-          <div className="mt-3 space-y-2">
+        <div className="min-w-0 flex-1">
+          {match.league && (
+            <p className="truncate text-xs font-semibold uppercase text-slate-500">
+              {match.league}
+            </p>
+          )}
+          <div className="mt-3 rounded-md bg-white/[0.025] px-3 py-3">
             <div className="flex min-w-0 items-center gap-2.5">
               <TeamLogo logo={match.home_logo} name={match.home} size="sm" />
               <p className="truncate text-base font-extrabold text-white">
                 {match.home || "Хозяева"}
               </p>
             </div>
+            <div className="my-2 h-px bg-line/70" />
             <div className="flex min-w-0 items-center gap-2.5">
               <TeamLogo logo={match.away_logo} name={match.away} size="sm" />
               <p className="truncate text-base font-extrabold text-white">
@@ -1049,21 +1052,29 @@ function DailyFocusMatchCard({
 
       <div className="mt-4 space-y-2">
         {match.round && (
-          <p className="text-xs leading-5 text-slate-500">{match.round}</p>
+          <p className="text-xs leading-5 text-slate-500">
+            Этап: {match.round}
+          </p>
         )}
         {focusReason && (
-          <p className="rounded-md bg-white/[0.035] px-3 py-2 text-xs leading-5 text-slate-300">
-            <span className="font-semibold text-white">Почему в фокусе: </span>
-            {focusReason}
-          </p>
+          <div className="rounded-md bg-white/[0.035] px-3 py-2">
+            <p className="text-[10px] font-bold uppercase text-slate-500">
+              Почему в фокусе
+            </p>
+            <p className="mt-1 text-xs leading-5 text-slate-300">
+              {focusReason}
+            </p>
+          </div>
         )}
         {intrigue && intrigue !== match.round && (
-          <p className="text-xs leading-5 text-slate-400">
-            <span className="font-semibold text-slate-200">
-              Риск/интрига:{" "}
-            </span>
-            {intrigue}
-          </p>
+          <div className="rounded-md border border-amber-400/15 bg-amber-400/[0.035] px-3 py-2">
+            <p className="text-[10px] font-bold uppercase text-amber-200/70">
+              Интрига
+            </p>
+            <p className="mt-1 text-xs leading-5 text-slate-300">
+              {intrigue}
+            </p>
+          </div>
         )}
       </div>
 
@@ -1084,12 +1095,75 @@ function DailyFocusMatchCard({
   );
 }
 
+function DailyFocusScenariosTeaser({
+  onOpenSubscription,
+}: {
+  onOpenSubscription: () => void;
+}) {
+  const scenarios = [
+    {
+      title: "Понятный сценарий",
+      text: "Лучше всего читается по форме, мотивации и статистике.",
+    },
+    {
+      title: "Сбалансированный сценарий",
+      text: "Есть сильные аргументы, но остаются важные риски.",
+    },
+    {
+      title: "Смелый сценарий",
+      text: "Больше интриги и неопределённости, но матч может быть интересным по данным.",
+    },
+  ];
+
+  return (
+    <section className="animate-rise rounded-lg border border-gold/20 bg-gold/[0.055] p-4 shadow-card">
+      <div className="flex items-start gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gold/15 text-gold">
+          <Sparkles className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <h2 className="text-base font-extrabold text-white">
+            🎯 Сценарии дня
+          </h2>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            MatchLab группирует матчи по читаемости данных и уровню
+            неопределённости.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-2">
+        {scenarios.map((scenario) => (
+          <div
+            key={scenario.title}
+            className="rounded-md border border-line/70 bg-white/[0.025] px-3 py-2.5"
+          >
+            <p className="text-sm font-bold text-white">{scenario.title}</p>
+            <p className="mt-1 text-xs leading-5 text-slate-400">
+              {scenario.text}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        onClick={onOpenSubscription}
+        className="mt-4 h-10 w-full rounded-md bg-gold text-sm font-bold text-zinc-950 transition active:scale-[0.98]"
+      >
+        Смотреть Premium
+      </button>
+    </section>
+  );
+}
+
 function MatchesScreen({
   initialType,
   dailyFocusMode,
   premiumAiEnabled,
   onOpenMatch,
   onOpenAllMatches,
+  onOpenSubscription,
   onOpenTournament,
   onOpenTeam,
   reminderMatchIds,
@@ -1104,6 +1178,7 @@ function MatchesScreen({
   premiumAiEnabled: boolean;
   onOpenMatch: (match: MatchItem) => void;
   onOpenAllMatches: () => void;
+  onOpenSubscription: () => void;
   onOpenTournament: (tournament: TournamentSelection) => void;
   onOpenTeam: (team: TeamSearchItem) => void;
   reminderMatchIds: Set<string>;
@@ -1527,15 +1602,22 @@ function MatchesScreen({
             dailyFocusDisplayMatches.length > 0) &&
           !error &&
           dailyFocusMode &&
-          dailyFocusDisplayMatches.map((match, index) => (
-            <DailyFocusMatchCard
-              key={match.id}
-              match={match}
-              index={index}
-              premiumAiEnabled={premiumAiEnabled}
-              onOpenMatch={onOpenMatch}
-            />
-          ))}
+          dailyFocusDisplayMatches.length > 0 && (
+            <>
+              {dailyFocusDisplayMatches.map((match, index) => (
+                <DailyFocusMatchCard
+                  key={match.id}
+                  match={match}
+                  index={index}
+                  premiumAiEnabled={premiumAiEnabled}
+                  onOpenMatch={onOpenMatch}
+                />
+              ))}
+              <DailyFocusScenariosTeaser
+                onOpenSubscription={onOpenSubscription}
+              />
+            </>
+          )}
 
         {!loading &&
           !error &&
@@ -6322,6 +6404,7 @@ export default function App() {
                   setDailyFocusMode(false);
                   setMatchType("top");
                 }}
+                onOpenSubscription={() => navigate("subscription")}
                 onOpenTournament={(tournament) => {
                   setSelectedTournament(tournament);
                   window.scrollTo({ top: 0, behavior: "smooth" });
