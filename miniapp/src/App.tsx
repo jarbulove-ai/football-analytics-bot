@@ -1000,15 +1000,20 @@ function getDailyFocusIntrigue(match: MatchItem) {
 function DailyFocusMatchCard({
   match,
   index,
+  premiumAiEnabled,
   onOpenMatch,
 }: {
   match: MatchItem;
   index: number;
+  premiumAiEnabled: boolean;
   onOpenMatch: (match: MatchItem) => void;
 }) {
   const almatyTime = formatAlmatyKickoff(match.kickoff);
   const focusReason = getDailyFocusReason(match);
   const intrigue = getDailyFocusIntrigue(match);
+  const aiButtonText = premiumAiEnabled
+    ? "Открыть Premium AI-разбор"
+    : "Открыть базовый AI-разбор";
 
   return (
     <article
@@ -1068,8 +1073,13 @@ function DailyFocusMatchCard({
         className="mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white transition active:scale-[0.98]"
       >
         <Bot className="h-4 w-4" />
-        Открыть AI-разбор
+        {aiButtonText}
       </button>
+      {!premiumAiEnabled && (
+        <p className="mt-2 text-center text-[11px] text-slate-500">
+          Глубокий разбор доступен в Premium
+        </p>
+      )}
     </article>
   );
 }
@@ -1077,6 +1087,7 @@ function DailyFocusMatchCard({
 function MatchesScreen({
   initialType,
   dailyFocusMode,
+  premiumAiEnabled,
   onOpenMatch,
   onOpenAllMatches,
   onOpenTournament,
@@ -1090,6 +1101,7 @@ function MatchesScreen({
 }: {
   initialType: MatchListType;
   dailyFocusMode: boolean;
+  premiumAiEnabled: boolean;
   onOpenMatch: (match: MatchItem) => void;
   onOpenAllMatches: () => void;
   onOpenTournament: (tournament: TournamentSelection) => void;
@@ -1520,6 +1532,7 @@ function MatchesScreen({
               key={match.id}
               match={match}
               index={index}
+              premiumAiEnabled={premiumAiEnabled}
               onOpenMatch={onOpenMatch}
             />
           ))}
@@ -3514,9 +3527,11 @@ function AiStructuredAnalysis({
 function MatchDetails({
   match,
   initialTab = "details",
+  premiumAiEnabled,
   onBack,
   onOpenTeam,
   onOpenContextMatch,
+  onOpenSubscription,
   reminderActive,
   reminderLoading,
   reminderActionError,
@@ -3524,9 +3539,11 @@ function MatchDetails({
 }: {
   match: MatchItem;
   initialTab?: MatchDetailTab;
+  premiumAiEnabled: boolean;
   onBack: () => void;
   onOpenTeam: (team: TeamSearchItem) => void;
   onOpenContextMatch: (match: MatchContextMatch) => Promise<void>;
+  onOpenSubscription: () => void;
   reminderActive: boolean;
   reminderLoading: boolean;
   reminderActionError: string;
@@ -3747,6 +3764,11 @@ function MatchDetails({
       !aiAnalysis.is_admin &&
       aiAnalysis.free_refreshes_left === 0,
   );
+  const aiAnalysisMode = aiAnalysis?.analysis_mode || "default";
+  const aiModeIsPremium = aiAnalysisMode === "premium";
+  const aiActionText = premiumAiEnabled
+    ? "Сделать Premium AI-разбор"
+    : "Сделать базовый AI-разбор";
 
   return (
     <div className="animate-rise">
@@ -4104,15 +4126,21 @@ function MatchDetails({
             <div className="mt-5">
               <div className="mb-3 flex items-center gap-2">
                 <div>
-                  <span className="rounded bg-accent/10 px-2 py-1 text-[10px] font-bold uppercase text-accent">
-                    {aiAnalysis.analysis_mode === "premium"
-                      ? "Premium deep analysis"
-                      : "AI-разбор"}
+                  <span
+                    className={`rounded px-2 py-1 text-[10px] font-bold uppercase ${
+                      aiModeIsPremium
+                        ? "bg-gold/15 text-gold"
+                        : "bg-accent/10 text-accent"
+                    }`}
+                  >
+                    {aiModeIsPremium
+                      ? "👑 Premium AI-разбор"
+                      : "🔓 Базовый AI-разбор"}
                   </span>
                   <p className="mt-2 text-[11px] text-slate-500">
-                    {aiAnalysis.analysis_mode === "premium"
-                      ? "Глубокая модель · расширенный контекст"
-                      : "Короткий AI-разбор"}
+                    {aiModeIsPremium
+                      ? "Глубокая версия: вероятности, сценарии, расширенные сигналы и риски."
+                      : "Краткая версия: общий сценарий, основные аргументы и риски."}
                   </p>
                 </div>
                 {aiAnalysis.cached && (
@@ -4171,6 +4199,31 @@ function MatchDetails({
                   </p>
                 )}
               </div>
+              {!aiModeIsPremium && (
+                <div className="mt-4 rounded-lg border border-gold/20 bg-gold/[0.055] p-4">
+                  <div className="flex items-start gap-3">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-gold/15 text-gold">
+                      <Crown className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0">
+                      <h3 className="text-sm font-bold text-white">
+                        Хочешь глубже?
+                      </h3>
+                      <p className="mt-1 text-xs leading-5 text-slate-400">
+                        Premium открывает расширенный разбор: вероятности,
+                        сценарии, сигналы и риски.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onOpenSubscription}
+                    className="mt-4 h-10 w-full rounded-md bg-gold text-sm font-bold text-zinc-950 transition active:scale-[0.98]"
+                  >
+                    Открыть Premium
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -4214,8 +4267,13 @@ function MatchDetails({
                 ? "Обновления закончились"
               : aiAnalysis
                 ? "Обновить AI-разбор"
-                : "Сделать AI-разбор"}
+                : aiActionText}
           </button>
+          {!aiAnalysis && !premiumAiEnabled && (
+            <p className="mt-2 text-center text-[11px] text-slate-500">
+              Глубокий разбор доступен в Premium
+            </p>
+          )}
         </section>
       )}
 
@@ -5099,7 +5157,6 @@ function SubscriptionScreen() {
   const premiumUntil = formatPremiumUntil(
     subscription?.premium_until || null,
   );
-
   function selectPackage(item: PaymentPackage) {
     setSelectedPackage(item);
     setReceiptFile(null);
@@ -5394,6 +5451,61 @@ function SubscriptionScreen() {
             Тарифы временно недоступны
           </p>
         </div>
+      )}
+
+      {!loading && config && (
+        <section className="mt-7 rounded-lg border border-line bg-panel p-5 shadow-card">
+          <div className="flex items-center gap-2">
+            <Bot className="h-5 w-5 text-accent" />
+            <h2 className="text-base font-bold text-white">
+              Базовый и Premium AI-разбор
+            </h2>
+          </div>
+          <div className="mt-4 grid gap-3">
+            <div className="rounded-md border border-line/80 bg-white/[0.025] p-4">
+              <p className="text-xs font-bold uppercase text-slate-500">
+                Free
+              </p>
+              <div className="mt-3 space-y-2">
+                {[
+                  "5 базовых AI-разборов в месяц",
+                  "Краткий сценарий матча",
+                  "Основные аргументы",
+                  "Главный риск",
+                ].map((item) => (
+                  <p
+                    key={item}
+                    className="text-xs leading-5 text-slate-300 before:mr-2 before:text-accent before:content-['•']"
+                  >
+                    {item}
+                  </p>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-md border border-gold/20 bg-gold/[0.055] p-4">
+              <p className="text-xs font-bold uppercase text-gold">
+                Premium
+              </p>
+              <div className="mt-3 space-y-2">
+                {[
+                  "Больше глубоких AI-разборов",
+                  "Вероятности",
+                  "Расширенные сигналы",
+                  "Сценарии матча",
+                  "Форма команд",
+                  "Риски и контекст",
+                ].map((item) => (
+                  <p
+                    key={item}
+                    className="text-xs leading-5 text-slate-300 before:mr-2 before:text-gold before:content-['•']"
+                  >
+                    {item}
+                  </p>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
       )}
 
       {!loading && config && (
@@ -5730,6 +5842,8 @@ export default function App() {
     new Set(),
   );
   const [reminderActionError, setReminderActionError] = useState("");
+  const [subscriptionStatus, setSubscriptionStatus] =
+    useState<SubscriptionData | null>(null);
   const [deepLinkLoading, setDeepLinkLoading] = useState(
     Boolean(initialMatchId),
   );
@@ -5740,6 +5854,9 @@ export default function App() {
   const reminderMatchIds = useMemo(
     () => new Set(matchReminders.map((reminder) => reminder.match_id)),
     [matchReminders],
+  );
+  const premiumAiEnabled = Boolean(
+    subscriptionStatus?.is_admin || subscriptionStatus?.plan === "premium",
   );
 
   useEffect(() => {
@@ -5842,6 +5959,22 @@ export default function App() {
       })
       .finally(() => {
         if (active) setRemindersLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [telegramIdentity.id]);
+
+  useEffect(() => {
+    let active = true;
+
+    getSubscription(telegramIdentity.id)
+      .then((response) => {
+        if (active) setSubscriptionStatus(response);
+      })
+      .catch(() => {
+        if (active) setSubscriptionStatus(null);
       });
 
     return () => {
@@ -6104,6 +6237,7 @@ export default function App() {
             key={`${selectedMatch.id}:${selectedMatchInitialTab}`}
             match={selectedMatch}
             initialTab={selectedMatchInitialTab}
+            premiumAiEnabled={premiumAiEnabled}
             onBack={() => {
               const previousMatch = matchHistory[matchHistory.length - 1];
               if (previousMatch) {
@@ -6124,6 +6258,7 @@ export default function App() {
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
             onOpenContextMatch={openContextMatch}
+            onOpenSubscription={() => navigate("subscription")}
             reminderActive={reminderMatchIds.has(selectedMatch.id)}
             reminderLoading={
               remindersLoading || reminderLoadingIds.has(selectedMatch.id)
@@ -6173,6 +6308,7 @@ export default function App() {
               <MatchesScreen
                 initialType={matchType}
                 dailyFocusMode={dailyFocusMode}
+                premiumAiEnabled={premiumAiEnabled}
                 onOpenMatch={(match) => {
                   setTeamBeforeMatch(null);
                   setMatchHistory([]);
