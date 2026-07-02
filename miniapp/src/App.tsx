@@ -491,6 +491,7 @@ function AppHeader({ compact = false }: { compact?: boolean }) {
 
 function HomeScreen({
   onNavigate,
+  onOpenDailyMatches,
   favoriteTeams,
   matchReminders,
   reminderMatchIds,
@@ -501,6 +502,7 @@ function HomeScreen({
   onOpenReminder,
 }: {
   onNavigate: (screen: Screen) => void;
+  onOpenDailyMatches: () => void;
   favoriteTeams: FavoriteTeamItem[];
   matchReminders: MatchReminderItem[];
   reminderMatchIds: Set<string>;
@@ -658,7 +660,7 @@ function HomeScreen({
         <div className="mt-6">
           <button
             type="button"
-            onClick={() => onNavigate("matches")}
+            onClick={onOpenDailyMatches}
             className="flex h-12 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white shadow-card transition active:scale-[0.98]"
           >
             <Activity className="h-4 w-4" />
@@ -958,9 +960,125 @@ function CompactMatchRow({
   );
 }
 
+function formatAlmatyKickoff(value: string | null) {
+  if (!value) return "";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "Asia/Almaty",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function getDailyFocusReason(match: MatchItem) {
+  if (isLiveMatchStatus(match.status)) {
+    return "Матч уже идёт: удобно быстро открыть детали и live-сценарий.";
+  }
+
+  if (match.league) {
+    return `Матч из турнира ${match.league}: можно быстро проверить форму команд, мотивацию и AI-разбор.`;
+  }
+
+  return "";
+}
+
+function getDailyFocusIntrigue(match: MatchItem) {
+  if (isLiveMatchStatus(match.status)) {
+    return "Интрига: текущий счёт может быстро изменить сценарий игры.";
+  }
+
+  if (match.round) {
+    return `Этап: ${match.round}`;
+  }
+
+  return "";
+}
+
+function DailyFocusMatchCard({
+  match,
+  index,
+  onOpenMatch,
+}: {
+  match: MatchItem;
+  index: number;
+  onOpenMatch: (match: MatchItem) => void;
+}) {
+  const almatyTime = formatAlmatyKickoff(match.kickoff);
+  const focusReason = getDailyFocusReason(match);
+  const intrigue = getDailyFocusIntrigue(match);
+
+  return (
+    <article
+      className="animate-rise rounded-lg border border-line bg-panel p-4 shadow-card"
+      style={{ animationDelay: `${Math.min(index * 55, 220)}ms` }}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase text-slate-500">
+            {match.league || "Турнир"}
+          </p>
+          <div className="mt-3 space-y-2">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <TeamLogo logo={match.home_logo} name={match.home} size="sm" />
+              <p className="truncate text-base font-extrabold text-white">
+                {match.home || "Хозяева"}
+              </p>
+            </div>
+            <div className="flex min-w-0 items-center gap-2.5">
+              <TeamLogo logo={match.away_logo} name={match.away} size="sm" />
+              <p className="truncate text-base font-extrabold text-white">
+                {match.away || "Гости"}
+              </p>
+            </div>
+          </div>
+        </div>
+        {almatyTime && (
+          <span className="shrink-0 rounded-md bg-white/[0.06] px-2.5 py-1.5 text-xs font-bold text-slate-200">
+            {almatyTime} Алматы
+          </span>
+        )}
+      </div>
+
+      <div className="mt-4 space-y-2">
+        {match.round && (
+          <p className="text-xs leading-5 text-slate-500">{match.round}</p>
+        )}
+        {focusReason && (
+          <p className="rounded-md bg-white/[0.035] px-3 py-2 text-xs leading-5 text-slate-300">
+            <span className="font-semibold text-white">Почему в фокусе: </span>
+            {focusReason}
+          </p>
+        )}
+        {intrigue && intrigue !== match.round && (
+          <p className="text-xs leading-5 text-slate-400">
+            <span className="font-semibold text-slate-200">
+              Риск/интрига:{" "}
+            </span>
+            {intrigue}
+          </p>
+        )}
+      </div>
+
+      <button
+        type="button"
+        onClick={() => onOpenMatch(match)}
+        className="mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white transition active:scale-[0.98]"
+      >
+        <Bot className="h-4 w-4" />
+        Открыть AI-разбор
+      </button>
+    </article>
+  );
+}
+
 function MatchesScreen({
   initialType,
+  dailyFocusMode,
   onOpenMatch,
+  onOpenAllMatches,
   onOpenTournament,
   onOpenTeam,
   reminderMatchIds,
@@ -971,7 +1089,9 @@ function MatchesScreen({
   onToggleReminder,
 }: {
   initialType: MatchListType;
+  dailyFocusMode: boolean;
   onOpenMatch: (match: MatchItem) => void;
+  onOpenAllMatches: () => void;
   onOpenTournament: (tournament: TournamentSelection) => void;
   onOpenTeam: (team: TeamSearchItem) => void;
   reminderMatchIds: Set<string>;
@@ -995,7 +1115,27 @@ function MatchesScreen({
   const [teamSearchLoading, setTeamSearchLoading] = useState(false);
   const [teamSearchError, setTeamSearchError] = useState(false);
   const normalizedTeamQuery = teamQuery.trim();
-  const isTeamSearchActive = normalizedTeamQuery.length >= 2;
+  const isTeamSearchActive =
+    !dailyFocusMode && normalizedTeamQuery.length >= 2;
+  const focusMatches = useMemo(
+    () =>
+      [...matches]
+        .sort((left, right) => {
+          const leftLive = isLiveMatchStatus(left.status) ? 0 : 1;
+          const rightLive = isLiveMatchStatus(right.status) ? 0 : 1;
+          if (leftLive !== rightLive) return leftLive - rightLive;
+
+          const leftTime = left.kickoff
+            ? new Date(left.kickoff).getTime()
+            : Number.POSITIVE_INFINITY;
+          const rightTime = right.kickoff
+            ? new Date(right.kickoff).getTime()
+            : Number.POSITIVE_INFINITY;
+          return leftTime - rightTime;
+        })
+        .slice(0, 5),
+    [matches],
+  );
   const groupedMatches = useMemo(() => {
     const groups = new Map<string, MatchItem[]>();
     matches.forEach((match) => {
@@ -1085,18 +1225,21 @@ function MatchesScreen({
       <div className="mb-5 flex items-end justify-between">
         <div>
           <p className="text-xs font-semibold uppercase text-slate-500">
-            Расписание
+            {dailyFocusMode ? "Сегодня в фокусе" : "Расписание"}
           </p>
-          <h1 className="mt-1 text-2xl font-extrabold text-white">Матчи</h1>
+          <h1 className="mt-1 text-2xl font-extrabold text-white">
+            {dailyFocusMode ? "🔥 Матчи дня" : "Матчи"}
+          </h1>
         </div>
         {!loading && !error && (
           <span className="rounded-full bg-panelSoft px-2.5 py-1 text-xs font-semibold text-slate-300">
-            {matches.length}
+            {dailyFocusMode ? focusMatches.length : matches.length}
           </span>
         )}
       </div>
 
-      <div className="relative mb-4">
+      {!dailyFocusMode && (
+        <div className="relative mb-4">
         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
         <input
           type="search"
@@ -1106,6 +1249,7 @@ function MatchesScreen({
           className="h-11 w-full rounded-lg border border-line bg-panel pl-10 pr-4 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-accent/60"
         />
       </div>
+      )}
 
       {isTeamSearchActive && (
         <section className="mb-5 overflow-hidden rounded-lg border border-line bg-panel">
@@ -1165,6 +1309,17 @@ function MatchesScreen({
           {reminderActionError}
         </p>
       )}
+      {dailyFocusMode && (
+        <section className="mb-5 rounded-lg border border-lime/20 bg-lime/[0.06] p-4 shadow-card">
+          <p className="text-sm leading-6 text-slate-300">
+            AI выбрал матчи, за которыми сегодня стоит следить: форма команд,
+            мотивация, риски и возможный сценарий игры.
+          </p>
+        </section>
+      )}
+
+      {!dailyFocusMode && (
+        <>
       <div className="relative mb-3 grid grid-cols-2 rounded-full bg-panel p-1">
         <span
           className={`absolute inset-y-1 left-1 w-[calc(50%-0.25rem)] rounded-full bg-accent shadow-card transition-transform duration-300 ease-out ${
@@ -1188,8 +1343,11 @@ function MatchesScreen({
           </button>
         ))}
       </div>
+        </>
+      )}
 
-      <div className="mb-5 grid grid-cols-4 rounded-lg bg-panel p-1">
+      {!dailyFocusMode && (
+        <div className="mb-5 grid grid-cols-4 rounded-lg bg-panel p-1">
         {matchTabs.map((tab) => (
           <button
             key={tab.id}
@@ -1208,6 +1366,7 @@ function MatchesScreen({
           </button>
         ))}
       </div>
+      )}
 
       <div className="space-y-3">
         {loading &&
@@ -1236,7 +1395,29 @@ function MatchesScreen({
           </div>
         )}
 
-        {!loading && !error && matches.length === 0 && (
+        {!loading && !error && dailyFocusMode && focusMatches.length === 0 && (
+          <div className="rounded-lg border border-line bg-panel px-4 py-8 text-center shadow-card">
+            <CalendarDays className="mx-auto h-8 w-8 text-slate-600" />
+            <p className="mt-4 text-sm font-semibold text-white">
+              Пока нет выделенных матчей дня.
+            </p>
+            <p className="mx-auto mt-2 max-w-64 text-xs leading-5 text-slate-400">
+              Посмотри общий список матчей.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveType("top");
+                onOpenAllMatches();
+              }}
+              className="mt-5 h-10 rounded-md bg-accent px-5 text-sm font-semibold text-white"
+            >
+              Открыть все матчи
+            </button>
+          </div>
+        )}
+
+        {!loading && !error && !dailyFocusMode && matches.length === 0 && (
           <div className="py-16 text-center">
             <CalendarDays className="mx-auto h-8 w-8 text-slate-600" />
             <p className="mt-4 text-sm font-semibold text-white">
@@ -1254,6 +1435,19 @@ function MatchesScreen({
 
         {!loading &&
           !error &&
+          dailyFocusMode &&
+          focusMatches.map((match, index) => (
+            <DailyFocusMatchCard
+              key={match.id}
+              match={match}
+              index={index}
+              onOpenMatch={onOpenMatch}
+            />
+          ))}
+
+        {!loading &&
+          !error &&
+          !dailyFocusMode &&
           activeView === "matches" &&
           groupedMatches.map(([leagueName, leagueMatches], index) => {
             const firstMatch = leagueMatches[0];
@@ -1337,6 +1531,7 @@ function MatchesScreen({
 
         {!loading &&
           !error &&
+          !dailyFocusMode &&
           activeView === "leagues" &&
           groupedMatches.map(([leagueName, leagueMatches], index) => {
             const firstMatch = leagueMatches[0];
@@ -3239,6 +3434,7 @@ function AiStructuredAnalysis({
 
 function MatchDetails({
   match,
+  initialTab = "details",
   onBack,
   onOpenTeam,
   onOpenContextMatch,
@@ -3248,6 +3444,7 @@ function MatchDetails({
   onToggleReminder,
 }: {
   match: MatchItem;
+  initialTab?: MatchDetailTab;
   onBack: () => void;
   onOpenTeam: (team: TeamSearchItem) => void;
   onOpenContextMatch: (match: MatchContextMatch) => Promise<void>;
@@ -3271,8 +3468,7 @@ function MatchDetails({
   const [savedAiLoadFailed, setSavedAiLoadFailed] = useState(false);
   const [savedAiRetryKey, setSavedAiRetryKey] = useState(0);
   const savedAiRequestMatchIdRef = useRef<string | null>(null);
-  const [activeTab, setActiveTab] =
-    useState<MatchDetailTab>("details");
+  const [activeTab, setActiveTab] = useState<MatchDetailTab>(initialTab);
   const [liveData, setLiveData] = useState<MatchLiveResponse | null>(null);
   const [liveLoading, setLiveLoading] = useState(false);
   const [liveError, setLiveError] = useState(false);
@@ -5431,7 +5627,10 @@ export default function App() {
   const initialMatchId = useMemo(getInitialMatchIdFromUrl, []);
   const [screen, setScreen] = useState<Screen>(getInitialScreenFromUrl);
   const [matchType, setMatchType] = useState<MatchListType>("top");
+  const [dailyFocusMode, setDailyFocusMode] = useState(false);
   const [selectedMatch, setSelectedMatch] = useState<MatchItem | null>(null);
+  const [selectedMatchInitialTab, setSelectedMatchInitialTab] =
+    useState<MatchDetailTab>("details");
   const [matchHistory, setMatchHistory] = useState<MatchItem[]>([]);
   const [selectedTournament, setSelectedTournament] =
     useState<TournamentSelection | null>(null);
@@ -5496,12 +5695,15 @@ export default function App() {
       .then((response) => {
         if (!active) return;
         setScreen("matches");
+        setDailyFocusMode(false);
         setMatchHistory([]);
+        setSelectedMatchInitialTab("details");
         setSelectedMatch(response.match);
       })
       .catch(() => {
         if (!active) return;
         setScreen("matches");
+        setDailyFocusMode(false);
         setDeepLinkError("Не удалось открыть матч из уведомления.");
       })
       .finally(() => {
@@ -5569,6 +5771,7 @@ export default function App() {
   }, [telegramIdentity.id]);
 
   function navigate(nextScreen: Screen) {
+    setDailyFocusMode(false);
     setSelectedMatch(null);
     setMatchHistory([]);
     setSelectedTournament(null);
@@ -5579,8 +5782,21 @@ export default function App() {
   }
 
   function openMatches(type: MatchListType) {
+    setDailyFocusMode(false);
     setMatchType(type);
     navigate("matches");
+  }
+
+  function openDailyFocusMatches() {
+    setDailyFocusMode(true);
+    setMatchType("today");
+    setSelectedMatch(null);
+    setMatchHistory([]);
+    setSelectedTournament(null);
+    setSelectedTeam(null);
+    setTeamBeforeMatch(null);
+    setScreen("matches");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function closeOnboarding(nextScreen?: Screen) {
@@ -5708,6 +5924,7 @@ export default function App() {
       const response = await getMatch(reminder.match_id);
       setTeamBeforeMatch(null);
       setMatchHistory([]);
+      setSelectedMatchInitialTab("details");
       setSelectedMatch(response.match);
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch {
@@ -5764,6 +5981,7 @@ export default function App() {
     if (selectedMatch) {
       setMatchHistory((current) => [...current, selectedMatch]);
     }
+    setSelectedMatchInitialTab("details");
     setSelectedMatch(response.match);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -5797,18 +6015,21 @@ export default function App() {
               setTeamBeforeMatch(selectedTeam);
               setSelectedTeam(null);
               setMatchHistory([]);
+              setSelectedMatchInitialTab("details");
               setSelectedMatch(match);
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
           />
         ) : selectedMatch ? (
           <MatchDetails
-            key={selectedMatch.id}
+            key={`${selectedMatch.id}:${selectedMatchInitialTab}`}
             match={selectedMatch}
+            initialTab={selectedMatchInitialTab}
             onBack={() => {
               const previousMatch = matchHistory[matchHistory.length - 1];
               if (previousMatch) {
                 setMatchHistory((current) => current.slice(0, -1));
+                setSelectedMatchInitialTab("details");
                 setSelectedMatch(previousMatch);
                 window.scrollTo({ top: 0, behavior: "smooth" });
                 return;
@@ -5838,6 +6059,7 @@ export default function App() {
             onOpenMatch={(match) => {
               setTeamBeforeMatch(null);
               setMatchHistory([]);
+              setSelectedMatchInitialTab("details");
               setSelectedMatch(match);
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
@@ -5851,6 +6073,7 @@ export default function App() {
             {screen === "home" && (
               <HomeScreen
                 onNavigate={navigate}
+                onOpenDailyMatches={openDailyFocusMatches}
                 favoriteTeams={favoriteTeams}
                 matchReminders={matchReminders}
                 reminderMatchIds={reminderMatchIds}
@@ -5860,6 +6083,7 @@ export default function App() {
                 onOpenMatch={(match) => {
                   setTeamBeforeMatch(null);
                   setMatchHistory([]);
+                  setSelectedMatchInitialTab("details");
                   setSelectedMatch(match);
                   window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
@@ -5869,11 +6093,19 @@ export default function App() {
             {screen === "matches" && (
               <MatchesScreen
                 initialType={matchType}
+                dailyFocusMode={dailyFocusMode}
                 onOpenMatch={(match) => {
                   setTeamBeforeMatch(null);
                   setMatchHistory([]);
+                  setSelectedMatchInitialTab(
+                    dailyFocusMode ? "ai" : "details",
+                  );
                   setSelectedMatch(match);
                   window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+                onOpenAllMatches={() => {
+                  setDailyFocusMode(false);
+                  setMatchType("top");
                 }}
                 onOpenTournament={(tournament) => {
                   setSelectedTournament(tournament);
@@ -5910,6 +6142,7 @@ export default function App() {
                 onOpenMatch={(match) => {
                   setTeamBeforeMatch(null);
                   setMatchHistory([]);
+                  setSelectedMatchInitialTab("details");
                   setSelectedMatch(match);
                   window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
