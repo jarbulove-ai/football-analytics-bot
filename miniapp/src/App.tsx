@@ -46,6 +46,7 @@ import {
   removeMatchReminder,
   searchTeams,
   submitPaymentReceipt,
+  trackMiniappEvent,
 } from "./api";
 import { getTelegramUserIdentity } from "./telegramUser";
 import type {
@@ -188,6 +189,19 @@ function buildOptimisticMatchReminder(match: MatchItem): MatchReminderItem {
     kickoff,
     notify_at: new Date(kickoffTime - 60 * 60 * 1000).toISOString(),
     is_sent: false,
+  };
+}
+
+function buildMiniappMatchEventData(
+  match: MatchItem,
+  source: string,
+): Record<string, unknown> {
+  return {
+    match_id: match.id,
+    home: match.home,
+    away: match.away,
+    league: match.league,
+    source,
   };
 }
 
@@ -3804,6 +3818,10 @@ function MatchDetails({
     setAiError("");
     setSavedAiLoadFailed(false);
     const forceRefresh = Boolean(aiAnalysis);
+    void trackMiniappEvent(telegramIdentity.id, "miniapp_ai_clicked", {
+      ...buildMiniappMatchEventData(match, aiEventSource),
+      analysis_mode_expected: premiumAiEnabled ? "premium" : "default",
+    });
 
     try {
       const response = await requestMatchAiAnalysis(
@@ -3812,9 +3830,24 @@ function MatchDetails({
         forceRefresh,
       );
       setAiAnalysis(response);
+      void trackMiniappEvent(telegramIdentity.id, "miniapp_ai_success", {
+        match_id: match.id,
+        analysis_mode: response.analysis_mode,
+        limit_charged: response.limit_charged,
+        from_personal_cache: response.from_personal_cache,
+        from_global_cache: response.from_global_cache,
+      });
     } catch (error) {
       if (error instanceof MatchAiAnalysisError) {
         if (error.status === 402 || error.code === "ai_limit_exceeded") {
+          void trackMiniappEvent(
+            telegramIdentity.id,
+            "miniapp_ai_limit_reached",
+            {
+              match_id: match.id,
+              source: "miniapp",
+            },
+          );
           setAiError(
             "AI-лимит закончился. Можно оформить подписку или докупить AI-разборы.",
           );
@@ -3851,6 +3884,7 @@ function MatchDetails({
   const aiActionText = premiumAiEnabled
     ? "Сделать Premium AI-разбор"
     : "Сделать базовый AI-разбор";
+  const aiEventSource = initialTab === "ai" ? "daily_focus" : "match_details";
 
   return (
     <div className="animate-rise">
@@ -4299,7 +4333,17 @@ function MatchDetails({
                   </div>
                   <button
                     type="button"
-                    onClick={onOpenSubscription}
+                    onClick={() => {
+                      void trackMiniappEvent(
+                        telegramIdentity.id,
+                        "miniapp_premium_upsell_clicked",
+                        {
+                          source: "basic_ai_upsell",
+                          match_id: match.id,
+                        },
+                      );
+                      onOpenSubscription();
+                    }}
                     className="mt-4 h-10 w-full rounded-md bg-gold text-sm font-bold text-zinc-950 transition active:scale-[0.98]"
                   >
                     Открыть Premium
@@ -5240,6 +5284,10 @@ function SubscriptionScreen() {
     subscription?.premium_until || null,
   );
   function selectPackage(item: PaymentPackage) {
+    void trackMiniappEvent(telegramIdentity.id, "payment_started", {
+      package_code: item.code,
+      source: "subscription",
+    });
     setSelectedPackage(item);
     setReceiptFile(null);
     setReceiptError("");
@@ -5941,6 +5989,13 @@ export default function App() {
     subscriptionStatus?.is_admin || subscriptionStatus?.plan === "premium",
   );
 
+  function trackEvent(
+    eventType: string,
+    eventData: Record<string, unknown> = {},
+  ) {
+    void trackMiniappEvent(telegramIdentity.id, eventType, eventData);
+  }
+
   useEffect(() => {
     const telegramWebApp = window.Telegram?.WebApp;
     telegramWebApp?.ready();
@@ -5949,6 +6004,10 @@ export default function App() {
     document.documentElement.dataset.telegramTheme =
       telegramWebApp?.colorScheme || "dark";
   }, []);
+
+  useEffect(() => {
+    trackEvent("miniapp_opened", {});
+  }, [telegramIdentity.id]);
 
   useEffect(() => {
     if (!onboardingVisible) return;
@@ -6064,7 +6123,10 @@ export default function App() {
     };
   }, [telegramIdentity.id]);
 
-  function navigate(nextScreen: Screen) {
+  function navigate(nextScreen: Screen, source = "unknown") {
+    if (nextScreen === "subscription") {
+      trackEvent("subscription_opened", { source });
+    }
     setDailyFocusMode(false);
     setSelectedMatch(null);
     setMatchHistory([]);
@@ -6082,6 +6144,7 @@ export default function App() {
   }
 
   function openDailyFocusMatches() {
+    trackEvent("daily_focus_opened", { source: "home_cta" });
     setDailyFocusMode(true);
     setMatchType("today");
     setSelectedMatch(null);
@@ -6091,6 +6154,10 @@ export default function App() {
     setTeamBeforeMatch(null);
     setScreen("matches");
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function openSubscription(source: string) {
+    navigate("subscription", source);
   }
 
   function closeOnboarding(nextScreen?: Screen) {
@@ -6340,7 +6407,7 @@ export default function App() {
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
             onOpenContextMatch={openContextMatch}
-            onOpenSubscription={() => navigate("subscription")}
+            onOpenSubscription={() => openSubscription("upsell")}
             reminderActive={reminderMatchIds.has(selectedMatch.id)}
             reminderLoading={
               remindersLoading || reminderLoadingIds.has(selectedMatch.id)
@@ -6392,6 +6459,15 @@ export default function App() {
                 dailyFocusMode={dailyFocusMode}
                 premiumAiEnabled={premiumAiEnabled}
                 onOpenMatch={(match) => {
+                  trackEvent(
+                    dailyFocusMode
+                      ? "daily_focus_match_selected"
+                      : "miniapp_match_selected",
+                    buildMiniappMatchEventData(
+                      match,
+                      dailyFocusMode ? "daily_focus" : "matches",
+                    ),
+                  );
                   setTeamBeforeMatch(null);
                   setMatchHistory([]);
                   setSelectedMatchInitialTab(
@@ -6404,7 +6480,12 @@ export default function App() {
                   setDailyFocusMode(false);
                   setMatchType("top");
                 }}
-                onOpenSubscription={() => navigate("subscription")}
+                onOpenSubscription={() => {
+                  trackEvent("scenarios_teaser_clicked", {
+                    source: "daily_focus_scenarios",
+                  });
+                  openSubscription("scenarios");
+                }}
                 onOpenTournament={(tournament) => {
                   setSelectedTournament(tournament);
                   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -6460,7 +6541,12 @@ export default function App() {
         )}
       </main>
 
-      <BottomNavigation activeScreen={screen} onNavigate={navigate} />
+      <BottomNavigation
+        activeScreen={screen}
+        onNavigate={(nextScreen) =>
+          navigate(nextScreen, nextScreen === "subscription" ? "navbar" : "unknown")
+        }
+      />
       {onboardingVisible && (
         <OnboardingOverlay
           onStart={() => closeOnboarding("matches")}

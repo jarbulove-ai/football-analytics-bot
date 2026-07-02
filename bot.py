@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, time, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import Flask, jsonify, request as flask_request
@@ -1080,6 +1081,21 @@ def track_user_action(
     log_user_event(update.effective_user.id, event_type, event_data)
 
 
+MINIAPP_EVENT_TYPES = {
+    "miniapp_opened",
+    "daily_focus_opened",
+    "daily_focus_match_selected",
+    "miniapp_match_selected",
+    "miniapp_ai_clicked",
+    "miniapp_ai_success",
+    "miniapp_ai_limit_reached",
+    "miniapp_premium_upsell_clicked",
+    "scenarios_teaser_clicked",
+    "subscription_opened",
+    "payment_started",
+}
+
+
 def is_admin_user(telegram_user_id: int) -> bool:
     return telegram_user_id in ADMIN_TELEGRAM_IDS
 
@@ -1169,6 +1185,19 @@ async def stats_command(
         "ai_analysis_clicked": "AI-разборы",
         "premium_clicked": "Premium нажали",
     }
+    miniapp_event_types = {
+        "miniapp_opened": "Открыли miniapp",
+        "daily_focus_opened": "Открыли Матчи дня",
+        "daily_focus_match_selected": "Матч из фокуса открыли",
+        "miniapp_match_selected": "Обычный матч открыли",
+        "miniapp_ai_clicked": "AI-разбор нажали",
+        "miniapp_ai_success": "AI-разбор успешно",
+        "miniapp_ai_limit_reached": "Лимит AI достигнут",
+        "miniapp_premium_upsell_clicked": "Premium после AI",
+        "scenarios_teaser_clicked": "Сценарии → Premium",
+        "subscription_opened": "Подписку открыли",
+        "payment_started": "Оплату начали",
+    }
 
     connection = None
 
@@ -1210,6 +1239,19 @@ async def stats_command(
                     (event_type, today_start),
                 )
                 event_counts[event_type] = cursor.fetchone()["value"]
+
+            miniapp_event_counts = {}
+            for event_type in miniapp_event_types:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS value
+                    FROM user_events
+                    WHERE event_type = %s
+                    AND created_at >= %s;
+                    """,
+                    (event_type, today_start),
+                )
+                miniapp_event_counts[event_type] = cursor.fetchone()["value"]
     except Exception:
         logger.exception("Failed to load admin stats")
         await update.message.reply_text("Статистика временно недоступна.")
@@ -1230,6 +1272,11 @@ async def stats_command(
     lines.extend(
         f"• {label}: {event_counts[event_type]}"
         for event_type, label in event_types.items()
+    )
+    lines.extend(["", "Mini App сегодня:"])
+    lines.extend(
+        f"• {label}: {miniapp_event_counts[event_type]}"
+        for event_type, label in miniapp_event_types.items()
     )
 
     await update.message.reply_text("\n".join(lines))
@@ -16770,6 +16817,62 @@ def miniapp_config():
             "packages": packages,
         }
     )
+
+
+@miniapp_api.post("/api/events")
+def miniapp_events():
+    telegram_user = get_api_telegram_user(flask_request)
+    if not telegram_user:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "telegram_user_id_required",
+            }
+        ), 400
+
+    request_data = flask_request.get_json(silent=True) or {}
+    event_type = str(request_data.get("event_type") or "").strip()
+    event_data = request_data.get("event_data")
+    if event_type not in MINIAPP_EVENT_TYPES:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "event_type_not_allowed",
+            }
+        ), 400
+
+    if not isinstance(event_data, dict):
+        event_data = {}
+
+    telegram_user_id = int(telegram_user["id"])
+    try:
+        upsert_bot_user(
+            SimpleNamespace(
+                id=telegram_user_id,
+                username=telegram_user.get("username"),
+                first_name=telegram_user.get("first_name"),
+                last_name=telegram_user.get("last_name"),
+                language_code=telegram_user.get("language_code"),
+            )
+        )
+    except Exception:
+        logger.debug(
+            "Mini App analytics user upsert failed: user_id=%s",
+            telegram_user_id,
+            exc_info=True,
+        )
+
+    try:
+        log_user_event(telegram_user_id, event_type, event_data)
+    except Exception:
+        logger.warning(
+            "Mini App analytics event failed: user_id=%s event_type=%s",
+            telegram_user_id,
+            event_type,
+            exc_info=True,
+        )
+
+    return jsonify({"ok": True})
 
 
 @miniapp_api.get("/api/subscription")

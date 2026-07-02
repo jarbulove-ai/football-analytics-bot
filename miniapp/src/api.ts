@@ -98,6 +98,37 @@ export function getAppConfig(): Promise<AppConfig> {
   return apiRequest<AppConfig>("/api/config");
 }
 
+export async function trackMiniappEvent(
+  telegramUserId: number,
+  eventType: string,
+  eventData: Record<string, unknown> = {},
+): Promise<void> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/events`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": getTelegramInitDataHeader(),
+      },
+      body: JSON.stringify({
+        telegram_user_id: telegramUserId,
+        event_type: eventType,
+        event_data: eventData,
+      }),
+    });
+
+    if (!response.ok) {
+      console.debug("Mini App event tracking skipped", {
+        eventType,
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    console.debug("Mini App event tracking failed", eventType, error);
+  }
+}
+
 export function searchTeams(query: string): Promise<TeamSearchResponse> {
   return apiRequest<TeamSearchResponse>(
     `/api/teams/search?q=${encodeURIComponent(query.trim())}`,
