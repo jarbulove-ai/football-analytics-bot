@@ -650,27 +650,19 @@ function HomeScreen({
             AI-разбор футбольных матчей
           </p>
           <p className="mt-4 max-w-sm text-sm leading-6 text-slate-400">
-            Следите за матчами, командами, турнирами, включайте напоминания и
-            открывайте AI-разбор в одном месте.
+            Смотри матчи дня, сценарии игры, риски и краткую AI-аналитику в
+            одном месте.
           </p>
         </div>
 
-        <div className="mt-6 grid grid-cols-2 gap-3">
+        <div className="mt-6">
           <button
             type="button"
             onClick={() => onNavigate("matches")}
-            className="flex h-12 items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white shadow-card transition active:scale-[0.98]"
+            className="flex h-12 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-bold text-white shadow-card transition active:scale-[0.98]"
           >
             <Activity className="h-4 w-4" />
-            Матчи
-          </button>
-          <button
-            type="button"
-            onClick={() => onNavigate("profile")}
-            className="flex h-12 items-center justify-center gap-2 rounded-md border border-line bg-panel text-sm font-bold text-white transition hover:bg-panelSoft active:scale-[0.98]"
-          >
-            <CircleUserRound className="h-4 w-4 text-lime" />
-            Профиль
+            Открыть матчи дня
           </button>
         </div>
       </section>
