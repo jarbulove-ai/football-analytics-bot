@@ -2417,6 +2417,7 @@ CHANNEL_FORBIDDEN_WORDS = (
     "ставка",
     "ставки",
     "поставить",
+    "ставить",
     "ставь",
     "прогноз на ставку",
     "экспресс",
@@ -2466,6 +2467,7 @@ CHANNEL_FORBIDDEN_REPLACEMENTS = {
     "ставка": "AI-разбор",
     "ставки": "AI-разборы",
     "поставить": "выбрать направление",
+    "ставить": "смотреть данные",
     "ставь": "смотри данные",
     "прогноз на ставку": "AI-оценка",
     "экспресс": "сценарий",
@@ -3182,24 +3184,14 @@ def build_channel_morning_recap_draft(
             if home_score > away_score
             else translate_team_name_ru(match.get("away"))
         ) or "Победитель"
+        stage = str(match.get("round") or "").strip()
         tournament_notes.append(
-            f"{winner} получила преимущество в плей-офф по итоговому счёту."
+            f"{winner} выиграла матч стадии {stage}." if stage else f"{winner} выиграла матч плей-офф."
         )
-    lines.extend(["", "📈 Влияние на турнир"])
     if tournament_notes:
+        lines.extend(["", "📈 Влияние на турнир"])
         lines.extend(f"— {note}" for note in tournament_notes[:3])
-    else:
-        lines.append("— Подробных данных о турнирных последствиях в источнике нет.")
 
-    lines.extend(
-        [
-            "",
-            "⭐ Игроки и молодые имена",
-            "— Подробных индивидуальных данных в источнике нет.",
-            "",
-            "🔴 Англия / Liverpool-фокус",
-        ]
-    )
     england_matches = [
         match
         for match in selected_matches
@@ -3213,6 +3205,7 @@ def build_channel_morning_recap_draft(
         or str(match.get("away") or "").casefold() == "england"
     ]
     if england_matches:
+        lines.extend(["", "🔴 Англия"])
         match = england_matches[0]
         home = translate_team_name_ru(match.get("home")) or "Англия"
         away = translate_team_name_ru(match.get("away")) or "соперник"
@@ -3220,13 +3213,11 @@ def build_channel_morning_recap_draft(
             f"— Англия играла: {home} {format_channel_match_score(match)} {away}."
         )
     elif upcoming_england:
+        lines.extend(["", "🔴 Англия"])
         match = upcoming_england[0]
         home = translate_team_name_ru(match.get("home")) or "Англия"
         away = translate_team_name_ru(match.get("away")) or "соперник"
         lines.append(f"— Матч Англии впереди: {home} — {away}.")
-    else:
-        lines.append("— Матча Англии в найденных данных нет.")
-    lines.append("— Отдельных данных по игрокам Liverpool в источнике нет.")
 
     lines.extend(["", "👀 Что смотреть дальше"])
     if upcoming_matches:
@@ -3260,38 +3251,54 @@ def build_channel_daily_radar_draft(matches: list[dict]) -> str:
     lines = [
         "🛰 Футбольный радар MatchLab",
         "",
-        "Дневной радар без внешних новостных источников: отмечаем футбольные темы, за которыми стоит следить сегодня.",
+        "Коротко о матчах, которые сегодня держим в фокусе.",
+        "",
+        "🔥 Фокус дня",
         "",
     ]
     if selected_matches:
-        lines.append("В фокусе дня:")
-        lines.append("")
         for index, match in enumerate(selected_matches, start=1):
             home = translate_team_name_ru(match.get("home")) or "Команда 1"
             away = translate_team_name_ru(match.get("away")) or "Команда 2"
-            lines.extend(
-                [
-                    f"{index}. {home} — {away}",
-                    f"    {get_channel_digest_reason(match, index - 1)}",
-                ]
-            )
+            context_lines = []
+            league = str(match.get("league") or "").strip()
+            stage = str(match.get("round") or "").strip()
+            venue = str(match.get("venue") or match.get("stadium") or "").strip()
+            city = str(match.get("city") or "").strip()
+            if league:
+                context_lines.append(f"Турнир: {league}.")
+            if stage:
+                context_lines.append(f"Этап: {stage}.")
+            if parse_match_kickoff_datetime(match):
+                context_lines.append(f"Время Алматы: {format_channel_match_time(match)}.")
+            if venue and city:
+                context_lines.append(f"Место: {venue}, {city}.")
+            elif venue:
+                context_lines.append(f"Место: {venue}.")
+            elif city:
+                context_lines.append(f"Город: {city}.")
+
+            reason = get_channel_digest_reason(match, index - 1)
+            motivation = ""
+            if stage:
+                motivation = f"Мотивация: пройти сильнее через этап {stage}."
+            lines.extend([f"{index}. {home} — {away}", *context_lines])
+            if motivation:
+                lines.append(motivation)
+            if reason:
+                lines.append(f"Почему смотреть: {reason}")
+            lines.append("")
     else:
         lines.extend(
             [
-                "Что отслеживать сегодня:",
+                "Сегодня в фокусе общая картина футбольного дня: форма команд, "
+                "темп матчей и неожиданные игровые сценарии.",
                 "",
-                "1. Форма фаворитов в важных турнирах.",
-                "2. Темп матчей после первых минут.",
-                "3. Молодые игроки и их роль в атаке.",
-                "4. Кто лучше использует моменты.",
-                "5. Неожиданные игровые сценарии.",
             ]
         )
 
     lines.extend(
         [
-            "",
-            "Это не подтверждённая новостная лента: без внешних источников не добавляем интервью, трансферы, травмы или инсайды.",
             "",
             "Полный AI-разбор: @Match_Stat_bot",
             "Канал MatchLab: https://t.me/matchlab_ai",
@@ -4708,11 +4715,69 @@ def format_channel_team_display(name: str | None) -> str:
     return translated_name
 
 
+def trim_to_complete_sentence(text: str, limit: int) -> str:
+    compact_text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(compact_text) <= limit:
+        return compact_text
+
+    cut = compact_text[:limit].rstrip()
+    sentence_end_positions = [
+        match.end()
+        for match in re.finditer(r"[.!?…](?:\s|$)", cut)
+        if match.end() >= max(40, int(limit * 0.45))
+    ]
+    if sentence_end_positions:
+        candidate = cut[: sentence_end_positions[-1]].strip()
+    else:
+        newline_position = cut.rfind("\n")
+        if newline_position >= max(40, int(limit * 0.45)):
+            candidate = cut[:newline_position].strip()
+        else:
+            space_position = cut.rfind(" ")
+            candidate = cut[:space_position].strip() if space_position > 0 else cut
+
+    candidate = candidate.rstrip(" ,;:-")
+    dangling_words = {
+        "за",
+        "через",
+        "потому",
+        "потому что",
+        "так как",
+        "и",
+        "но",
+        "а",
+        "а также",
+        "при этом",
+        "который",
+        "которая",
+        "которые",
+        "с учётом",
+        "с учетом",
+        "на фоне",
+    }
+    while candidate:
+        lowered = candidate.casefold()
+        removed = False
+        for word in sorted(dangling_words, key=len, reverse=True):
+            suffix = f" {word}"
+            if lowered == word or lowered.endswith(suffix):
+                candidate = candidate[: -len(word)].rstrip(" ,;:-")
+                removed = True
+                break
+        if not removed:
+            break
+    if not candidate:
+        candidate = compact_text[:limit].rstrip(" ,;:-")
+    if candidate and not re.search(r"[.!?…]$", candidate):
+        candidate = candidate.rstrip(" ,;:-") + "…"
+    return candidate
+
+
 def get_channel_short_text(text: str, max_chars: int = 140) -> str:
     compact_text = re.sub(r"\s+", " ", str(text or "")).strip()
     if len(compact_text) <= max_chars:
         return compact_text
-    return compact_text[: max_chars - 3].rstrip(" .,;:") + "..."
+    return trim_to_complete_sentence(compact_text, max_chars)
 
 
 def get_channel_short_sentences(text: str, limit: int = 2, max_chars: int = 220) -> str:
@@ -4733,11 +4798,7 @@ def limit_channel_text_preserving_disclaimer(text: str, max_chars: int) -> str:
     disclaimer = CHANNEL_DRAFT_DISCLAIMER
     body = sanitized.replace(disclaimer, "").rstrip()
     max_body_chars = max(120, max_chars - len(disclaimer) - 3)
-    trimmed_body = body[:max_body_chars].rstrip()
-    newline_position = trimmed_body.rfind("\n")
-    if newline_position > max_body_chars * 0.65:
-        trimmed_body = trimmed_body[:newline_position].rstrip()
-    trimmed_body = trimmed_body.rstrip(" .,;:")
+    trimmed_body = trim_to_complete_sentence(body, max_body_chars)
     return sanitize_channel_post_text(f"{trimmed_body}\n\n{disclaimer}")
 
 
@@ -4837,7 +4898,7 @@ def shorten_channel_post_draft(text: str) -> str:
             if skipped_bullets[current_section] > 2:
                 continue
         if len(line) > 220:
-            line = line[:217].rstrip() + "..."
+            line = trim_to_complete_sentence(line, 220)
         shortened.append(line)
     shortened_text = limit_channel_text_preserving_disclaimer(
         "\n".join(shortened),
@@ -4955,6 +5016,36 @@ AI-РАЗБОР ДО МАТЧА
 * не искажать названия команд"""
 
 
+def build_channel_full_ai_source_text(match: dict, analysis_result: dict) -> str:
+    structured = analysis_result.get("structured")
+    if isinstance(structured, dict) and structured:
+        try:
+            formatted = format_ai_analysis_text(structured)
+        except Exception:
+            formatted = ""
+        if formatted:
+            return formatted
+
+    parts = [
+        str(analysis_result.get("analysis") or "").strip(),
+        json.dumps(
+            {
+                "match": {
+                    "home": match.get("home"),
+                    "away": match.get("away"),
+                    "league": match.get("league"),
+                    "round": match.get("round"),
+                    "kickoff": match.get("kickoff"),
+                },
+                "structured": structured,
+            },
+            ensure_ascii=False,
+            default=str,
+        ),
+    ]
+    return "\n\n".join(part for part in parts if part)
+
+
 def build_matchday_social_cards_prompt(match: dict, draft: str | None = None) -> str:
     home, away = get_matchday_prompt_team_names(match)
     source_text = str(draft or "").strip() or "Источник смысла пока не указан."
@@ -4985,11 +5076,11 @@ AI-ВЕРОЯТНОСТИ
 
 Карточка 3/7 — Почему одна команда выше:
 ПОЧЕМУ ОДНА КОМАНДА ВЫШЕ
-3 коротких причины из источника смысла.
+3 коротких причины только из полного AI-разбора и входных данных.
 
 Карточка 4/7 — Статистические сигналы:
 СТАТИСТИЧЕСКИЕ СИГНАЛЫ
-3 коротких пункта из источника смысла:
+3 коротких пункта только из полного AI-разбора:
 
 * атака / xG
 * оборона / риски
@@ -4997,11 +5088,11 @@ AI-ВЕРОЯТНОСТИ
 
 Карточка 5/7 — Осторожные сигналы:
 ОСТОРОЖНЫЕ СИГНАЛЫ
-2–3 коротких риска из источника смысла.
+2–3 коротких риска только из полного AI-разбора.
 
 Карточка 6/7 — Риски матча:
 РИСКИ МАТЧА
-2–3 фактора, которые могут изменить сценарий.
+2–3 фактора, которые могут изменить сценарий, только если они есть в источнике.
 
 Карточка 7/7 — Итоговый сценарий:
 ИТОГОВЫЙ СЦЕНАРИЙ
@@ -5011,6 +5102,10 @@ AI-ВЕРОЯТНОСТИ
 
 Важно:
 
+* карточки должны строиться только на полном AI-разборе и входных данных ниже
+* не додумывать факты, травмы, составы, инсайды и турнирные детали
+* если данных для пункта нет, не писать этот пункт
+* каждая карточка должна быть законченным самостоятельным текстом
 * не использовать запрещённую betting/gambling-лексику, betting-сокращения, коммерческие обещания результата и денежные формулировки
 * не добавлять лишний текст
 * если текст не помещается, сокращать, но не менять смысл
@@ -5018,7 +5113,7 @@ AI-ВЕРОЯТНОСТИ
 * не искажать MATCHLAB
 * не искажать названия команд
 
-Источник смысла:
+Полный AI-разбор и входные данные:
 {source_text}"""
 
 
@@ -5686,6 +5781,154 @@ def get_channel_match_actual_stats(match: dict) -> dict:
         return {}
 
 
+def get_channel_match_actual_events(match: dict) -> dict:
+    match_id = normalize_ai_analysis_match_id(match.get("id"))
+    if not match_id:
+        return {}
+    home_id = match.get("home_id")
+    away_id = match.get("away_id")
+    home = translate_team_name_ru(match.get("home")) or str(match.get("home") or "")
+    away = translate_team_name_ru(match.get("away")) or str(match.get("away") or "")
+    try:
+        raw_events = get_fixture_events(match_id)
+    except Exception:
+        logger.warning(
+            "channel_recap events load failed: match_id=%s",
+            match_id,
+            exc_info=True,
+        )
+        return {}
+
+    home_score = 0
+    away_score = 0
+    goals = []
+    red_cards = []
+    penalties = []
+    leaders = []
+    late_decisive_goal = False
+
+    for event in raw_events:
+        if not isinstance(event, dict):
+            continue
+        formatted = format_miniapp_live_event(event)
+        if not formatted:
+            continue
+        minute = formatted.get("time")
+        extra = formatted.get("extra")
+        minute_value = int(minute or 0)
+        minute_label = f"{minute}'" if minute else "минута не указана"
+        if extra:
+            minute_label = f"{minute}+{extra}'" if minute else f"+{extra}'"
+            minute_value += int(extra or 0)
+        event_type = str(formatted.get("type") or "").casefold()
+        detail = str(formatted.get("detail") or "").strip()
+        detail_lower = detail.casefold()
+        team_id = formatted.get("team_id")
+        team_name = (
+            home
+            if team_id == home_id
+            else away
+            if team_id == away_id
+            else translate_team_name_ru(formatted.get("team_name"))
+            or formatted.get("team_name")
+            or "Команда"
+        )
+        player = formatted.get("player") or team_name
+
+        if event_type == "goal" and "missed" not in detail_lower:
+            if team_id == home_id:
+                home_score += 1
+            elif team_id == away_id:
+                away_score += 1
+            score_after = f"{home_score}:{away_score}"
+            goals.append(
+                {
+                    "minute": minute_label,
+                    "minute_value": minute_value,
+                    "team": team_name,
+                    "player": player,
+                    "detail": detail,
+                    "score_after": score_after,
+                }
+            )
+            if home_score > away_score:
+                leaders.append("home")
+            elif away_score > home_score:
+                leaders.append("away")
+            else:
+                leaders.append("draw")
+            if minute_value >= 85:
+                late_decisive_goal = True
+            if "penalty" in detail_lower:
+                penalties.append(f"{minute_label} {team_name}: пенальти, счёт {score_after}")
+        elif event_type == "card" and (
+            "red" in detail_lower or "second yellow" in detail_lower
+        ):
+            red_cards.append(f"{minute_label} {team_name}: {player}")
+        elif "penalty" in detail_lower:
+            penalties.append(f"{minute_label} {team_name}: {detail}")
+
+    score = match.get("score") or {}
+    final_home = score.get("home")
+    final_away = score.get("away")
+    actual_result = get_channel_actual_result(match)
+    expected_leader = None
+    if goals:
+        first_non_draw = next((leader for leader in leaders if leader != "draw"), None)
+        expected_leader = first_non_draw
+    comeback = bool(
+        expected_leader
+        and actual_result in {"home_win", "away_win"}
+        and expected_leader != actual_result.replace("_win", "")
+    )
+    max_away_lead = 0
+    max_home_lead = 0
+    running_home = 0
+    running_away = 0
+    for goal in goals:
+        score_after = goal.get("score_after") or "0:0"
+        try:
+            running_home, running_away = [int(part) for part in score_after.split(":", 1)]
+        except Exception:
+            continue
+        max_home_lead = max(max_home_lead, running_home - running_away)
+        max_away_lead = max(max_away_lead, running_away - running_home)
+
+    status = str(match.get("status") or "").upper()
+    extra_time = status == "AET" or any((goal.get("minute_value") or 0) > 90 for goal in goals)
+    shootout = status == "PEN"
+    return {
+        "goals": goals,
+        "red_cards": red_cards,
+        "penalties": penalties,
+        "extra_time": extra_time,
+        "shootout": shootout,
+        "comeback": comeback,
+        "late_decisive_goal": late_decisive_goal,
+        "max_home_lead": max_home_lead,
+        "max_away_lead": max_away_lead,
+        "final_score": f"{final_home}:{final_away}" if final_home is not None and final_away is not None else "",
+    }
+
+
+def get_channel_recap_event_lines(actual_events: dict, home: str, away: str) -> list[str]:
+    lines = []
+    for goal in (actual_events.get("goals") or [])[:8]:
+        detail = f" ({goal.get('detail')})" if goal.get("detail") else ""
+        lines.append(
+            f"— {goal.get('minute')} {goal.get('team')}: {goal.get('player')}{detail}, счёт {goal.get('score_after')}"
+        )
+    for card in (actual_events.get("red_cards") or [])[:3]:
+        lines.append(f"— Красная карточка: {card}")
+    for penalty in (actual_events.get("penalties") or [])[:3]:
+        lines.append(f"— Пенальти: {penalty}")
+    if actual_events.get("extra_time"):
+        lines.append("— Матч затронул овертайм.")
+    if actual_events.get("shootout"):
+        lines.append("— Победитель определился в серии пенальти.")
+    return lines[:10]
+
+
 def get_channel_recap_probability_line(
     label: str,
     value,
@@ -5753,6 +5996,7 @@ def build_channel_recap_post_draft(
     match: dict,
     analysis_result: dict,
     actual_stats: dict | None = None,
+    actual_events: dict | None = None,
 ) -> str:
     structured = analysis_result.get("structured") or {}
     home_raw = match.get("home") or analysis_result.get("home_team") or ""
@@ -5772,11 +6016,34 @@ def build_channel_recap_post_draft(
     header = " ".join(part for part in header_parts if part).strip()
     probabilities = structured.get("outcome_probabilities") or {}
     actual_stats = actual_stats or {}
+    actual_events = actual_events or {}
     stat_lines = get_channel_recap_stat_lines(actual_stats)
+    event_lines = get_channel_recap_event_lines(actual_events, home, away)
     actual_result = get_channel_actual_result(match)
     expected_result = get_channel_top_probability_key(structured)
     expected_label = get_channel_recap_expected_label(expected_result, home, away)
     actual_text = get_channel_recap_result_text(actual_result, home, away)
+    favorite_probability = None
+    if expected_result in probabilities:
+        probability_value = probabilities.get(expected_result)
+        if isinstance(probability_value, (int, float)) and not isinstance(
+            probability_value,
+            bool,
+        ):
+            favorite_probability = float(probability_value)
+        else:
+            try:
+                favorite_probability = float(
+                    str(probability_value or "").replace("%", "").strip()
+                )
+            except ValueError:
+                favorite_probability = None
+    can_say_same_direction = (
+        actual_result == expected_result
+        and actual_result != "unknown"
+        and favorite_probability is not None
+        and favorite_probability >= 45
+    )
     logger.info(
         "channel_recap probabilities: home=%s draw=%s away=%s expected=%s",
         probabilities.get("home_win"),
@@ -5790,16 +6057,48 @@ def build_channel_recap_post_draft(
         expected_result,
     )
 
-    if actual_result == expected_result and actual_result == "draw":
+    difficult_same_direction = bool(
+        can_say_same_direction
+        and (
+            actual_events.get("comeback")
+            or actual_events.get("late_decisive_goal")
+            or actual_events.get("extra_time")
+            or actual_events.get("shootout")
+            or actual_events.get("penalties")
+        )
+    )
+    near_upset = bool(
+        actual_result == "home_win"
+        and (actual_events.get("max_away_lead") or 0) >= 2
+    ) or bool(
+        actual_result == "away_win"
+        and (actual_events.get("max_home_lead") or 0) >= 2
+    )
+
+    if difficult_same_direction:
+        winner = home if actual_result == "home_win" else away
+        post_match_text = (
+            f"Итог совпал с направлением AI-оценки: {winner} выиграла {score}. "
+            "Но сценарий был намного сложнее, чем показывает финальный счёт."
+        )
+        if near_upset:
+            opponent = away if actual_result == "home_win" else home
+            post_match_text += (
+                f" {opponent} вела с разницей в два мяча и была близка к сенсации."
+            )
+    elif actual_result == expected_result and actual_result == "draw":
         post_match_text = (
             f"После матча сценарий близкой игры подтвердился: команды "
             f"завершили встречу вничью {score}."
         )
+    elif can_say_same_direction:
+        winner = home if actual_result == "home_win" else away
+        post_match_text = f"После матча направление AI-оценки совпало: {winner} выиграла {score}."
     elif actual_result == expected_result and actual_result != "unknown":
         winner = home if actual_result == "home_win" else away
         post_match_text = (
-            f"После матча общий сценарий подтвердился: {winner} выиграла "
-            f"{score} и по ключевым цифрам была впереди."
+            f"Победитель совпал с верхним направлением AI-оценки: {winner} "
+            f"выиграла {score}. Но до матча перевес не выглядел большим."
         )
     elif actual_result != "unknown" and expected_result != "unknown":
         post_match_text = (
@@ -5812,18 +6111,28 @@ def build_channel_recap_post_draft(
             "но расширенных данных пока мало."
         )
 
-    if actual_result == expected_result == "draw":
+    if difficult_same_direction:
+        matched_text = (
+            "Направление по победителю совпало, но ход матча был напряжённее: "
+            "важными стали поздние эпизоды, пенальти, овертайм или камбэк."
+        )
+    elif actual_result == expected_result == "draw":
         matched_text = (
             "AI-оценка заранее показывала близкий матч, и итоговый счёт это подтвердил."
         )
-    elif actual_result == expected_result and stat_lines:
+    elif can_say_same_direction and stat_lines:
         winner = home if actual_result == "home_win" else away
         matched_text = (
             f"{winner} контролировала ключевые фазы, создала больше моментов "
             "и чаще доводила атаки до ударов."
         )
-    elif actual_result == expected_result:
+    elif can_say_same_direction:
         matched_text = "Главное направление AI-оценки совпало с итоговым результатом."
+    elif actual_result == expected_result and actual_result != "unknown":
+        matched_text = (
+            "Победитель совпал с верхним направлением AI-оценки, но перевес "
+            "до игры был умеренным."
+        )
     else:
         matched_text = (
             "Часть контекста до игры помогла увидеть риски и возможный темп матча."
@@ -5838,6 +6147,20 @@ def build_channel_recap_post_draft(
         conclusion = (
             "Главный вывод: AI-оценка дала полезный контекст, но итоговый "
             "результат оказался другим."
+        )
+    elif difficult_same_direction:
+        caution_title = "⚠️ Что было сложнее по сценарию:"
+        caution_text = (
+            "Победитель совпал с главным направлением AI-оценки, но матч был "
+            "намного тяжелее: сценарий решали поздние эпизоды, камбэк, пенальти "
+            "или дополнительное время."
+        )
+        if near_upset:
+            opponent = away if actual_result == "home_win" else home
+            caution_text += f" {opponent} была близка к сенсации."
+        conclusion = (
+            "Главный вывод: направление AI-оценки совпало по победителю, "
+            "но ход матча был намного ближе и сложнее."
         )
     elif is_channel_recap_minimal_margin(match):
         caution_title = "⚠️ Что было ближе по табло:"
@@ -5876,6 +6199,8 @@ def build_channel_recap_post_draft(
         lines.extend(["", *stat_lines])
     else:
         lines.append("Расширенная статистика по матчу ограничена.")
+    if event_lines:
+        lines.extend(["", "🎞 События матча:", *event_lines])
     lines.extend(
         [
             "",
@@ -11549,7 +11874,7 @@ def log_openai_ai_analysis_response(
 
     incomplete_text = str(incomplete_details or "")
     if len(incomplete_text) > 300:
-        incomplete_text = f"{incomplete_text[:297]}..."
+        incomplete_text = trim_to_complete_sentence(incomplete_text, 300)
 
     logger.info(
         "OpenAI AI analysis response received: model=%s mode=%s api=%s "
@@ -15273,6 +15598,7 @@ async def create_and_store_channel_matchday_draft(
     drafts[match_id] = {
         "draft": draft,
         "match": match,
+        "full_ai_source": build_channel_full_ai_source_text(match, analysis_result),
         "content_type": "pre_match",
         "created_at": datetime.now(timezone.utc).timestamp(),
     }
@@ -15467,16 +15793,25 @@ async def create_and_store_channel_recap_draft(
         return None, None
 
     actual_stats = await asyncio.to_thread(get_channel_match_actual_stats, match)
+    actual_events = await asyncio.to_thread(get_channel_match_actual_events, match)
     logger.info(
         "channel_recap actual stats available %s: match_id=%s keys=%s",
         bool(actual_stats),
         match_id,
         sorted(actual_stats.keys()),
     )
+    logger.info(
+        "channel_recap actual events available %s: match_id=%s goals=%s reds=%s",
+        bool(actual_events),
+        match_id,
+        len((actual_events or {}).get("goals") or []),
+        len((actual_events or {}).get("red_cards") or []),
+    )
     draft = build_channel_recap_post_draft(
         match,
         analysis_result,
         actual_stats,
+        actual_events,
     )
     logger.info("channel_recap draft generated: match_id=%s", match_id)
     draft = sanitize_channel_post_text(draft)
@@ -15841,7 +16176,7 @@ async def channel_social_cards_prompt_callback(
     elif content_type == "pre_match":
         prompt = build_matchday_social_cards_prompt(
             draft_item.get("match") or {},
-            draft_item.get("draft") or "",
+            draft_item.get("full_ai_source") or draft_item.get("draft") or "",
         )
         title = "📱 Промпт 7 карточек"
     else:
