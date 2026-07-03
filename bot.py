@@ -15066,24 +15066,6 @@ def build_channel_admin_keyboard() -> InlineKeyboardMarkup:
         [
             [
                 InlineKeyboardButton(
-                    "🌅 Опубликовать утренний обзор",
-                    callback_data="channel_admin_publish_morning_digest",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🛰 Опубликовать дневной радар",
-                    callback_data="channel_admin_publish_daily_radar",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "📰 Проверить новости",
-                    callback_data="channel_admin_check_news",
-                )
-            ],
-            [
-                InlineKeyboardButton(
                     "🧠 Подготовить Матч дня",
                     callback_data="channel_admin_plan",
                 )
@@ -18327,36 +18309,6 @@ def main() -> None:
     )
     application.add_handler(
         CallbackQueryHandler(
-            channel_admin_publish_morning_digest_callback,
-            pattern=r"^channel_admin_publish_morning_digest$",
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            channel_admin_publish_daily_radar_callback,
-            pattern=r"^channel_admin_publish_daily_radar$",
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            channel_admin_check_news_callback,
-            pattern=r"^channel_admin_check_news$",
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            channel_news_publish_callback,
-            pattern=r"^channel_news_publish:.+$",
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            channel_news_skip_callback,
-            pattern=r"^channel_news_skip:.+$",
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(
             channel_admin_plan_manual_callback,
             pattern=r"^channel_admin_plan_manual$",
         )
@@ -18467,9 +18419,6 @@ def main() -> None:
         ).start()
     else:
         logger.info("🌐 Mini App API disabled")
-
-    schedule_channel_morning_digest(application)
-    schedule_channel_daily_football_radar(application)
 
     application.run_polling(
     drop_pending_updates=True
