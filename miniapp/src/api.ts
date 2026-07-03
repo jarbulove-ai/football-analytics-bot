@@ -13,6 +13,7 @@ import type {
   MiniAppPaymentPackageCode,
   PaymentReceiptErrorResponse,
   PaymentReceiptResponse,
+  ReferralStatus,
   SingleMatchResponse,
   SubscriptionData,
   TeamMatchesResponse,
@@ -102,6 +103,7 @@ export async function trackMiniappEvent(
   telegramUserId: number,
   eventType: string,
   eventData: Record<string, unknown> = {},
+  options: { startParam?: string } = {},
 ): Promise<void> {
   try {
     const response = await fetch(`${API_BASE_URL}/api/events`, {
@@ -115,6 +117,7 @@ export async function trackMiniappEvent(
         telegram_user_id: telegramUserId,
         event_type: eventType,
         event_data: eventData,
+        start_param: options.startParam || null,
       }),
     });
 
@@ -127,6 +130,25 @@ export async function trackMiniappEvent(
   } catch (error) {
     console.debug("Mini App event tracking failed", eventType, error);
   }
+}
+
+export function getReferralStatus(
+  telegramUserId: number,
+): Promise<ReferralStatus> {
+  return fetch(
+    `${API_BASE_URL}/api/referrals/status?telegram_user_id=${telegramUserId}`,
+    {
+      headers: {
+        Accept: "application/json",
+        "X-Telegram-Init-Data": getTelegramInitDataHeader(),
+      },
+    },
+  ).then((response) => {
+    if (!response.ok) {
+      throw new Error(`Referral status request failed: ${response.status}`);
+    }
+    return response.json() as Promise<ReferralStatus>;
+  });
 }
 
 export function searchTeams(query: string): Promise<TeamSearchResponse> {

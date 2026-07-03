@@ -8,12 +8,15 @@ import {
   ChevronRight,
   ChevronUp,
   CircleUserRound,
+  Copy,
   Crown,
   FileText,
+  Gift,
   Home,
   LoaderCircle,
   RefreshCw,
   Search,
+  Share2,
   ShieldCheck,
   Sparkles,
   Star,
@@ -34,6 +37,7 @@ import {
   getMatchLive,
   getMatchReminders,
   getMatches,
+  getReferralStatus,
   getSavedMatchAiAnalysis,
   getSubscription,
   getTeamMatches,
@@ -48,7 +52,7 @@ import {
   submitPaymentReceipt,
   trackMiniappEvent,
 } from "./api";
-import { getTelegramUserIdentity } from "./telegramUser";
+import { getTelegramStartParam, getTelegramUserIdentity } from "./telegramUser";
 import type {
   AppConfig,
   FavoriteTeamItem,
@@ -70,6 +74,7 @@ import type {
   MiniAppPaymentPackageCode,
   PaymentPackage,
   PaymentReceiptResponse,
+  ReferralStatus,
   Screen,
   SubscriptionData,
   TeamMatchesResponse,
@@ -5580,6 +5585,122 @@ function formatPremiumUntil(value: string | null) {
   }).format(date);
 }
 
+function ReferralPremiumCard({
+  status,
+  loading,
+}: {
+  status: ReferralStatus | null;
+  loading: boolean;
+}) {
+  const [copyStatus, setCopyStatus] = useState("");
+  const invitedCount = status?.invited_count ?? 0;
+  const targetCount = status?.target_count ?? 3;
+  const rewardDays = status?.reward_days ?? 7;
+  const progressPercent = Math.min(
+    100,
+    Math.round((invitedCount / Math.max(targetCount, 1)) * 100),
+  );
+  const referralLink = status?.referral_link || "";
+  const shareText =
+    "Я смотрю футбольные AI-разборы в MatchLab. Открой матчи дня и сценарии:";
+
+  function shareReferralLink() {
+    if (!referralLink) return;
+
+    const shareUrl =
+      "https://t.me/share/url" +
+      `?url=${encodeURIComponent(referralLink)}` +
+      `&text=${encodeURIComponent(shareText)}`;
+    if (window.Telegram?.WebApp?.openTelegramLink) {
+      window.Telegram.WebApp.openTelegramLink(shareUrl);
+      return;
+    }
+    window.open(shareUrl, "_blank", "noopener,noreferrer");
+  }
+
+  async function copyReferralLink() {
+    if (!referralLink) return;
+
+    try {
+      await navigator.clipboard?.writeText(referralLink);
+      setCopyStatus("Ссылка скопирована");
+    } catch {
+      setCopyStatus(referralLink);
+    }
+  }
+
+  return (
+    <section className="mt-7 rounded-lg border border-lime/20 bg-lime/[0.055] p-5 shadow-card">
+      <div className="flex items-start gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-lime/10 text-lime">
+          <Gift className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <h2 className="text-base font-extrabold text-white">
+            🎁 Получить Premium бесплатно
+          </h2>
+          <p className="mt-1 text-sm leading-6 text-slate-300">
+            Пригласи 3 друзей и получи {rewardDays} дней Premium.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-md border border-line/70 bg-white/[0.025] p-3">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs font-semibold uppercase text-slate-500">
+            Прогресс
+          </p>
+          <p className="text-sm font-black text-white">
+            {loading ? "—" : `${invitedCount} / ${targetCount}`}
+          </p>
+        </div>
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/[0.06]">
+          <div
+            className="h-full rounded-full bg-lime transition-all"
+            style={{ width: `${loading ? 0 : progressPercent}%` }}
+          />
+        </div>
+        {!loading && status?.reward_granted && (
+          <p className="mt-3 text-xs leading-5 text-lime">
+            Награда активирована: {rewardDays} дней Premium добавлены.
+          </p>
+        )}
+        {!loading && status?.is_premium && !status.reward_granted && (
+          <p className="mt-3 text-xs leading-5 text-slate-400">
+            Приглашай друзей — Premium продлится ещё на {rewardDays} дней.
+          </p>
+        )}
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <button
+          type="button"
+          onClick={shareReferralLink}
+          disabled={!referralLink}
+          className="flex h-10 items-center justify-center gap-2 rounded-md bg-lime text-xs font-bold text-zinc-950 transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Share2 className="h-4 w-4" />
+          Поделиться
+        </button>
+        <button
+          type="button"
+          onClick={copyReferralLink}
+          disabled={!referralLink}
+          className="flex h-10 items-center justify-center gap-2 rounded-md bg-white/[0.06] text-xs font-bold text-white transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Copy className="h-4 w-4" />
+          Скопировать
+        </button>
+      </div>
+      {copyStatus && (
+        <p className="mt-3 break-all text-center text-xs leading-5 text-slate-400">
+          {copyStatus}
+        </p>
+      )}
+    </section>
+  );
+}
+
 function getMiniAppPaymentPackageCode(
   packageCode: string,
 ): MiniAppPaymentPackageCode | null {
@@ -5594,9 +5715,12 @@ function SubscriptionScreen() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [subscription, setSubscription] =
     useState<SubscriptionData | null>(null);
+  const [referralStatus, setReferralStatus] =
+    useState<ReferralStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [subscriptionError, setSubscriptionError] = useState(false);
+  const [referralLoading, setReferralLoading] = useState(true);
   const [selectedPackage, setSelectedPackage] =
     useState<PaymentPackage | null>(null);
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
@@ -5611,8 +5735,9 @@ function SubscriptionScreen() {
     Promise.allSettled([
       getAppConfig(),
       getSubscription(telegramIdentity.id),
+      getReferralStatus(telegramIdentity.id),
     ])
-      .then(([configResult, subscriptionResult]) => {
+      .then(([configResult, subscriptionResult, referralResult]) => {
         if (!active) return;
 
         if (configResult.status === "fulfilled") {
@@ -5626,9 +5751,16 @@ function SubscriptionScreen() {
         } else {
           setSubscriptionError(true);
         }
+
+        if (referralResult.status === "fulfilled") {
+          setReferralStatus(referralResult.value);
+        }
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (active) {
+          setLoading(false);
+          setReferralLoading(false);
+        }
       });
 
     return () => {
@@ -5932,6 +6064,11 @@ function SubscriptionScreen() {
           )}
         </div>
       </section>
+
+      <ReferralPremiumCard
+        status={referralStatus}
+        loading={referralLoading}
+      />
 
       {loading && (
         <div className="mt-7 space-y-3">
@@ -6317,6 +6454,7 @@ function OnboardingOverlay({
 
 export default function App() {
   const telegramIdentity = useMemo(getTelegramUserIdentity, []);
+  const telegramStartParam = useMemo(getTelegramStartParam, []);
   const initialMatchId = useMemo(getInitialMatchIdFromUrl, []);
   const [screen, setScreen] = useState<Screen>(getInitialScreenFromUrl);
   const [matchType, setMatchType] = useState<MatchListType>("top");
@@ -6378,8 +6516,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    trackEvent("miniapp_opened", {});
-  }, [telegramIdentity.id]);
+    void trackMiniappEvent(
+      telegramIdentity.id,
+      "miniapp_opened",
+      {},
+      { startParam: telegramStartParam || undefined },
+    );
+  }, [telegramIdentity.id, telegramStartParam]);
 
   useEffect(() => {
     if (!onboardingVisible) return;

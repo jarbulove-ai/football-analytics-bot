@@ -380,6 +380,85 @@ def get_database_url_fingerprint(database_url: str | None = None) -> str:
         return f"unparsed#{url_hash}"
 
 
+MINIAPP_REFERRAL_REWARD_TYPE = "invite_3_premium_7d"
+MINIAPP_REFERRAL_TARGET_COUNT = 3
+MINIAPP_REFERRAL_REWARD_DAYS = 7
+
+
+def ensure_miniapp_referrals_table() -> bool:
+    database_url = get_database_url()
+    if not database_url:
+        return False
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS miniapp_referrals (
+                    id SERIAL PRIMARY KEY,
+                    referrer_telegram_user_id BIGINT NOT NULL,
+                    referred_telegram_user_id BIGINT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    reward_granted_at TIMESTAMPTZ,
+                    UNIQUE (referred_telegram_user_id)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_miniapp_referrals_referrer
+                ON miniapp_referrals (referrer_telegram_user_id);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_miniapp_referrals_referred
+                ON miniapp_referrals (referred_telegram_user_id);
+                """
+            )
+        connection.commit()
+        return True
+    except Exception:
+        logger.exception("Failed to ensure Mini App referrals table")
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def ensure_miniapp_referral_rewards_table() -> bool:
+    database_url = get_database_url()
+    if not database_url:
+        return False
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS miniapp_referral_rewards (
+                    id SERIAL PRIMARY KEY,
+                    telegram_user_id BIGINT NOT NULL,
+                    reward_type TEXT NOT NULL,
+                    reward_value INTEGER NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE (telegram_user_id, reward_type)
+                );
+                """
+            )
+        connection.commit()
+        return True
+    except Exception:
+        logger.exception("Failed to ensure Mini App referral rewards table")
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def init_db() -> None:
     database_url = get_database_url()
     logger.info(
@@ -719,6 +798,8 @@ def init_db() -> None:
                 """
             )
         connection.commit()
+        ensure_miniapp_referrals_table()
+        ensure_miniapp_referral_rewards_table()
     except Exception:
         logger.exception("Failed to initialize database")
     finally:
@@ -1778,6 +1859,379 @@ def grant_premium(telegram_user_id: int, days: int, ai_limit: int) -> dict:
     finally:
         if connection is not None:
             connection.close()
+
+
+def parse_miniapp_ref_param(value: str | None) -> int | None:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return None
+
+    if raw_value.startswith("ref_"):
+        raw_value = raw_value[4:]
+
+    if not raw_value.isdigit():
+        return None
+
+    referrer_id = int(raw_value)
+    return referrer_id if referrer_id > 0 else None
+
+
+def miniapp_user_exists(telegram_user_id: int) -> bool:
+    database_url = get_database_url()
+    if not database_url:
+        return False
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM user_events
+                    WHERE telegram_user_id = %s
+                      AND event_type = 'miniapp_opened'
+                );
+                """,
+                (telegram_user_id,),
+            )
+            return bool(cursor.fetchone()[0])
+    except Exception:
+        logger.warning(
+            "Mini App user existence check failed: user_id=%s",
+            telegram_user_id,
+            exc_info=True,
+        )
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def extend_miniapp_premium_with_cursor(
+    cursor,
+    telegram_user_id: int,
+    days: int,
+) -> dict:
+    usage_period = get_current_usage_period()
+    now_utc = get_now_utc_naive()
+    cursor.execute(
+        """
+        SELECT *
+        FROM subscriptions
+        WHERE telegram_user_id = %s
+        FOR UPDATE;
+        """,
+        (telegram_user_id,),
+    )
+    current_subscription = normalize_subscription_row(
+        cursor.fetchone(),
+        telegram_user_id,
+    )
+    current_until = current_subscription.get("premium_until")
+    if isinstance(current_until, datetime):
+        if current_until.tzinfo is not None:
+            current_until = current_until.astimezone(timezone.utc).replace(tzinfo=None)
+        base_date = max(now_utc, current_until)
+    else:
+        base_date = now_utc
+
+    premium_until = base_date + timedelta(days=days)
+    ai_limit = max(
+        int(current_subscription.get("ai_limit_monthly") or 0),
+        PREMIUM_30_AI_LIMIT,
+    )
+    ai_used_monthly = (
+        0
+        if current_subscription.get("usage_period") != usage_period
+        else int(current_subscription.get("ai_used_monthly") or 0)
+    )
+    extra_ai_credits = int(current_subscription.get("extra_ai_credits") or 0)
+
+    cursor.execute(
+        """
+        INSERT INTO subscriptions (
+            telegram_user_id,
+            plan,
+            premium_until,
+            ai_limit_monthly,
+            ai_used_monthly,
+            usage_period,
+            extra_ai_credits,
+            updated_at
+        )
+        VALUES (%s, 'premium', %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (telegram_user_id)
+        DO UPDATE SET
+            plan = 'premium',
+            premium_until = EXCLUDED.premium_until,
+            ai_limit_monthly = GREATEST(
+                subscriptions.ai_limit_monthly,
+                EXCLUDED.ai_limit_monthly
+            ),
+            ai_used_monthly = EXCLUDED.ai_used_monthly,
+            usage_period = EXCLUDED.usage_period,
+            extra_ai_credits = subscriptions.extra_ai_credits,
+            updated_at = CURRENT_TIMESTAMP
+        RETURNING *;
+        """,
+        (
+            telegram_user_id,
+            premium_until,
+            ai_limit,
+            ai_used_monthly,
+            usage_period,
+            extra_ai_credits,
+        ),
+    )
+    return normalize_subscription_row(cursor.fetchone(), telegram_user_id)
+
+
+def extend_miniapp_premium(telegram_user_id: int, days: int) -> datetime | None:
+    database_url = get_database_url()
+    if not database_url:
+        return None
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            subscription = extend_miniapp_premium_with_cursor(
+                cursor,
+                telegram_user_id,
+                days,
+            )
+        connection.commit()
+        return subscription.get("premium_until")
+    except Exception:
+        logger.exception(
+            "Failed to extend Mini App premium: user_id=%s days=%s",
+            telegram_user_id,
+            days,
+        )
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def record_miniapp_referral(
+    referrer_id: int,
+    referred_id: int,
+    is_new_user: bool = True,
+) -> dict:
+    if referrer_id == referred_id:
+        logger.info(
+            "miniapp referral skipped: self_referral referrer_id=%s referred_id=%s",
+            referrer_id,
+            referred_id,
+        )
+        return {"ok": False, "status": "self_referral"}
+
+    if not is_new_user:
+        logger.info(
+            "miniapp referral skipped: existing_user referrer_id=%s referred_id=%s",
+            referrer_id,
+            referred_id,
+        )
+        return {"ok": False, "status": "existing_user"}
+
+    database_url = get_database_url()
+    if not database_url:
+        return {"ok": False, "status": "database_unavailable"}
+
+    ensure_miniapp_referrals_table()
+    ensure_miniapp_referral_rewards_table()
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO miniapp_referrals (
+                    referrer_telegram_user_id,
+                    referred_telegram_user_id
+                )
+                VALUES (%s, %s)
+                ON CONFLICT (referred_telegram_user_id) DO NOTHING
+                RETURNING id;
+                """,
+                (referrer_id, referred_id),
+            )
+            inserted_referral = cursor.fetchone()
+            if not inserted_referral:
+                logger.info(
+                    "miniapp referral skipped: already_referred "
+                    "referrer_id=%s referred_id=%s",
+                    referrer_id,
+                    referred_id,
+                )
+                connection.commit()
+                return {"ok": False, "status": "already_referred"}
+
+            logger.info(
+                "miniapp referral recorded referrer_id=%s referred_id=%s",
+                referrer_id,
+                referred_id,
+            )
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS invited_count
+                FROM miniapp_referrals
+                WHERE referrer_telegram_user_id = %s;
+                """,
+                (referrer_id,),
+            )
+            invited_count = int((cursor.fetchone() or {}).get("invited_count") or 0)
+            logger.info(
+                "miniapp referral count updated referrer_id=%s invited_count=%s",
+                referrer_id,
+                invited_count,
+            )
+
+            result = {
+                "ok": True,
+                "status": "recorded",
+                "invited_count": invited_count,
+                "reward_granted": False,
+            }
+            if invited_count < MINIAPP_REFERRAL_TARGET_COUNT:
+                connection.commit()
+                return result
+
+            cursor.execute(
+                """
+                INSERT INTO miniapp_referral_rewards (
+                    telegram_user_id,
+                    reward_type,
+                    reward_value
+                )
+                VALUES (%s, %s, %s)
+                ON CONFLICT (telegram_user_id, reward_type) DO NOTHING
+                RETURNING id;
+                """,
+                (
+                    referrer_id,
+                    MINIAPP_REFERRAL_REWARD_TYPE,
+                    MINIAPP_REFERRAL_REWARD_DAYS,
+                ),
+            )
+            inserted_reward = cursor.fetchone()
+            if not inserted_reward:
+                logger.info(
+                    "miniapp referral reward already granted referrer_id=%s "
+                    "reward_type=%s",
+                    referrer_id,
+                    MINIAPP_REFERRAL_REWARD_TYPE,
+                )
+                connection.commit()
+                return {
+                    **result,
+                    "status": "reward_already_granted",
+                }
+
+            subscription = extend_miniapp_premium_with_cursor(
+                cursor,
+                referrer_id,
+                MINIAPP_REFERRAL_REWARD_DAYS,
+            )
+            cursor.execute(
+                """
+                UPDATE miniapp_referrals
+                SET reward_granted_at = NOW()
+                WHERE referrer_telegram_user_id = %s
+                  AND reward_granted_at IS NULL;
+                """,
+                (referrer_id,),
+            )
+            logger.info(
+                "miniapp referral reward granted referrer_id=%s reward_type=%s",
+                referrer_id,
+                MINIAPP_REFERRAL_REWARD_TYPE,
+            )
+            connection.commit()
+            return {
+                **result,
+                "status": "reward_granted",
+                "reward_granted": True,
+                "premium_until": subscription.get("premium_until"),
+            }
+    except Exception:
+        if connection is not None:
+            connection.rollback()
+        logger.exception(
+            "Mini App referral recording failed: referrer_id=%s referred_id=%s",
+            referrer_id,
+            referred_id,
+        )
+        return {"ok": False, "status": "failed"}
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def get_miniapp_referral_status(telegram_user_id: int) -> dict:
+    ensure_miniapp_referrals_table()
+    ensure_miniapp_referral_rewards_table()
+    database_url = get_database_url()
+    invited_count = 0
+    reward_granted = False
+
+    if database_url:
+        connection = None
+        try:
+            connection = psycopg2.connect(database_url)
+            with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS invited_count
+                    FROM miniapp_referrals
+                    WHERE referrer_telegram_user_id = %s;
+                    """,
+                    (telegram_user_id,),
+                )
+                invited_count = int(
+                    (cursor.fetchone() or {}).get("invited_count") or 0
+                )
+                cursor.execute(
+                    """
+                    SELECT 1
+                    FROM miniapp_referral_rewards
+                    WHERE telegram_user_id = %s
+                      AND reward_type = %s
+                    LIMIT 1;
+                    """,
+                    (telegram_user_id, MINIAPP_REFERRAL_REWARD_TYPE),
+                )
+                reward_granted = bool(cursor.fetchone())
+        except Exception:
+            logger.exception(
+                "Mini App referral status failed: user_id=%s",
+                telegram_user_id,
+            )
+        finally:
+            if connection is not None:
+                connection.close()
+
+    subscription = get_or_create_subscription(telegram_user_id)
+    return {
+        "ok": True,
+        "referral_code": f"ref_{telegram_user_id}",
+        "referral_link": (
+            "https://t.me/Match_Stat_bot/app"
+            f"?startapp=ref_{telegram_user_id}"
+        ),
+        "invited_count": invited_count,
+        "target_count": MINIAPP_REFERRAL_TARGET_COUNT,
+        "reward_days": MINIAPP_REFERRAL_REWARD_DAYS,
+        "reward_type": MINIAPP_REFERRAL_REWARD_TYPE,
+        "reward_granted": reward_granted,
+        "is_premium": is_premium_active(subscription),
+        "premium_until": serialize_api_datetime(
+            subscription.get("premium_until")
+        ),
+    }
 
 
 def revoke_premium(telegram_user_id: int) -> dict:
@@ -16829,6 +17283,29 @@ def miniapp_events():
         event_data = {}
 
     telegram_user_id = int(telegram_user["id"])
+    start_param = str(request_data.get("start_param") or "").strip()
+    is_new_miniapp_user = not miniapp_user_exists(telegram_user_id)
+    logger.info(
+        "miniapp referral user existence before upsert: "
+        "user_id=%s is_new_user=%s",
+        telegram_user_id,
+        is_new_miniapp_user,
+    )
+    if start_param:
+        logger.info(
+            "miniapp referral start_param received user_id=%s start_param=%s",
+            telegram_user_id,
+            start_param,
+        )
+        parsed_referrer_id = parse_miniapp_ref_param(start_param)
+        logger.info(
+            "miniapp referral parsed referrer_id=%s referred_id=%s",
+            parsed_referrer_id,
+            telegram_user_id,
+        )
+    else:
+        parsed_referrer_id = None
+
     try:
         upsert_bot_user(
             SimpleNamespace(
@@ -16846,6 +17323,21 @@ def miniapp_events():
             exc_info=True,
         )
 
+    if event_type == "miniapp_opened" and parsed_referrer_id:
+        if is_new_miniapp_user:
+            record_miniapp_referral(
+                parsed_referrer_id,
+                telegram_user_id,
+                is_new_user=True,
+            )
+        else:
+            logger.info(
+                "miniapp referral skipped: existing_user "
+                "referrer_id=%s referred_id=%s",
+                parsed_referrer_id,
+                telegram_user_id,
+            )
+
     try:
         log_user_event(telegram_user_id, event_type, event_data)
     except Exception:
@@ -16857,6 +17349,21 @@ def miniapp_events():
         )
 
     return jsonify({"ok": True})
+
+
+@miniapp_api.get("/api/referrals/status")
+def miniapp_referrals_status():
+    telegram_user = get_api_telegram_user(flask_request)
+    if not telegram_user:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "telegram_user_id_required",
+            }
+        ), 400
+
+    telegram_user_id = int(telegram_user["id"])
+    return jsonify(get_miniapp_referral_status(telegram_user_id))
 
 
 @miniapp_api.get("/api/subscription")

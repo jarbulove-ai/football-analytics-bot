@@ -4,6 +4,7 @@ interface TelegramWebApp {
   colorScheme?: "light" | "dark";
   initData?: string;
   initDataUnsafe?: {
+    start_param?: string;
     user?: {
       id: number;
       first_name?: string;
@@ -11,6 +12,7 @@ interface TelegramWebApp {
       username?: string;
     };
   };
+  openTelegramLink?: (url: string) => void;
 }
 
 interface Window {

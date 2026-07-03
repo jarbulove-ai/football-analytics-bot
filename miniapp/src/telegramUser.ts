@@ -111,3 +111,27 @@ export function getTelegramUserIdentity(): TelegramUserIdentity {
     ...diagnostics,
   };
 }
+
+export function getTelegramStartParam() {
+  const telegramWebApp = window.Telegram?.WebApp;
+  const unsafeStartParam =
+    typeof telegramWebApp?.initDataUnsafe?.start_param === "string"
+      ? telegramWebApp.initDataUnsafe.start_param.trim()
+      : "";
+  if (unsafeStartParam) return unsafeStartParam;
+
+  try {
+    const initData = telegramWebApp?.initData?.trim() || "";
+    const initDataStartParam = new URLSearchParams(initData)
+      .get("start_param")
+      ?.trim();
+    if (initDataStartParam) return initDataStartParam;
+
+    return (
+      new URLSearchParams(window.location.search).get("startapp")?.trim() ||
+      ""
+    );
+  } catch {
+    return "";
+  }
+}

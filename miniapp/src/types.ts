@@ -362,6 +362,20 @@ export interface SubscriptionData {
   ai_text?: string;
 }
 
+export interface ReferralStatus {
+  ok: boolean;
+  referral_code: string;
+  referral_link: string;
+  invited_count: number;
+  target_count: number;
+  reward_days: number;
+  reward_type: string;
+  reward_granted: boolean;
+  is_premium: boolean;
+  premium_until: string | null;
+  error?: string;
+}
+
 export interface PaymentPackage {
   code: string;
   title: string;
