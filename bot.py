@@ -1092,6 +1092,7 @@ MINIAPP_EVENT_TYPES = {
     "miniapp_premium_upsell_clicked",
     "scenarios_teaser_clicked",
     "subscription_opened",
+    "payment_plan_selected",
     "payment_started",
 }
 
@@ -1196,7 +1197,8 @@ async def stats_command(
         "miniapp_premium_upsell_clicked": "Premium после AI",
         "scenarios_teaser_clicked": "Сценарии → Premium",
         "subscription_opened": "Подписку открыли",
-        "payment_started": "Оплату начали",
+        "payment_plan_selected": "Тариф выбрали",
+        "payment_started": "К оплате перешли",
     }
 
     connection = None

@@ -5284,7 +5284,7 @@ function SubscriptionScreen() {
     subscription?.premium_until || null,
   );
   function selectPackage(item: PaymentPackage) {
-    void trackMiniappEvent(telegramIdentity.id, "payment_started", {
+    void trackMiniappEvent(telegramIdentity.id, "payment_plan_selected", {
       package_code: item.code,
       source: "subscription",
     });
@@ -5330,6 +5330,10 @@ function SubscriptionScreen() {
     setReceiptError("");
     setReceiptSuccess(null);
     try {
+      void trackMiniappEvent(telegramIdentity.id, "payment_started", {
+        package_code: selectedPackage.code,
+        source: "subscription",
+      });
       const response = await submitPaymentReceipt(
         telegramIdentity.id,
         packageCode,
