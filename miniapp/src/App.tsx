@@ -1109,25 +1109,248 @@ function DailyFocusMatchCard({
   );
 }
 
+type TeamScenarioTier = "top" | "strong" | "regular";
+type DailyScenarioKind = "readable" | "balanced" | "bold";
+
+interface DailyScenarioItem {
+  kind: DailyScenarioKind;
+  badge: string;
+  title: string;
+  explanation: string;
+  match: MatchItem;
+}
+
+const TOP_TEAMS = new Set(
+  [
+    "Argentina",
+    "Brazil",
+    "France",
+    "England",
+    "Spain",
+    "Portugal",
+    "Germany",
+    "Netherlands",
+    "Belgium",
+    "Croatia",
+    "Italy",
+    "Real Madrid",
+    "Barcelona",
+    "Liverpool",
+    "Man City",
+    "Manchester City",
+    "Arsenal",
+    "Bayern",
+    "PSG",
+    "Chelsea",
+    "Man United",
+    "Manchester United",
+    "Аргентина",
+    "Бразилия",
+    "Франция",
+    "Англия",
+    "Испания",
+    "Португалия",
+    "Германия",
+    "Нидерланды",
+    "Бельгия",
+    "Хорватия",
+    "Италия",
+  ].map((team) => team.toLocaleLowerCase("ru-RU")),
+);
+
+const STRONG_TEAMS = new Set(
+  [
+    "Morocco",
+    "Colombia",
+    "Uruguay",
+    "Switzerland",
+    "Denmark",
+    "Senegal",
+    "USA",
+    "Mexico",
+    "Japan",
+    "Norway",
+    "Sweden",
+    "Ghana",
+    "Austria",
+    "Serbia",
+    "Poland",
+    "Turkey",
+    "Egypt",
+    "Algeria",
+    "Ecuador",
+    "Paraguay",
+    "Марокко",
+    "Колумбия",
+    "Уругвай",
+    "Швейцария",
+    "Дания",
+    "Сенегал",
+    "США",
+    "Мексика",
+    "Япония",
+    "Норвегия",
+    "Швеция",
+    "Гана",
+    "Австрия",
+    "Египет",
+    "Алжир",
+    "Эквадор",
+    "Парагвай",
+  ].map((team) => team.toLocaleLowerCase("ru-RU")),
+);
+
+const DAILY_SCENARIO_META: Record<
+  DailyScenarioKind,
+  Omit<DailyScenarioItem, "kind" | "match">
+> = {
+  readable: {
+    badge: "🎯",
+    title: "Понятный сценарий",
+    explanation:
+      "Самый читаемый матч дня: статус команд и турнирный контекст дают понятную интригу.",
+  },
+  balanced: {
+    badge: "⚖️",
+    title: "Сбалансированный сценарий",
+    explanation:
+      "Матч с несколькими сильными сигналами, но без полного преимущества одной стороны.",
+  },
+  bold: {
+    badge: "🔥",
+    title: "Смелый сценарий",
+    explanation:
+      "Больше неопределённости: сценарий может зависеть от темпа, первого гола и деталей состава.",
+  },
+};
+
+function normalizeScenarioTeamName(teamName: string) {
+  return teamName.trim().replace(/\s+/g, " ").toLocaleLowerCase("ru-RU");
+}
+
+function getTeamScenarioTier(teamName: string): TeamScenarioTier {
+  const normalized = normalizeScenarioTeamName(teamName);
+  if (TOP_TEAMS.has(normalized)) return "top";
+  if (STRONG_TEAMS.has(normalized)) return "strong";
+  return "regular";
+}
+
+function getScenarioTieBreaker(match: MatchItem) {
+  let score = 0;
+  if (isLiveMatchStatus(match.status)) score += 6;
+  if (match.league) score += 4;
+  if (match.round) score += 2;
+  if (match.kickoff) score += 1;
+  return score;
+}
+
+function scoreReadableScenario(match: MatchItem): number {
+  const tiers = [
+    getTeamScenarioTier(match.home),
+    getTeamScenarioTier(match.away),
+  ];
+  const hasTop = tiers.includes("top");
+  const hasRegular = tiers.includes("regular");
+  const hasStrong = tiers.includes("strong");
+
+  if (hasTop && hasRegular) return 90 + getScenarioTieBreaker(match);
+  if (hasTop && hasStrong) return 78 + getScenarioTieBreaker(match);
+  return 0;
+}
+
+function scoreBalancedScenario(match: MatchItem): number {
+  const tiers = [
+    getTeamScenarioTier(match.home),
+    getTeamScenarioTier(match.away),
+  ];
+  const topCount = tiers.filter((tier) => tier === "top").length;
+  const strongCount = tiers.filter((tier) => tier === "strong").length;
+
+  if (topCount === 2) return 92 + getScenarioTieBreaker(match);
+  if (topCount === 1 && strongCount === 1) {
+    return 82 + getScenarioTieBreaker(match);
+  }
+  if (strongCount === 2) return 72 + getScenarioTieBreaker(match);
+  return 0;
+}
+
+function scoreBoldScenario(match: MatchItem): number {
+  const tiers = [
+    getTeamScenarioTier(match.home),
+    getTeamScenarioTier(match.away),
+  ];
+  const regularCount = tiers.filter((tier) => tier === "regular").length;
+  const strongCount = tiers.filter((tier) => tier === "strong").length;
+
+  if (regularCount === 2) return 90 + getScenarioTieBreaker(match);
+  if (regularCount === 1 && strongCount === 1) {
+    return 82 + getScenarioTieBreaker(match);
+  }
+  if (regularCount === 1) return 62 + getScenarioTieBreaker(match);
+  return 0;
+}
+
+function pickDailyScenarioMatch(
+  matches: MatchItem[],
+  scoreMatch: (match: MatchItem) => number,
+) {
+  let selectedMatch: MatchItem | null = null;
+  let selectedScore = 0;
+
+  matches.forEach((match) => {
+    const score = scoreMatch(match);
+    if (score > selectedScore) {
+      selectedMatch = match;
+      selectedScore = score;
+    }
+  });
+
+  return selectedMatch;
+}
+
+function buildDailyScenarioMatches(matches: MatchItem[]): DailyScenarioItem[] {
+  const pool = [...matches];
+  const items: DailyScenarioItem[] = [];
+  const scenarioOrder: Array<{
+    kind: DailyScenarioKind;
+    scoreMatch: (match: MatchItem) => number;
+  }> = [
+    { kind: "readable", scoreMatch: scoreReadableScenario },
+    { kind: "balanced", scoreMatch: scoreBalancedScenario },
+    { kind: "bold", scoreMatch: scoreBoldScenario },
+  ];
+
+  scenarioOrder.forEach(({ kind, scoreMatch }) => {
+    if (pool.length === 0) return;
+
+    const selectedMatch = pickDailyScenarioMatch(pool, scoreMatch) || pool[0];
+    const selectedIndex = pool.findIndex((match) => match.id === selectedMatch.id);
+    if (selectedIndex >= 0) pool.splice(selectedIndex, 1);
+
+    items.push({
+      kind,
+      ...DAILY_SCENARIO_META[kind],
+      match: selectedMatch,
+    });
+  });
+
+  return items;
+}
+
 function DailyFocusScenariosTeaser({
+  matches,
+  premiumAiEnabled,
+  onOpenMatch,
   onOpenSubscription,
 }: {
+  matches: MatchItem[];
+  premiumAiEnabled: boolean;
+  onOpenMatch: (match: MatchItem) => void;
   onOpenSubscription: () => void;
 }) {
-  const scenarios = [
-    {
-      title: "Понятный сценарий",
-      text: "Лучше всего читается по форме, мотивации и статистике.",
-    },
-    {
-      title: "Сбалансированный сценарий",
-      text: "Есть сильные аргументы, но остаются важные риски.",
-    },
-    {
-      title: "Смелый сценарий",
-      text: "Больше интриги и неопределённости, но матч может быть интересным по данным.",
-    },
-  ];
+  const scenarios = useMemo(() => buildDailyScenarioMatches(matches), [matches]);
+
+  if (scenarios.length === 0) return null;
 
   return (
     <section className="animate-rise rounded-lg border border-gold/20 bg-gold/[0.055] p-4 shadow-card">
@@ -1146,27 +1369,68 @@ function DailyFocusScenariosTeaser({
         </div>
       </div>
 
-      <div className="mt-4 space-y-2">
+      <div className="mt-4 space-y-3">
         {scenarios.map((scenario) => (
-          <div
-            key={scenario.title}
-            className="rounded-md border border-line/70 bg-white/[0.025] px-3 py-2.5"
+          <article
+            key={`${scenario.kind}:${scenario.match.id}`}
+            className="rounded-md border border-line/70 bg-white/[0.025] p-3"
           >
-            <p className="text-sm font-bold text-white">{scenario.title}</p>
-            <p className="mt-1 text-xs leading-5 text-slate-400">
-              {scenario.text}
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-bold uppercase text-gold">
+                  {scenario.badge} {scenario.title}
+                </p>
+                <p className="mt-2 truncate text-sm font-extrabold text-white">
+                  {scenario.match.home || "Хозяева"} —{" "}
+                  {scenario.match.away || "Гости"}
+                </p>
+              </div>
+              {formatAlmatyKickoff(scenario.match.kickoff) && (
+                <span className="shrink-0 rounded-md bg-white/[0.06] px-2 py-1 text-[11px] font-bold text-slate-300">
+                  {formatAlmatyKickoff(scenario.match.kickoff)}
+                </span>
+              )}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {scenario.match.league && (
+                <span className="rounded-full bg-white/[0.05] px-2 py-1 text-[10px] font-semibold text-slate-400">
+                  {scenario.match.league}
+                </span>
+              )}
+              {scenario.match.round && (
+                <span className="rounded-full bg-white/[0.05] px-2 py-1 text-[10px] font-semibold text-slate-400">
+                  {scenario.match.round}
+                </span>
+              )}
+            </div>
+            <p className="mt-3 text-xs leading-5 text-slate-300">
+              {scenario.explanation}
             </p>
-          </div>
+            <button
+              type="button"
+              onClick={() =>
+                premiumAiEnabled
+                  ? onOpenMatch(scenario.match)
+                  : onOpenSubscription()
+              }
+              className={`mt-3 h-9 w-full rounded-md text-xs font-bold transition active:scale-[0.98] ${
+                premiumAiEnabled
+                  ? "bg-accent text-white"
+                  : "bg-gold text-zinc-950"
+              }`}
+            >
+              {premiumAiEnabled
+                ? "Открыть Premium AI-разбор"
+                : "Смотреть Premium"}
+            </button>
+            {!premiumAiEnabled && (
+              <p className="mt-2 text-center text-[11px] text-slate-500">
+                Подробный AI-сценарий доступен в Premium.
+              </p>
+            )}
+          </article>
         ))}
       </div>
-
-      <button
-        type="button"
-        onClick={onOpenSubscription}
-        className="mt-4 h-10 w-full rounded-md bg-gold text-sm font-bold text-zinc-950 transition active:scale-[0.98]"
-      >
-        Смотреть Premium
-      </button>
     </section>
   );
 }
@@ -1628,6 +1892,9 @@ function MatchesScreen({
                 />
               ))}
               <DailyFocusScenariosTeaser
+                matches={dailyFocusDisplayMatches}
+                premiumAiEnabled={premiumAiEnabled}
+                onOpenMatch={onOpenMatch}
                 onOpenSubscription={onOpenSubscription}
               />
             </>
