@@ -584,17 +584,9 @@ function HomeScreen({
           });
         });
 
-        const sortedMatches = Array.from(uniqueMatches.values())
-          .sort((left, right) => {
-            const leftTime = left.kickoff
-              ? new Date(left.kickoff).getTime()
-              : Number.POSITIVE_INFINITY;
-            const rightTime = right.kickoff
-              ? new Date(right.kickoff).getTime()
-              : Number.POSITIVE_INFINITY;
-            return leftTime - rightTime;
-          })
-          .slice(0, 3);
+        const sortedMatches = sortMatchesByImportance(
+          Array.from(uniqueMatches.values()),
+        ).slice(0, 3);
 
         setFavoriteMatches(sortedMatches);
         if (successfulResponses.length === 0) {
@@ -985,6 +977,126 @@ function formatAlmatyKickoff(value: string | null) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function getMatchKickoffTime(match: MatchItem) {
+  if (!match.kickoff) return Number.POSITIVE_INFINITY;
+  const kickoffTime = new Date(match.kickoff).getTime();
+  return Number.isFinite(kickoffTime)
+    ? kickoffTime
+    : Number.POSITIVE_INFINITY;
+}
+
+function matchTextIncludes(text: string, keywords: string[]) {
+  return keywords.some((keyword) => text.includes(keyword));
+}
+
+function getMatchLeagueImportance(match: MatchItem): number {
+  const searchableText = [
+    match.league,
+    match.country,
+    match.round,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLocaleLowerCase("ru-RU");
+
+  if (!searchableText) return 30;
+
+  if (
+    matchTextIncludes(searchableText, [
+      "fifa world cup",
+      "world cup",
+      "чемпионат мира",
+      "кубок мира",
+      "чм",
+    ])
+  ) {
+    return 100;
+  }
+
+  if (
+    matchTextIncludes(searchableText, [
+      "uefa champions league",
+      "champions league",
+      "лига чемпионов",
+    ])
+  ) {
+    return 90;
+  }
+
+  if (
+    matchTextIncludes(searchableText, [
+      "uefa euro",
+      "euro",
+      "copa america",
+      "africa cup",
+      "asian cup",
+      "кубок африки",
+      "кубок азии",
+    ])
+  ) {
+    return 85;
+  }
+
+  if (
+    matchTextIncludes(searchableText, [
+      "kazakhstan premier league",
+      "казахстанская премьер-лига",
+      "премьер-лига казахстана",
+      "казахстан",
+      "кпл",
+    ])
+  ) {
+    return 25;
+  }
+
+  if (
+    matchTextIncludes(searchableText, [
+      "premier league",
+      "epl",
+      "la liga",
+      "serie a",
+      "bundesliga",
+      "ligue 1",
+    ])
+  ) {
+    return 80;
+  }
+
+  if (
+    matchTextIncludes(searchableText, [
+      "europa league",
+      "conference league",
+      "лига европы",
+      "лига конференций",
+    ])
+  ) {
+    return 75;
+  }
+
+  if (
+    matchTextIncludes(searchableText, [
+      "international",
+      "national teams",
+      "сборные",
+      "сборная",
+    ])
+  ) {
+    return 70;
+  }
+
+  return 40;
+}
+
+function sortMatchesByImportance(matches: MatchItem[]): MatchItem[] {
+  return [...matches].sort((left, right) => {
+    const importanceDiff =
+      getMatchLeagueImportance(right) - getMatchLeagueImportance(left);
+    if (importanceDiff !== 0) return importanceDiff;
+
+    return getMatchKickoffTime(left) - getMatchKickoffTime(right);
+  });
 }
 
 function getDailyFocusReason(match: MatchItem) {
@@ -1488,34 +1600,19 @@ function MatchesScreen({
   const isTeamSearchActive =
     !dailyFocusMode && normalizedTeamQuery.length >= 2;
   const focusMatches = useMemo(
-    () =>
-      [...matches]
-        .sort((left, right) => {
-          const leftLive = isLiveMatchStatus(left.status) ? 0 : 1;
-          const rightLive = isLiveMatchStatus(right.status) ? 0 : 1;
-          if (leftLive !== rightLive) return leftLive - rightLive;
-
-          const leftTime = left.kickoff
-            ? new Date(left.kickoff).getTime()
-            : Number.POSITIVE_INFINITY;
-          const rightTime = right.kickoff
-            ? new Date(right.kickoff).getTime()
-            : Number.POSITIVE_INFINITY;
-          return leftTime - rightTime;
-        })
-        .slice(0, 5),
+    () => sortMatchesByImportance(matches).slice(0, 5),
     [matches],
   );
   const dailyFocusDisplayMatches = useMemo(
     () =>
       focusMatches.length > 0
         ? focusMatches
-        : dailyFocusFallbackMatches.slice(0, 5),
+        : sortMatchesByImportance(dailyFocusFallbackMatches).slice(0, 5),
     [dailyFocusFallbackMatches, focusMatches],
   );
   const groupedMatches = useMemo(() => {
     const groups = new Map<string, MatchItem[]>();
-    matches.forEach((match) => {
+    sortMatchesByImportance(matches).forEach((match) => {
       const leagueName = match.league || "Другие турниры";
       const group = groups.get(leagueName) || [];
       group.push(match);
@@ -1573,7 +1670,7 @@ function MatchesScreen({
       .then((response) => {
         if (!active) return;
         if (!response.ok) throw new Error(response.error || "Matches error");
-        const nextMatches = response.items || [];
+        const nextMatches = sortMatchesByImportance(response.items || []);
         const firstLeague = nextMatches[0]?.league || "Другие турниры";
         setMatches(nextMatches);
         setExpandedLeagues(
@@ -1621,24 +1718,16 @@ function MatchesScreen({
           });
         });
 
-        const upcomingMatches = Array.from(uniqueMatches.values())
-          .filter((match) => {
+        const upcomingMatches = sortMatchesByImportance(
+          Array.from(uniqueMatches.values()).filter((match) => {
             if (!match.kickoff) return true;
             const kickoffTime = new Date(match.kickoff).getTime();
             return (
               !Number.isFinite(kickoffTime) ||
               kickoffTime >= Date.now() - 2 * 60 * 60 * 1000
             );
-          })
-          .sort((left, right) => {
-            const leftTime = left.kickoff
-              ? new Date(left.kickoff).getTime()
-              : Number.POSITIVE_INFINITY;
-            const rightTime = right.kickoff
-              ? new Date(right.kickoff).getTime()
-              : Number.POSITIVE_INFINITY;
-            return leftTime - rightTime;
-          });
+          }),
+        );
 
         setDailyFocusFallbackMatches(upcomingMatches);
       })
@@ -1882,21 +1971,28 @@ function MatchesScreen({
           dailyFocusMode &&
           dailyFocusDisplayMatches.length > 0 && (
             <>
-              {dailyFocusDisplayMatches.map((match, index) => (
-                <DailyFocusMatchCard
-                  key={match.id}
-                  match={match}
-                  index={index}
-                  premiumAiEnabled={premiumAiEnabled}
-                  onOpenMatch={onOpenMatch}
-                />
-              ))}
               <DailyFocusScenariosTeaser
                 matches={dailyFocusDisplayMatches}
                 premiumAiEnabled={premiumAiEnabled}
                 onOpenMatch={onOpenMatch}
                 onOpenSubscription={onOpenSubscription}
               />
+              <section>
+                <h2 className="mb-3 text-sm font-extrabold text-white">
+                  Все матчи дня
+                </h2>
+                <div className="space-y-3">
+                  {dailyFocusDisplayMatches.map((match, index) => (
+                    <DailyFocusMatchCard
+                      key={match.id}
+                      match={match}
+                      index={index}
+                      premiumAiEnabled={premiumAiEnabled}
+                      onOpenMatch={onOpenMatch}
+                    />
+                  ))}
+                </div>
+              </section>
             </>
           )}
 
@@ -2420,18 +2516,16 @@ function TournamentDetails({
   const [context, setContext] = useState<MatchContextResponse | null>(null);
   const [contextLoading, setContextLoading] = useState(true);
   const [contextError, setContextError] = useState(false);
-  const firstMatch = tournament.matches[0];
+  const sortedTournamentMatches = useMemo(
+    () => sortMatchesByImportance(tournament.matches),
+    [tournament.matches],
+  );
+  const firstMatch = sortedTournamentMatches[0];
   const nearestMatch = useMemo(
     () =>
-      [...tournament.matches].sort((left, right) => {
-        const leftTime = left.kickoff
-          ? new Date(left.kickoff).getTime()
-          : Number.POSITIVE_INFINITY;
-        const rightTime = right.kickoff
-          ? new Date(right.kickoff).getTime()
-          : Number.POSITIVE_INFINITY;
-        return leftTime - rightTime;
-      })[0],
+      [...tournament.matches].sort(
+        (left, right) => getMatchKickoffTime(left) - getMatchKickoffTime(right),
+      )[0],
     [tournament.matches],
   );
   const nearestKickoff = formatKickoff(nearestMatch?.kickoff || null);
@@ -2632,9 +2726,9 @@ function TournamentDetails({
 
       {activeTab === "matches" && (
         <>
-          {tournament.matches.length > 0 ? (
+          {sortedTournamentMatches.length > 0 ? (
             <section className="overflow-hidden rounded-lg border border-line bg-panel">
-              {tournament.matches.map((match) => (
+              {sortedTournamentMatches.map((match) => (
                 <CompactMatchRow
                   key={match.id}
                   match={match}
@@ -3019,7 +3113,7 @@ function TeamDetails({
                 Ближайшие матчи
               </h2>
               <div className="overflow-hidden rounded-lg border border-line bg-panel">
-                {matches.upcoming.map((match) => (
+                {sortMatchesByImportance(matches.upcoming).map((match) => (
                   <CompactMatchRow
                     key={match.id}
                     match={match}
@@ -4858,7 +4952,7 @@ function FavoritesScreen({
         const response = await getTeamMatches(team.team_id);
         return {
           team,
-          matches: response.upcoming.slice(0, 2),
+          matches: sortMatchesByImportance(response.upcoming).slice(0, 2),
         };
       }),
     )
