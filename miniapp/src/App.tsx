@@ -6157,7 +6157,7 @@ export default function App() {
   function openDailyFocusMatches() {
     trackEvent("daily_focus_opened", { source: "home_cta" });
     setDailyFocusMode(true);
-    setMatchType("today");
+    setMatchType("top");
     setSelectedMatch(null);
     setMatchHistory([]);
     setSelectedTournament(null);
