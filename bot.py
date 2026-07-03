@@ -380,9 +380,9 @@ def get_database_url_fingerprint(database_url: str | None = None) -> str:
         return f"unparsed#{url_hash}"
 
 
-MINIAPP_REFERRAL_REWARD_TYPE = "invite_3_premium_7d"
+MINIAPP_REFERRAL_REWARD_TYPE = "invite_3_premium_ai_25"
 MINIAPP_REFERRAL_TARGET_COUNT = 3
-MINIAPP_REFERRAL_REWARD_DAYS = 7
+MINIAPP_REFERRAL_REWARD_AI_LIMIT = 25
 
 
 def ensure_miniapp_referrals_table() -> bool:
@@ -453,6 +453,53 @@ def ensure_miniapp_referral_rewards_table() -> bool:
         return True
     except Exception:
         logger.exception("Failed to ensure Mini App referral rewards table")
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def ensure_miniapp_ai_credit_grants_table() -> bool:
+    database_url = get_database_url()
+    if not database_url:
+        return False
+
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS miniapp_ai_credit_grants (
+                    id SERIAL PRIMARY KEY,
+                    telegram_user_id BIGINT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_key TEXT NOT NULL,
+                    credits_total INTEGER NOT NULL,
+                    credits_used INTEGER NOT NULL DEFAULT 0,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE (telegram_user_id, source_type, source_key)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_miniapp_ai_credit_grants_user
+                ON miniapp_ai_credit_grants (telegram_user_id);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_miniapp_ai_credit_grants_expires
+                ON miniapp_ai_credit_grants (expires_at);
+                """
+            )
+        connection.commit()
+        return True
+    except Exception:
+        logger.exception("Failed to ensure Mini App AI credit grants table")
         return False
     finally:
         if connection is not None:
@@ -800,6 +847,7 @@ def init_db() -> None:
         connection.commit()
         ensure_miniapp_referrals_table()
         ensure_miniapp_referral_rewards_table()
+        ensure_miniapp_ai_credit_grants_table()
     except Exception:
         logger.exception("Failed to initialize database")
     finally:
@@ -1713,6 +1761,15 @@ def get_ai_available_count(subscription: dict) -> int:
     return monthly_left + int(subscription.get("extra_ai_credits") or 0)
 
 
+def get_total_ai_available_count(
+    telegram_user_id: int,
+    subscription: dict,
+) -> int:
+    return get_ai_available_count(subscription) + get_active_bonus_ai_credits(
+        telegram_user_id
+    )
+
+
 def get_ai_usage_text(subscription: dict) -> str:
     used = int(subscription.get("ai_used_monthly") or 0)
     limit = int(subscription.get("ai_limit_monthly") or 0)
@@ -1723,8 +1780,179 @@ def get_ai_usage_text(subscription: dict) -> str:
     return "\n".join(lines)
 
 
+def grant_bonus_ai_credits(
+    telegram_user_id: int,
+    source_type: str,
+    source_key: str,
+    credits: int,
+    days_valid: int,
+    cursor=None,
+) -> dict:
+    expires_at = datetime.now(timezone.utc) + timedelta(days=days_valid)
+
+    def execute_grant(active_cursor):
+        active_cursor.execute(
+            """
+            INSERT INTO miniapp_ai_credit_grants (
+                telegram_user_id,
+                source_type,
+                source_key,
+                credits_total,
+                credits_used,
+                expires_at,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, 0, %s, NOW())
+            ON CONFLICT (telegram_user_id, source_type, source_key)
+            DO NOTHING
+            RETURNING *;
+            """,
+            (
+                telegram_user_id,
+                source_type,
+                source_key,
+                credits,
+                expires_at,
+            ),
+        )
+        row = active_cursor.fetchone()
+        if row:
+            return {
+                "granted": True,
+                "already_granted": False,
+                "grant": dict(row),
+            }
+        return {
+            "granted": False,
+            "already_granted": True,
+            "grant": None,
+        }
+
+    if cursor is not None:
+        return execute_grant(cursor)
+
+    database_url = get_database_url()
+    if not database_url:
+        return {"granted": False, "already_granted": False, "grant": None}
+
+    ensure_miniapp_ai_credit_grants_table()
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as active_cursor:
+            result = execute_grant(active_cursor)
+        connection.commit()
+        return result
+    except Exception:
+        if connection is not None:
+            connection.rollback()
+        logger.exception(
+            "Failed to grant bonus AI credits: user_id=%s source_type=%s source_key=%s",
+            telegram_user_id,
+            source_type,
+            source_key,
+        )
+        return {"granted": False, "already_granted": False, "grant": None}
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def get_active_bonus_ai_credit_info(
+    telegram_user_id: int,
+    cursor=None,
+) -> dict:
+    def execute_lookup(active_cursor):
+        active_cursor.execute(
+            """
+            SELECT
+                COALESCE(SUM(credits_total - credits_used), 0)
+                    AS bonus_ai_remaining,
+                MIN(expires_at) AS bonus_ai_expires_at
+            FROM miniapp_ai_credit_grants
+            WHERE telegram_user_id = %s
+              AND expires_at > NOW()
+              AND credits_used < credits_total;
+            """,
+            (telegram_user_id,),
+        )
+        row = active_cursor.fetchone() or {}
+        return {
+            "bonus_ai_remaining": int(row.get("bonus_ai_remaining") or 0),
+            "bonus_ai_expires_at": row.get("bonus_ai_expires_at"),
+        }
+
+    if cursor is not None:
+        return execute_lookup(cursor)
+
+    database_url = get_database_url()
+    if not database_url:
+        return {"bonus_ai_remaining": 0, "bonus_ai_expires_at": None}
+
+    ensure_miniapp_ai_credit_grants_table()
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as active_cursor:
+            return execute_lookup(active_cursor)
+    except Exception:
+        logger.exception(
+            "Failed to get active bonus AI credits: user_id=%s",
+            telegram_user_id,
+        )
+        return {"bonus_ai_remaining": 0, "bonus_ai_expires_at": None}
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def get_active_bonus_ai_credits(telegram_user_id: int, cursor=None) -> int:
+    return int(
+        get_active_bonus_ai_credit_info(
+            telegram_user_id,
+            cursor,
+        ).get("bonus_ai_remaining")
+        or 0
+    )
+
+
+def consume_bonus_ai_credit(telegram_user_id: int, cursor) -> bool:
+    cursor.execute(
+        """
+        SELECT id
+        FROM miniapp_ai_credit_grants
+        WHERE telegram_user_id = %s
+          AND expires_at > NOW()
+          AND credits_used < credits_total
+        ORDER BY expires_at ASC, created_at ASC
+        LIMIT 1
+        FOR UPDATE;
+        """,
+        (telegram_user_id,),
+    )
+    grant = cursor.fetchone()
+    if not grant:
+        return False
+
+    cursor.execute(
+        """
+        UPDATE miniapp_ai_credit_grants
+        SET credits_used = credits_used + 1,
+            updated_at = NOW()
+        WHERE id = %s
+          AND credits_used < credits_total
+        RETURNING id;
+        """,
+        (grant["id"],),
+    )
+    return bool(cursor.fetchone())
+
+
 def can_use_ai_analysis(telegram_user_id: int) -> tuple[bool, str, dict]:
     subscription = get_or_create_subscription(telegram_user_id)
+    if get_active_bonus_ai_credits(telegram_user_id) > 0:
+        return True, "", subscription
+
     if int(subscription.get("extra_ai_credits") or 0) > 0:
         return True, "", subscription
 
@@ -2043,6 +2271,7 @@ def record_miniapp_referral(
 
     ensure_miniapp_referrals_table()
     ensure_miniapp_referral_rewards_table()
+    ensure_miniapp_ai_credit_grants_table()
     connection = None
     try:
         connection = psycopg2.connect(database_url)
@@ -2114,7 +2343,7 @@ def record_miniapp_referral(
                 (
                     referrer_id,
                     MINIAPP_REFERRAL_REWARD_TYPE,
-                    MINIAPP_REFERRAL_REWARD_DAYS,
+                    MINIAPP_REFERRAL_REWARD_AI_LIMIT,
                 ),
             )
             inserted_reward = cursor.fetchone()
@@ -2131,10 +2360,26 @@ def record_miniapp_referral(
                     "status": "reward_already_granted",
                 }
 
-            subscription = extend_miniapp_premium_with_cursor(
-                cursor,
+            cursor.execute(
+                """
+                SELECT *
+                FROM subscriptions
+                WHERE telegram_user_id = %s
+                FOR UPDATE;
+                """,
+                (referrer_id,),
+            )
+            current_subscription = normalize_subscription_row(
+                cursor.fetchone(),
                 referrer_id,
-                MINIAPP_REFERRAL_REWARD_DAYS,
+            )
+            credit_grant = grant_bonus_ai_credits(
+                referrer_id,
+                source_type="referral",
+                source_key="invite_3_ai_25",
+                credits=MINIAPP_REFERRAL_REWARD_AI_LIMIT,
+                days_valid=30,
+                cursor=cursor,
             )
             cursor.execute(
                 """
@@ -2155,7 +2400,12 @@ def record_miniapp_referral(
                 **result,
                 "status": "reward_granted",
                 "reward_granted": True,
-                "premium_until": subscription.get("premium_until"),
+                "reward_value": MINIAPP_REFERRAL_REWARD_AI_LIMIT,
+                "bonus_ai_granted": credit_grant.get("granted"),
+                "bonus_ai_expires_at": (
+                    (credit_grant.get("grant") or {}).get("expires_at")
+                ),
+                "premium_until": current_subscription.get("premium_until"),
             }
     except Exception:
         if connection is not None:
@@ -2174,6 +2424,7 @@ def record_miniapp_referral(
 def get_miniapp_referral_status(telegram_user_id: int) -> dict:
     ensure_miniapp_referrals_table()
     ensure_miniapp_referral_rewards_table()
+    ensure_miniapp_ai_credit_grants_table()
     database_url = get_database_url()
     invited_count = 0
     reward_granted = False
@@ -2215,6 +2466,7 @@ def get_miniapp_referral_status(telegram_user_id: int) -> dict:
                 connection.close()
 
     subscription = get_or_create_subscription(telegram_user_id)
+    bonus_info = get_active_bonus_ai_credit_info(telegram_user_id)
     return {
         "ok": True,
         "referral_code": f"ref_{telegram_user_id}",
@@ -2224,9 +2476,13 @@ def get_miniapp_referral_status(telegram_user_id: int) -> dict:
         ),
         "invited_count": invited_count,
         "target_count": MINIAPP_REFERRAL_TARGET_COUNT,
-        "reward_days": MINIAPP_REFERRAL_REWARD_DAYS,
+        "reward_value": MINIAPP_REFERRAL_REWARD_AI_LIMIT,
         "reward_type": MINIAPP_REFERRAL_REWARD_TYPE,
         "reward_granted": reward_granted,
+        "bonus_ai_remaining": bonus_info.get("bonus_ai_remaining") or 0,
+        "bonus_ai_expires_at": serialize_api_datetime(
+            bonus_info.get("bonus_ai_expires_at")
+        ),
         "is_premium": is_premium_active(subscription),
         "premium_until": serialize_api_datetime(
             subscription.get("premium_until")
@@ -2777,6 +3033,7 @@ def build_miniapp_ai_saved_response(
     regenerated: bool = False,
     from_personal_cache: bool = False,
     from_global_cache: bool = False,
+    source: str | None = None,
 ) -> dict:
     refresh_count = int(saved_analysis.get("refresh_count") or 0)
     free_refreshes_left = get_ai_free_refreshes_left(saved_analysis, is_admin)
@@ -2789,6 +3046,18 @@ def build_miniapp_ai_saved_response(
         "structured": saved_analysis.get("structured"),
         "analysis_mode": saved_analysis.get("analysis_mode") or "default",
         "limit_charged": limit_charged,
+        "charged": limit_charged,
+        "unlocked": True,
+        "source": source
+        or (
+            "global_cache"
+            if from_global_cache
+            else "user_unlock"
+            if from_personal_cache
+            else "openai"
+            if regenerated
+            else "user_unlock"
+        ),
         "remaining_ai": remaining_ai,
         "is_admin": is_admin,
         "cached": cached,
@@ -2817,6 +3086,66 @@ def is_saveable_miniapp_ai_analysis(analysis: str, structured: dict | None) -> b
     ):
         return False
     return structured is not None or len(normalized_analysis) > 80
+
+
+def save_miniapp_ai_analysis_with_cursor(
+    cursor,
+    telegram_user_id: int,
+    match_id: str,
+    analysis: str,
+    structured: dict | None,
+    analysis_mode: str,
+    home_team: str,
+    away_team: str,
+    league: str,
+    refresh_count: int = 0,
+    increment_refresh_count: bool = False,
+) -> None:
+    cursor.execute(
+        """
+        INSERT INTO miniapp_match_ai_analyses (
+            telegram_user_id,
+            match_id,
+            analysis,
+            structured,
+            analysis_mode,
+            refresh_count,
+            home_team,
+            away_team,
+            league,
+            updated_at
+        )
+        VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            CURRENT_TIMESTAMP
+        )
+        ON CONFLICT (telegram_user_id, match_id, analysis_mode)
+        DO UPDATE SET
+            analysis = EXCLUDED.analysis,
+            structured = EXCLUDED.structured,
+            refresh_count = CASE
+                WHEN %s THEN
+                    miniapp_match_ai_analyses.refresh_count + 1
+                ELSE EXCLUDED.refresh_count
+            END,
+            home_team = EXCLUDED.home_team,
+            away_team = EXCLUDED.away_team,
+            league = EXCLUDED.league,
+            updated_at = CURRENT_TIMESTAMP;
+        """,
+        (
+            telegram_user_id,
+            match_id,
+            analysis,
+            Json(structured) if structured is not None else None,
+            analysis_mode,
+            refresh_count,
+            home_team,
+            away_team,
+            league,
+            increment_refresh_count,
+        ),
+    )
 
 
 def save_miniapp_ai_analysis(
@@ -2856,50 +3185,18 @@ def save_miniapp_ai_analysis(
     try:
         connection = psycopg2.connect(database_url)
         with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO miniapp_match_ai_analyses (
-                    telegram_user_id,
-                    match_id,
-                    analysis,
-                    structured,
-                    analysis_mode,
-                    refresh_count,
-                    home_team,
-                    away_team,
-                    league,
-                    updated_at
-                )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    CURRENT_TIMESTAMP
-                )
-                ON CONFLICT (telegram_user_id, match_id, analysis_mode)
-                DO UPDATE SET
-                    analysis = EXCLUDED.analysis,
-                    structured = EXCLUDED.structured,
-                    refresh_count = CASE
-                        WHEN %s THEN
-                            miniapp_match_ai_analyses.refresh_count + 1
-                        ELSE EXCLUDED.refresh_count
-                    END,
-                    home_team = EXCLUDED.home_team,
-                    away_team = EXCLUDED.away_team,
-                    league = EXCLUDED.league,
-                    updated_at = CURRENT_TIMESTAMP;
-                """,
-                (
-                    telegram_user_id,
-                    normalized_match_id,
-                    analysis,
-                    Json(structured) if structured is not None else None,
-                    analysis_mode,
-                    refresh_count,
-                    home_team,
-                    away_team,
-                    league,
-                    increment_refresh_count,
-                ),
+            save_miniapp_ai_analysis_with_cursor(
+                cursor,
+                telegram_user_id,
+                normalized_match_id,
+                analysis,
+                structured,
+                analysis_mode,
+                home_team,
+                away_team,
+                league,
+                refresh_count,
+                increment_refresh_count,
             )
         connection.commit()
         return True
@@ -2911,6 +3208,272 @@ def save_miniapp_ai_analysis(
             exc_info=True,
         )
         return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def save_miniapp_ai_analysis_and_charge(
+    telegram_user_id: int,
+    match_id: str,
+    analysis: str,
+    structured: dict | None,
+    analysis_mode: str,
+    home_team: str,
+    away_team: str,
+    league: str,
+    source: str,
+) -> tuple[bool, dict | None, bool, str]:
+    database_url = get_database_url()
+    if not database_url:
+        return False, None, False, "database_unavailable"
+
+    normalized_match_id = normalize_ai_analysis_match_id(match_id)
+    if not normalized_match_id:
+        return False, None, False, "invalid_match_id"
+
+    logger.info(
+        "ai unlock atomic charge started: user_id=%s match_id=%s "
+        "analysis_mode=%s source=%s",
+        telegram_user_id,
+        normalized_match_id,
+        analysis_mode,
+        source,
+    )
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0));",
+                (
+                    "miniapp_ai_unlock:"
+                    f"{telegram_user_id}:{normalized_match_id}:{analysis_mode}",
+                ),
+            )
+            cursor.execute(
+                """
+                SELECT *
+                FROM subscriptions
+                WHERE telegram_user_id = %s
+                FOR UPDATE;
+                """,
+                (telegram_user_id,),
+            )
+            subscription = normalize_subscription_row(
+                cursor.fetchone(),
+                telegram_user_id,
+            )
+            cursor.execute(
+                """
+                SELECT id
+                FROM miniapp_match_ai_analyses
+                WHERE telegram_user_id = %s
+                  AND match_id = %s
+                  AND analysis_mode = %s
+                LIMIT 1;
+                """,
+                (telegram_user_id, normalized_match_id, analysis_mode),
+            )
+            if cursor.fetchone():
+                connection.rollback()
+                logger.info(
+                    "ai unlock atomic charge skipped already_unlocked: "
+                    "user_id=%s match_id=%s analysis_mode=%s source=%s",
+                    telegram_user_id,
+                    normalized_match_id,
+                    analysis_mode,
+                    source,
+                )
+                return True, subscription, False, "already_unlocked"
+
+            bonus_remaining = get_active_bonus_ai_credits(
+                telegram_user_id,
+                cursor,
+            )
+            premium_active = is_premium_active(subscription)
+            monthly_remaining = max(
+                0,
+                int(subscription.get("ai_limit_monthly") or 0)
+                - int(subscription.get("ai_used_monthly") or 0),
+            )
+            extra_remaining = int(subscription.get("extra_ai_credits") or 0)
+            if analysis_mode == "premium":
+                available_before = bonus_remaining + (
+                    monthly_remaining if premium_active else 0
+                )
+            else:
+                available_before = monthly_remaining + extra_remaining
+            if available_before <= 0:
+                error_code = (
+                    "premium_required"
+                    if analysis_mode == "premium" and not premium_active
+                    else "ai_limit_exceeded"
+                )
+                logger.info(
+                    "ai unlock atomic charge %s: user_id=%s match_id=%s "
+                    "analysis_mode=%s source=%s",
+                    error_code,
+                    telegram_user_id,
+                    normalized_match_id,
+                    analysis_mode,
+                    source,
+                )
+                connection.rollback()
+                logger.info(
+                    "ai unlock atomic charge rollback: user_id=%s match_id=%s "
+                    "analysis_mode=%s source=%s reason=limit_exceeded",
+                    telegram_user_id,
+                    normalized_match_id,
+                    analysis_mode,
+                    source,
+                )
+                return False, subscription, False, error_code
+
+            bonus_consumed = False
+            if analysis_mode == "premium" and bonus_remaining > 0:
+                bonus_consumed = consume_bonus_ai_credit(
+                    telegram_user_id,
+                    cursor,
+                )
+                if not bonus_consumed:
+                    connection.rollback()
+                    logger.info(
+                        "ai unlock atomic charge rollback: user_id=%s match_id=%s "
+                        "analysis_mode=%s source=%s reason=bonus_charge_failed",
+                        telegram_user_id,
+                        normalized_match_id,
+                        analysis_mode,
+                        source,
+                    )
+                    return False, subscription, False, "ai_limit_exceeded"
+                updated_subscription = subscription
+            elif analysis_mode == "premium" and not premium_active:
+                logger.info(
+                    "ai unlock atomic charge premium_required: user_id=%s "
+                    "match_id=%s analysis_mode=%s source=%s",
+                    telegram_user_id,
+                    normalized_match_id,
+                    analysis_mode,
+                    source,
+                )
+                connection.rollback()
+                logger.info(
+                    "ai unlock atomic charge rollback: user_id=%s match_id=%s "
+                    "analysis_mode=%s source=%s reason=premium_required",
+                    telegram_user_id,
+                    normalized_match_id,
+                    analysis_mode,
+                    source,
+                )
+                return False, subscription, False, "premium_required"
+            elif analysis_mode == "default" and extra_remaining > 0:
+                cursor.execute(
+                    """
+                    UPDATE subscriptions
+                    SET extra_ai_credits = GREATEST(extra_ai_credits - 1, 0),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE telegram_user_id = %s
+                    RETURNING *;
+                    """,
+                    (telegram_user_id,),
+                )
+                updated_subscription = normalize_subscription_row(
+                    cursor.fetchone(),
+                    telegram_user_id,
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE subscriptions
+                    SET ai_used_monthly = ai_used_monthly + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE telegram_user_id = %s
+                      AND ai_used_monthly < ai_limit_monthly
+                    RETURNING *;
+                    """,
+                    (telegram_user_id,),
+                )
+                updated_subscription = normalize_subscription_row(
+                    cursor.fetchone(),
+                    telegram_user_id,
+                )
+
+            bonus_after = get_active_bonus_ai_credits(telegram_user_id, cursor)
+            if analysis_mode == "premium":
+                monthly_after = max(
+                    0,
+                    int(updated_subscription.get("ai_limit_monthly") or 0)
+                    - int(updated_subscription.get("ai_used_monthly") or 0),
+                )
+                available_after = bonus_after + (
+                    monthly_after if premium_active else 0
+                )
+            else:
+                available_after = get_ai_available_count(updated_subscription)
+            if available_after >= available_before:
+                logger.info(
+                    "ai unlock atomic charge limit_exceeded: user_id=%s "
+                    "match_id=%s analysis_mode=%s source=%s",
+                    telegram_user_id,
+                    normalized_match_id,
+                    analysis_mode,
+                    source,
+                )
+                connection.rollback()
+                logger.info(
+                    "ai unlock atomic charge rollback: user_id=%s match_id=%s "
+                    "analysis_mode=%s source=%s reason=charge_failed",
+                    telegram_user_id,
+                    normalized_match_id,
+                    analysis_mode,
+                    source,
+                )
+                return False, subscription, False, "ai_limit_exceeded"
+
+            save_miniapp_ai_analysis_with_cursor(
+                cursor,
+                telegram_user_id,
+                normalized_match_id,
+                analysis,
+                structured,
+                analysis_mode,
+                home_team,
+                away_team,
+                league,
+                refresh_count=0,
+            )
+        connection.commit()
+        logger.info(
+            "ai unlock atomic charge success: user_id=%s match_id=%s "
+            "analysis_mode=%s source=%s",
+            telegram_user_id,
+            normalized_match_id,
+            analysis_mode,
+            source,
+        )
+        return True, updated_subscription, True, ""
+    except Exception:
+        if connection is not None:
+            connection.rollback()
+        logger.warning(
+            "ai unlock atomic charge save_failed: user_id=%s match_id=%s "
+            "analysis_mode=%s source=%s",
+            telegram_user_id,
+            normalized_match_id,
+            analysis_mode,
+            source,
+            exc_info=True,
+        )
+        logger.info(
+            "ai unlock atomic charge rollback: user_id=%s match_id=%s "
+            "analysis_mode=%s source=%s reason=exception",
+            telegram_user_id,
+            normalized_match_id,
+            analysis_mode,
+            source,
+        )
+        return False, None, False, "save_failed"
     finally:
         if connection is not None:
             connection.close()
@@ -17380,6 +17943,8 @@ def miniapp_subscription():
     telegram_user_id = int(telegram_user["id"])
     auth_mode = telegram_user.get("_auth_mode", "init_data")
     subscription = get_or_create_subscription(telegram_user_id)
+    bonus_info = get_active_bonus_ai_credit_info(telegram_user_id)
+    bonus_ai_remaining = int(bonus_info.get("bonus_ai_remaining") or 0)
     is_admin = is_admin_user(telegram_user_id)
 
     if is_admin:
@@ -17399,6 +17964,12 @@ def miniapp_subscription():
         "ai_used_monthly": int(subscription.get("ai_used_monthly") or 0),
         "ai_limit_monthly": int(subscription.get("ai_limit_monthly") or 0),
         "extra_ai_credits": int(subscription.get("extra_ai_credits") or 0),
+        "bonus_ai_remaining": bonus_ai_remaining,
+        "bonus_ai_expires_at": serialize_api_datetime(
+            bonus_info.get("bonus_ai_expires_at")
+        ),
+        "ai_remaining_total": get_ai_available_count(subscription)
+        + bonus_ai_remaining,
         "usage_period": (
             subscription.get("usage_period") or get_current_usage_period()
         ),
@@ -18005,7 +18576,14 @@ def miniapp_match_ai_analysis(match_id: str):
     subscription = (
         {} if is_admin else get_or_create_subscription(telegram_user_id)
     )
-    analysis_mode = get_ai_analysis_mode(is_admin, subscription)
+    bonus_ai_remaining = (
+        0 if is_admin else get_active_bonus_ai_credits(telegram_user_id)
+    )
+    analysis_mode = (
+        "premium"
+        if is_admin or is_premium_active(subscription) or bonus_ai_remaining > 0
+        else "default"
+    )
 
     if flask_request.method == "GET":
         logger.info(
@@ -18038,7 +18616,7 @@ def miniapp_match_ai_analysis(match_id: str):
                 {
                     "ok": False,
                     "error": "saved_analysis_unavailable",
-                    "message": "Сохранённый AI-разбор временно недоступен.",
+                    "message": "AI-разбор временно недоступен.",
                 }
             ), 503
 
@@ -18054,28 +18632,37 @@ def miniapp_match_ai_analysis(match_id: str):
             bool(saved_analysis),
         )
         if not saved_analysis:
-            global_analysis = get_global_miniapp_ai_analysis(
-                normalized_match_id,
-                analysis_mode,
-            )
             logger.info(
-                "global AI cache available on GET %s: raw_match_id=%s "
-                "normalized_match_id=%s analysis_mode=%s source=miniapp_get",
-                bool(global_analysis),
+                "ai unlock auto_load needs_unlock: user_id=%s match_id=%s "
+                "analysis_mode=%s",
+                telegram_user_id,
                 raw_match_id,
-                normalized_match_id,
                 analysis_mode,
             )
             return jsonify(
                 {
                     "ok": False,
-                    "error": "analysis_not_found",
-                    "message": "Сохранённый AI-разбор не найден.",
+                    "status": "needs_unlock",
+                    "error": "needs_unlock",
+                    "message": "AI-разбор ещё не открыт для этого матча.",
+                    "analysis_mode": analysis_mode,
+                    "unlocked": False,
+                    "charged": False,
                 }
-            ), 404
+            )
 
         remaining_ai = (
-            None if is_admin else get_ai_available_count(subscription)
+            None if is_admin else get_total_ai_available_count(
+                telegram_user_id,
+                subscription,
+            )
+        )
+        logger.info(
+            "ai unlock existing user unlock: user_id=%s match_id=%s "
+            "analysis_mode=%s",
+            telegram_user_id,
+            normalized_match_id,
+            analysis_mode,
         )
         return jsonify(
             build_miniapp_ai_saved_response(
@@ -18084,24 +18671,31 @@ def miniapp_match_ai_analysis(match_id: str):
                 remaining_ai,
                 is_admin,
                 from_personal_cache=True,
+                source="user_unlock",
             )
         )
 
     request_data = flask_request.get_json(silent=True) or {}
     force_refresh = request_data.get("force_refresh") is True
+    unlock_requested = request_data.get("unlock") is True
     logger.info(
         "AI generation started: user_id=%s raw_match_id=%s "
         "normalized_match_id=%s analysis_mode=%s force_refresh=%s "
+        "unlock=%s "
         "source=miniapp_post",
         telegram_user_id,
         raw_match_id,
         normalized_match_id,
         analysis_mode,
         force_refresh,
+        unlock_requested,
     )
 
     remaining_ai = (
-        None if is_admin else get_ai_available_count(subscription)
+        None if is_admin else get_total_ai_available_count(
+            telegram_user_id,
+            subscription,
+        )
     )
     try:
         saved_analysis, normalized_match_id = lookup_saved_miniapp_ai_analysis(
@@ -18123,7 +18717,7 @@ def miniapp_match_ai_analysis(match_id: str):
             {
                 "ok": False,
                 "error": "saved_analysis_unavailable",
-                "message": "Сохранённый AI-разбор временно недоступен.",
+                "message": "AI-разбор временно недоступен.",
             }
         ), 503
     logger.info(
@@ -18150,6 +18744,13 @@ def miniapp_match_ai_analysis(match_id: str):
             normalized_match_id,
             analysis_mode,
         )
+        logger.info(
+            "ai unlock skipped already_unlocked: user_id=%s match_id=%s "
+            "analysis_mode=%s",
+            telegram_user_id,
+            normalized_match_id,
+            analysis_mode,
+        )
         return jsonify(
             build_miniapp_ai_saved_response(
                 saved_analysis,
@@ -18157,6 +18758,7 @@ def miniapp_match_ai_analysis(match_id: str):
                 remaining_ai,
                 is_admin,
                 from_personal_cache=True,
+                source="user_unlock",
             )
         )
 
@@ -18210,6 +18812,52 @@ def miniapp_match_ai_analysis(match_id: str):
                 }
             ), 429
 
+    if not saved_analysis and not force_refresh and not unlock_requested:
+        logger.info(
+            "ai unlock auto_load needs_unlock: user_id=%s match_id=%s "
+            "analysis_mode=%s",
+            telegram_user_id,
+            normalized_match_id,
+            analysis_mode,
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "status": "needs_unlock",
+                "error": "needs_unlock",
+                "message": "AI-разбор ещё не открыт для этого матча.",
+                "analysis_mode": analysis_mode,
+                "unlocked": False,
+                "charged": False,
+            }
+        )
+
+    if (
+        analysis_mode == "premium"
+        and not saved_analysis
+        and not is_admin
+        and not is_premium_active(subscription)
+        and bonus_ai_remaining <= 0
+    ):
+        logger.info(
+            "ai unlock premium_required: user_id=%s match_id=%s "
+            "analysis_mode=%s",
+            telegram_user_id,
+            normalized_match_id,
+            analysis_mode,
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "status": "premium_required",
+                "error": "premium_required",
+                "message": "Premium AI-разбор доступен по подписке.",
+                "analysis_mode": analysis_mode,
+                "unlocked": False,
+                "charged": False,
+            }
+        ), 402
+
     if not saved_analysis:
         logger.info(
             "personal saved AI found false: user_id=%s match_id=%s "
@@ -18234,24 +18882,6 @@ def miniapp_match_ai_analysis(match_id: str):
             analysis_mode,
         )
         if global_analysis:
-            if is_admin:
-                allowed = True
-            else:
-                allowed, _, subscription = can_use_ai_analysis(
-                    telegram_user_id
-                )
-            if not allowed:
-                return jsonify(
-                    {
-                        "ok": False,
-                        "error": "ai_limit_exceeded",
-                        "message": (
-                            "AI-лимит закончился. Оформите подписку "
-                            "или докупите AI-разборы."
-                        ),
-                    }
-                ), 402
-
             logger.info(
                 "OpenAI generation required false: user_id=%s match_id=%s "
                 "analysis_mode=%s",
@@ -18259,18 +18889,82 @@ def miniapp_match_ai_analysis(match_id: str):
                 normalized_match_id,
                 analysis_mode,
             )
-            analysis_saved = save_miniapp_ai_analysis(
-                telegram_user_id,
-                normalized_match_id,
-                global_analysis.get("analysis") or "",
-                global_analysis.get("structured"),
-                analysis_mode,
-                global_analysis.get("home_team") or "",
-                global_analysis.get("away_team") or "",
-                global_analysis.get("league") or "",
-                refresh_count=0,
-            )
+            if is_admin:
+                analysis_saved = save_miniapp_ai_analysis(
+                    telegram_user_id,
+                    normalized_match_id,
+                    global_analysis.get("analysis") or "",
+                    global_analysis.get("structured"),
+                    analysis_mode,
+                    global_analysis.get("home_team") or "",
+                    global_analysis.get("away_team") or "",
+                    global_analysis.get("league") or "",
+                    refresh_count=0,
+                )
+                limit_charged = False
+                remaining_ai = None
+                save_error = "" if analysis_saved else "save_failed"
+            else:
+                (
+                    analysis_saved,
+                    updated_subscription,
+                    limit_charged,
+                    save_error,
+                ) = save_miniapp_ai_analysis_and_charge(
+                    telegram_user_id,
+                    normalized_match_id,
+                    global_analysis.get("analysis") or "",
+                    global_analysis.get("structured"),
+                    analysis_mode,
+                    global_analysis.get("home_team") or "",
+                    global_analysis.get("away_team") or "",
+                    global_analysis.get("league") or "",
+                    source="global_cache",
+                )
+                if updated_subscription is not None:
+                    remaining_ai = get_total_ai_available_count(
+                        telegram_user_id,
+                        updated_subscription,
+                    )
             if not analysis_saved:
+                if save_error == "premium_required":
+                    logger.info(
+                        "ai unlock premium_required: user_id=%s match_id=%s "
+                        "analysis_mode=%s from_global_cache=true",
+                        telegram_user_id,
+                        normalized_match_id,
+                        analysis_mode,
+                    )
+                    return jsonify(
+                        {
+                            "ok": False,
+                            "status": "premium_required",
+                            "error": "premium_required",
+                            "message": "Premium AI-разбор доступен по подписке.",
+                            "analysis_mode": analysis_mode,
+                            "unlocked": False,
+                            "charged": False,
+                        }
+                    ), 402
+                if save_error == "ai_limit_exceeded":
+                    logger.info(
+                        "ai unlock limit_exceeded: user_id=%s match_id=%s "
+                        "analysis_mode=%s from_global_cache=true",
+                        telegram_user_id,
+                        normalized_match_id,
+                        analysis_mode,
+                    )
+                    return jsonify(
+                        {
+                            "ok": False,
+                            "status": "ai_limit_exceeded",
+                            "error": "ai_limit_exceeded",
+                            "message": (
+                                "AI-лимит закончился. Оформите подписку "
+                                "или докупите AI-разборы."
+                            ),
+                        }
+                    ), 402
                 logger.warning(
                     "Global AI cache hit but personal save failed: "
                     "user_id=%s match_id=%s analysis_mode=%s",
@@ -18282,9 +18976,7 @@ def miniapp_match_ai_analysis(match_id: str):
                     {
                         "ok": False,
                         "error": "saved_analysis_unavailable",
-                        "message": (
-                            "Сохранённый AI-разбор временно недоступен."
-                        ),
+                        "message": "AI-разбор временно недоступен.",
                     }
                 ), 503
             verify_miniapp_ai_personal_save(
@@ -18292,13 +18984,6 @@ def miniapp_match_ai_analysis(match_id: str):
                 normalized_match_id,
                 analysis_mode,
             )
-
-            limit_charged = False
-            if not is_admin:
-                available_before = get_ai_available_count(subscription)
-                updated_subscription = increment_ai_usage(telegram_user_id)
-                remaining_ai = get_ai_available_count(updated_subscription)
-                limit_charged = remaining_ai < available_before
             logger.info(
                 "AI limit charged %s: user_id=%s match_id=%s "
                 "analysis_mode=%s from_global_cache=true",
@@ -18306,6 +18991,14 @@ def miniapp_match_ai_analysis(match_id: str):
                 telegram_user_id,
                 normalized_match_id,
                 analysis_mode,
+            )
+            logger.info(
+                "ai unlock charged from global_cache: user_id=%s match_id=%s "
+                "analysis_mode=%s charged=%s",
+                telegram_user_id,
+                normalized_match_id,
+                analysis_mode,
+                limit_charged,
             )
             logger.info(
                 "personal AI saved/linked: user_id=%s match_id=%s "
@@ -18343,6 +19036,7 @@ def miniapp_match_ai_analysis(match_id: str):
                     is_admin,
                     limit_charged=limit_charged,
                     from_global_cache=True,
+                    source="global_cache",
                 )
             )
 
@@ -18375,13 +19069,51 @@ def miniapp_match_ai_analysis(match_id: str):
         )
     elif is_admin:
         allowed = True
+    elif analysis_mode == "premium":
+        bonus_ai_remaining = get_active_bonus_ai_credits(telegram_user_id)
+        monthly_remaining = max(
+            0,
+            int(subscription.get("ai_limit_monthly") or 0)
+            - int(subscription.get("ai_used_monthly") or 0),
+        )
+        if bonus_ai_remaining > 0:
+            allowed = True
+        elif not is_premium_active(subscription):
+            logger.info(
+                "ai unlock premium_required: user_id=%s match_id=%s "
+                "analysis_mode=%s from_openai_precheck=true",
+                telegram_user_id,
+                normalized_match_id,
+                analysis_mode,
+            )
+            return jsonify(
+                {
+                    "ok": False,
+                    "status": "premium_required",
+                    "error": "premium_required",
+                    "message": "Premium AI-разбор доступен по подписке.",
+                    "analysis_mode": analysis_mode,
+                    "unlocked": False,
+                    "charged": False,
+                }
+            ), 402
+        else:
+            allowed = monthly_remaining > 0
     else:
         allowed, _, subscription = can_use_ai_analysis(telegram_user_id)
 
     if not allowed:
+        logger.info(
+            "ai unlock limit_exceeded: user_id=%s match_id=%s "
+            "analysis_mode=%s from_openai=true",
+            telegram_user_id,
+            normalized_match_id,
+            analysis_mode,
+        )
         return jsonify(
             {
                 "ok": False,
+                "status": "ai_limit_exceeded",
                 "error": "ai_limit_exceeded",
                 "message": (
                     "AI-лимит закончился. Оформите подписку "
@@ -18470,18 +19202,48 @@ def miniapp_match_ai_analysis(match_id: str):
         saved_match_id,
         analysis_mode,
     )
-    analysis_saved = save_miniapp_ai_analysis(
-        telegram_user_id,
-        saved_match_id,
-        analysis,
-        structured,
-        analysis_mode,
-        match.get("home") or "",
-        match.get("away") or "",
-        match.get("league") or "",
-        refresh_count=int((saved_analysis or {}).get("refresh_count") or 0),
-        increment_refresh_count=bool(force_refresh and saved_analysis and not is_admin),
+    first_unlock_requires_charge = not is_admin and not (
+        force_refresh and saved_analysis
     )
+    if first_unlock_requires_charge:
+        (
+            analysis_saved,
+            updated_subscription,
+            limit_charged,
+            save_error,
+        ) = save_miniapp_ai_analysis_and_charge(
+            telegram_user_id,
+            saved_match_id,
+            analysis,
+            structured,
+            analysis_mode,
+            match.get("home") or "",
+            match.get("away") or "",
+            match.get("league") or "",
+            source="openai",
+        )
+        if updated_subscription is not None:
+            remaining_ai = get_total_ai_available_count(
+                telegram_user_id,
+                updated_subscription,
+            )
+    else:
+        analysis_saved = save_miniapp_ai_analysis(
+            telegram_user_id,
+            saved_match_id,
+            analysis,
+            structured,
+            analysis_mode,
+            match.get("home") or "",
+            match.get("away") or "",
+            match.get("league") or "",
+            refresh_count=int((saved_analysis or {}).get("refresh_count") or 0),
+            increment_refresh_count=bool(
+                force_refresh and saved_analysis and not is_admin
+            ),
+        )
+        limit_charged = False
+        save_error = "" if analysis_saved else "save_failed"
     personal_save_verified = verify_miniapp_ai_personal_save(
         telegram_user_id,
         saved_match_id,
@@ -18509,6 +19271,44 @@ def miniapp_match_ai_analysis(match_id: str):
         global_save_verified,
     )
     if not analysis_saved:
+        if save_error == "premium_required":
+            logger.info(
+                "ai unlock premium_required: user_id=%s match_id=%s "
+                "analysis_mode=%s from_openai=true",
+                telegram_user_id,
+                saved_match_id,
+                analysis_mode,
+            )
+            return jsonify(
+                {
+                    "ok": False,
+                    "status": "premium_required",
+                    "error": "premium_required",
+                    "message": "Premium AI-разбор доступен по подписке.",
+                    "analysis_mode": analysis_mode,
+                    "unlocked": False,
+                    "charged": False,
+                }
+            ), 402
+        if save_error == "ai_limit_exceeded":
+            logger.info(
+                "ai unlock limit_exceeded: user_id=%s match_id=%s "
+                "analysis_mode=%s from_openai=true",
+                telegram_user_id,
+                saved_match_id,
+                analysis_mode,
+            )
+            return jsonify(
+                {
+                    "ok": False,
+                    "status": "ai_limit_exceeded",
+                    "error": "ai_limit_exceeded",
+                    "message": (
+                        "AI-лимит закончился. Оформите подписку "
+                        "или докупите AI-разборы."
+                    ),
+                }
+            ), 402
         logger.warning(
             "AI analysis generated but personal save failed before charge: "
             "user_id=%s saved_match_id=%s analysis_mode=%s verified=%s",
@@ -18521,17 +19321,11 @@ def miniapp_match_ai_analysis(match_id: str):
             {
                 "ok": False,
                 "error": "saved_analysis_unavailable",
-                "message": "Сохранённый AI-разбор временно недоступен.",
+                "message": "AI-разбор временно недоступен.",
             }
         ), 503
 
-    limit_charged = False
-    if not is_admin and not (force_refresh and saved_analysis):
-        available_before = get_ai_available_count(subscription)
-        updated_subscription = increment_ai_usage(telegram_user_id)
-        remaining_ai = get_ai_available_count(updated_subscription)
-        limit_charged = remaining_ai < available_before
-    elif is_admin:
+    if is_admin:
         remaining_ai = None
     logger.info(
         "AI limit charged %s: user_id=%s match_id=%s analysis_mode=%s",
@@ -18540,6 +19334,14 @@ def miniapp_match_ai_analysis(match_id: str):
         saved_match_id,
         analysis_mode,
     )
+    if limit_charged:
+        logger.info(
+            "ai unlock charged from openai: user_id=%s match_id=%s "
+            "analysis_mode=%s",
+            telegram_user_id,
+            saved_match_id,
+            analysis_mode,
+        )
     if force_refresh and analysis_saved and not is_admin:
         logger.info(
             "AI refresh count incremented: user_id=%s match_id=%s "
@@ -18595,6 +19397,9 @@ def miniapp_match_ai_analysis(match_id: str):
             "away": match.get("away") or "",
             "analysis": analysis,
             "limit_charged": limit_charged,
+            "charged": limit_charged,
+            "unlocked": True,
+            "source": "openai",
             "remaining_ai": remaining_ai,
             "is_admin": is_admin,
             "analysis_mode": analysis_mode,

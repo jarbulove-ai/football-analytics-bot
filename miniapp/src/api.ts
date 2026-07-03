@@ -326,6 +326,7 @@ export async function requestMatchAiAnalysis(
   matchId: string,
   telegramUserId: number,
   forceRefresh = false,
+  unlock = true,
 ): Promise<MatchAiAnalysisResponse> {
   const response = await fetch(
     `${API_BASE_URL}/api/matches/${encodeURIComponent(matchId)}/ai`,
@@ -339,6 +340,7 @@ export async function requestMatchAiAnalysis(
       body: JSON.stringify({
         telegram_user_id: telegramUserId,
         force_refresh: forceRefresh,
+        unlock,
       }),
     },
   );
@@ -366,7 +368,7 @@ export async function getSavedMatchAiAnalysis(
   try {
     const response = await fetch(
       `${API_BASE_URL}/api/matches/${encodeURIComponent(matchId)}/ai` +
-        `?telegram_user_id=${telegramUserId}`,
+        `?telegram_user_id=${telegramUserId}&unlock=false`,
       {
         headers: {
           Accept: "application/json",
@@ -382,7 +384,7 @@ export async function getSavedMatchAiAnalysis(
       throw new MatchAiAnalysisError(
         response.status,
         errorData.error || "unknown_error",
-        errorData.message || "Сохранённый AI-разбор временно недоступен.",
+        errorData.message || "AI-разбор временно недоступен.",
       );
     }
 

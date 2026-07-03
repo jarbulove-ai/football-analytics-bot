@@ -58,7 +58,7 @@ import type {
   FavoriteTeamItem,
   MatchAbsencePlayer,
   MatchAiAnalysisSignal,
-  MatchAiAnalysisResponse,
+  MatchAiAnalysisSuccessResponse,
   MatchAiStructuredAnalysis,
   MatchContextMatch,
   MatchContextResponse,
@@ -4019,7 +4019,7 @@ function MatchDetails({
   const matchStatus = formatMatchStatus(match.status, hasScore);
   const telegramIdentity = useMemo(getTelegramUserIdentity, []);
   const [aiAnalysis, setAiAnalysis] =
-    useState<MatchAiAnalysisResponse | null>(null);
+    useState<MatchAiAnalysisSuccessResponse | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
   const [savedAiLoading, setSavedAiLoading] = useState(false);
@@ -4097,6 +4097,12 @@ function MatchDetails({
     getSavedMatchAiAnalysis(requestedMatchId, telegramIdentity.id)
       .then((response) => {
         if (savedAiRequestMatchIdRef.current === requestedMatchId) {
+          if (!response.ok) {
+            setAiAnalysis(null);
+            setAiError("");
+            setSavedAiLoadFailed(false);
+            return;
+          }
           setAiError("");
           setSavedAiLoadFailed(false);
           setAiAnalysis(response);
@@ -4112,7 +4118,7 @@ function MatchDetails({
         ) {
           setSavedAiLoadFailed(true);
           setAiError(
-            "Не удалось загрузить сохранённый AI-разбор. Можно повторить или сделать новый разбор.",
+            "Не удалось загрузить AI-разбор. Можно повторить или сделать новый разбор.",
           );
         }
       })
@@ -4194,12 +4200,38 @@ function MatchDetails({
         match.id,
         telegramIdentity.id,
         forceRefresh,
+        true,
       );
+      if (!response.ok) {
+        if (response.status === "needs_unlock") {
+          setAiAnalysis(null);
+          setAiError("");
+        } else if (response.status === "premium_required") {
+          setAiError("Premium AI-разбор доступен по подписке.");
+        } else if (response.status === "ai_limit_exceeded") {
+          void trackMiniappEvent(
+            telegramIdentity.id,
+            "miniapp_ai_limit_reached",
+            {
+              match_id: match.id,
+              source: "miniapp",
+            },
+          );
+          setAiError(
+            "AI-лимит закончился. Можно оформить подписку или докупить AI-разборы.",
+          );
+        } else {
+          setAiError("Не удалось получить AI-разбор. Попробуйте позже.");
+        }
+        return;
+      }
       setAiAnalysis(response);
       void trackMiniappEvent(telegramIdentity.id, "miniapp_ai_success", {
         match_id: match.id,
         analysis_mode: response.analysis_mode,
         limit_charged: response.limit_charged,
+        charged: response.charged,
+        source: response.source,
         from_personal_cache: response.from_personal_cache,
         from_global_cache: response.from_global_cache,
       });
@@ -4217,6 +4249,8 @@ function MatchDetails({
           setAiError(
             "AI-лимит закончился. Можно оформить подписку или докупить AI-разборы.",
           );
+        } else if (error.code === "premium_required") {
+          setAiError("Premium AI-разбор доступен по подписке.");
         } else if (error.status === 404 || error.code === "match_not_found") {
           setAiError("Матч не найден или уже недоступен.");
         } else if (
@@ -4625,11 +4659,6 @@ function MatchDetails({
                       : "Краткая версия: общий сценарий, основные аргументы и риски."}
                   </p>
                 </div>
-                {aiAnalysis.cached && (
-                  <span className="text-[10px] font-semibold text-slate-500">
-                    Сохранённый AI-разбор
-                  </span>
-                )}
               </div>
               {aiAnalysis.updated_at && (
                 <p className="mb-3 text-[11px] text-slate-500">
@@ -4738,7 +4767,7 @@ function MatchDetails({
           {savedAiLoading && !aiAnalysis && (
             <div className="mt-5 flex items-center justify-center gap-2 rounded-lg border border-line bg-panel px-4 py-5 text-sm text-slate-400">
               <LoaderCircle className="h-4 w-4 animate-spin" />
-              Загружаю сохранённый AI-разбор…
+              Загружаю AI-разбор…
             </div>
           )}
 
@@ -5595,7 +5624,11 @@ function ReferralPremiumCard({
   const [copyStatus, setCopyStatus] = useState("");
   const invitedCount = status?.invited_count ?? 0;
   const targetCount = status?.target_count ?? 3;
-  const rewardDays = status?.reward_days ?? 7;
+  const rewardValue = status?.reward_value ?? 25;
+  const bonusRemaining = status?.bonus_ai_remaining ?? 0;
+  const bonusExpiresAt = status?.bonus_ai_expires_at
+    ? formatPremiumUntil(status.bonus_ai_expires_at)
+    : "";
   const progressPercent = Math.min(
     100,
     Math.round((invitedCount / Math.max(targetCount, 1)) * 100),
@@ -5640,7 +5673,9 @@ function ReferralPremiumCard({
             🎁 Получить Premium бесплатно
           </h2>
           <p className="mt-1 text-sm leading-6 text-slate-300">
-            Пригласи 3 друзей и получи {rewardDays} дней Premium.
+            Пригласи 3 друзей и получи {rewardValue} Premium AI-разборов.
+            <br />
+            Бонус действует 30 дней.
           </p>
         </div>
       </div>
@@ -5662,12 +5697,23 @@ function ReferralPremiumCard({
         </div>
         {!loading && status?.reward_granted && (
           <p className="mt-3 text-xs leading-5 text-lime">
-            Награда активирована: {rewardDays} дней Premium добавлены.
+            Награда активирована: {rewardValue} Premium AI-разборов добавлены.
+          </p>
+        )}
+        {!loading && bonusRemaining > 0 && (
+          <p className="mt-2 text-xs leading-5 text-slate-300">
+            Доступно бонусных AI-разборов: {bonusRemaining}
+            {bonusExpiresAt ? (
+              <>
+                <br />
+                Бонус действует до {bonusExpiresAt}.
+              </>
+            ) : null}
           </p>
         )}
         {!loading && status?.is_premium && !status.reward_granted && (
           <p className="mt-3 text-xs leading-5 text-slate-400">
-            Приглашай друзей — Premium продлится ещё на {rewardDays} дней.
+            Приглашай друзей — получишь ещё {rewardValue} Premium AI-разборов.
           </p>
         )}
       </div>
@@ -5769,10 +5815,13 @@ function SubscriptionScreen() {
   }, [telegramIdentity.id]);
 
   const remainingAi = subscription
-    ? Math.max(
-        subscription.ai_limit_monthly - subscription.ai_used_monthly,
-        0,
-      ) + subscription.extra_ai_credits
+    ? subscription.ai_remaining_total ??
+      Math.max(
+          subscription.ai_limit_monthly - subscription.ai_used_monthly,
+          0,
+        ) +
+        subscription.extra_ai_credits +
+        (subscription.bonus_ai_remaining ?? 0)
     : null;
   const premiumUntil = formatPremiumUntil(
     subscription?.premium_until || null,
@@ -6496,7 +6545,9 @@ export default function App() {
     [matchReminders],
   );
   const premiumAiEnabled = Boolean(
-    subscriptionStatus?.is_admin || subscriptionStatus?.plan === "premium",
+    subscriptionStatus?.is_admin ||
+      subscriptionStatus?.plan === "premium" ||
+      (subscriptionStatus?.bonus_ai_remaining ?? 0) > 0,
   );
 
   function trackEvent(

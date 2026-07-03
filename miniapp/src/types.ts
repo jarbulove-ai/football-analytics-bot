@@ -201,13 +201,16 @@ export interface MatchContextResponse {
   upcoming: MatchContextMatch[];
 }
 
-export interface MatchAiAnalysisResponse {
+export interface MatchAiAnalysisSuccessResponse {
   ok: true;
   match_id: string;
   home: string;
   away: string;
   analysis: string;
   limit_charged: boolean;
+  charged?: boolean;
+  unlocked?: boolean;
+  source?: "user_unlock" | "global_cache" | "openai" | string;
   remaining_ai: number | null;
   is_admin: boolean;
   analysis_mode?: "default" | "premium";
@@ -222,6 +225,24 @@ export interface MatchAiAnalysisResponse {
   created_at?: string | null;
   updated_at?: string | null;
 }
+
+export interface MatchAiAnalysisLockedResponse {
+  ok: false;
+  status:
+    | "needs_unlock"
+    | "premium_required"
+    | "ai_limit_exceeded"
+    | string;
+  error?: string;
+  message?: string;
+  analysis_mode?: "default" | "premium";
+  unlocked?: false;
+  charged?: false;
+}
+
+export type MatchAiAnalysisResponse =
+  | MatchAiAnalysisSuccessResponse
+  | MatchAiAnalysisLockedResponse;
 
 export interface MatchAiAnalysisSignal {
   label: string;
@@ -356,6 +377,9 @@ export interface SubscriptionData {
   ai_used_monthly: number;
   ai_limit_monthly: number;
   extra_ai_credits: number;
+  bonus_ai_remaining?: number;
+  bonus_ai_expires_at?: string | null;
+  ai_remaining_total?: number;
   usage_period: string;
   is_admin: boolean;
   auth_mode: string;
@@ -368,9 +392,11 @@ export interface ReferralStatus {
   referral_link: string;
   invited_count: number;
   target_count: number;
-  reward_days: number;
+  reward_value: number;
   reward_type: string;
   reward_granted: boolean;
+  bonus_ai_remaining?: number;
+  bonus_ai_expires_at?: string | null;
   is_premium: boolean;
   premium_until: string | null;
   error?: string;
