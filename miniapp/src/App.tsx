@@ -4660,17 +4660,6 @@ function MatchDetails({
                   </p>
                 </div>
               </div>
-              {aiAnalysis.updated_at && (
-                <p className="mb-3 text-[11px] text-slate-500">
-                  Обновлено:{" "}
-                  {new Date(aiAnalysis.updated_at).toLocaleString("ru-RU", {
-                    day: "numeric",
-                    month: "long",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </p>
-              )}
               {aiAnalysis.structured ? (
                 <AiStructuredAnalysis
                   analysis={aiAnalysis.structured}
