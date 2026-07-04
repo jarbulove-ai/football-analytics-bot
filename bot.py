@@ -62,6 +62,10 @@ OPENAI_AI_REASONING_EFFORT_PREMIUM = os.getenv(
 ).strip()
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
 MATCHLAB_CHANNEL_ID = os.getenv("MATCHLAB_CHANNEL_ID", "").strip()
+MATCHLAB_CHANNEL_URL = os.getenv(
+    "MATCHLAB_CHANNEL_URL",
+    "https://t.me/matchlab_ai",
+).strip()
 MATCHDAY_COVER_TEMPLATE_PATH = os.getenv(
     "MATCHDAY_COVER_TEMPLATE_PATH",
     "assets/matchday_cover_bg.png",
@@ -1329,6 +1333,14 @@ async def stats_command(
         "payment_plan_selected": "Тариф выбрали",
         "payment_started": "К оплате перешли",
     }
+    bot_event_types = {
+        "bot_start_opened": "/start открыли",
+        "bot_app_clicked": "Mini App нажали",
+        "bot_daily_matches_clicked": "Матчи дня нажали",
+        "bot_premium_clicked": "Premium нажали",
+        "bot_free_clicked": "Бесплатно нажали",
+        "bot_channel_clicked": "Канал нажали",
+    }
 
     connection = None
 
@@ -1383,6 +1395,19 @@ async def stats_command(
                     (event_type, today_start),
                 )
                 miniapp_event_counts[event_type] = cursor.fetchone()["value"]
+
+            bot_event_counts = {}
+            for event_type in bot_event_types:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS value
+                    FROM user_events
+                    WHERE event_type = %s
+                    AND created_at >= %s;
+                    """,
+                    (event_type, today_start),
+                )
+                bot_event_counts[event_type] = cursor.fetchone()["value"]
     except Exception:
         logger.exception("Failed to load admin stats")
         await update.message.reply_text("Статистика временно недоступна.")
@@ -1408,6 +1433,11 @@ async def stats_command(
     lines.extend(
         f"• {label}: {miniapp_event_counts[event_type]}"
         for event_type, label in miniapp_event_types.items()
+    )
+    lines.extend(["", "Telegram bot сегодня:"])
+    lines.extend(
+        f"• {label}: {bot_event_counts[event_type]}"
+        for event_type, label in bot_event_types.items()
     )
 
     await update.message.reply_text("\n".join(lines))
@@ -8976,7 +9006,13 @@ async def miniapp_match_reminders_loop(bot) -> None:
 async def start_miniapp_match_reminders_loop(application: Application) -> None:
     try:
         await application.bot.set_my_commands(
-            [BotCommand("start", "Открыть MatchLab")]
+            [
+                BotCommand("start", "начать"),
+                BotCommand("app", "открыть Mini App"),
+                BotCommand("premium", "Premium"),
+                BotCommand("free", "бесплатно"),
+                BotCommand("help", "помощь"),
+            ]
         )
     except Exception:
         logger.warning("Failed to update Telegram bot commands", exc_info=True)
@@ -9072,6 +9108,75 @@ def build_main_menu_markup() -> ReplyKeyboardRemove:
     return ReplyKeyboardRemove()
 
 
+def build_miniapp_web_app_button(text: str, params: dict | None = None):
+    if not WEBAPP_URL:
+        return None
+
+    return InlineKeyboardButton(
+        text,
+        web_app=WebAppInfo(url=build_miniapp_url(params)),
+    )
+
+
+def build_bot_onboarding_markup() -> InlineKeyboardMarkup | None:
+    keyboard = []
+    miniapp_button = build_miniapp_web_app_button("🚀 Открыть MatchLab")
+    daily_button = build_miniapp_web_app_button(
+        "🔥 Матчи дня",
+        {
+            "screen": "matches",
+            "mode": "daily_focus",
+            "match_type": "top",
+            "source": "telegram_bot",
+        },
+    )
+    premium_button = build_miniapp_web_app_button(
+        "👑 Premium",
+        {"screen": "subscription", "source": "telegram_bot"},
+    )
+    free_button = build_miniapp_web_app_button(
+        "🎁 Получить AI-разборы бесплатно",
+        {
+            "screen": "matches",
+            "mode": "daily_focus",
+            "match_type": "top",
+            "source": "telegram_bot",
+        },
+    )
+
+    if miniapp_button:
+        keyboard.append([miniapp_button])
+    if daily_button:
+        keyboard.append([daily_button])
+    if premium_button:
+        keyboard.append([premium_button])
+    if free_button:
+        keyboard.append([free_button])
+    if MATCHLAB_CHANNEL_URL:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "📢 Канал MatchLab",
+                    url=MATCHLAB_CHANNEL_URL,
+                )
+            ]
+        )
+
+    if not keyboard:
+        return None
+    return InlineKeyboardMarkup(keyboard)
+
+
+def build_single_miniapp_markup(
+    text: str = "🚀 Открыть MatchLab",
+    params: dict | None = None,
+) -> InlineKeyboardMarkup | None:
+    button = build_miniapp_web_app_button(text, params)
+    if not button:
+        return None
+    return InlineKeyboardMarkup([[button]])
+
+
 def build_miniapp_url(params: dict | None = None) -> str:
     if not WEBAPP_URL:
         return ""
@@ -9152,27 +9257,130 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if message.text and message.text.startswith("/start"):
         track_user_action(update, "start")
+        track_user_action(update, "bot_start_opened")
 
-    sent_message = await message.reply_text(
-        "👋 Добро пожаловать в MatchLab\n\n"
-        "Вся аналитика, матчи, турниры, команды, избранное, "
-        "уведомления и AI-разбор теперь в Mini App.\n\n"
-        "Открой MatchLab 👇",
+    await message.reply_text(
+        "⚽ MatchLab — AI-разбор футбольных матчей\n\n"
+        "Здесь можно:\n"
+        "• открыть матчи дня\n"
+        "• посмотреть сценарии игры\n"
+        "• включить напоминания\n"
+        "• получить Premium AI-разбор\n"
+        "• следить за итогами в канале\n\n"
+        "Бесплатно:\n"
+        "• матчи дня\n"
+        "• базовые AI-разборы\n"
+        "• избранные команды\n"
+        "• напоминания\n"
+        "• краткий сценарий матча\n\n"
+        "Premium открывает глубокие AI-разборы: вероятности, сценарии игры, "
+        "расширенные сигналы и риски.\n\n"
+        "Нажми кнопку ниже, чтобы открыть Mini App 👇",
         reply_markup=build_main_menu_markup(),
     )
-    miniapp_markup = build_miniapp_inline_keyboard()
-    if miniapp_markup:
-        try:
-            await sent_message.edit_reply_markup(reply_markup=miniapp_markup)
-        except Exception:
-            logger.warning(
-                "Failed to attach Mini App button to start message",
-                exc_info=True,
-            )
-            await message.reply_text(
-                "Открыть MatchLab 👇",
-                reply_markup=miniapp_markup,
-            )
+    onboarding_markup = build_bot_onboarding_markup()
+    if onboarding_markup:
+        await message.reply_text("Выбери действие:", reply_markup=onboarding_markup)
+
+
+async def app_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    message = update.effective_message
+    if not message:
+        return
+
+    track_user_action(update, "bot_app_clicked")
+    await message.reply_text(
+        "🚀 Открой MatchLab Mini App\n\n"
+        "Там собраны:\n"
+        "• матчи дня\n"
+        "• AI-разборы\n"
+        "• избранные команды\n"
+        "• напоминания\n"
+        "• Premium\n\n"
+        "Нажми кнопку ниже 👇",
+        reply_markup=build_single_miniapp_markup("🚀 Открыть MatchLab"),
+    )
+
+
+async def premium_info_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    message = update.effective_message
+    if not message:
+        return
+
+    track_user_action(update, "bot_premium_clicked")
+    await message.reply_text(
+        "👑 Premium MatchLab\n\n"
+        "Premium открывает глубокие AI-разборы матчей:\n"
+        "• вероятности и сценарии игры\n"
+        "• форма команд и турнирный контекст\n"
+        "• составы, потери и статистические сигналы\n"
+        "• риски и важные детали матча\n"
+        "• больше AI-разборов на период\n\n"
+        "Открыть Premium можно в Mini App 👇",
+        reply_markup=build_single_miniapp_markup(
+            "👑 Открыть Premium",
+            {"screen": "subscription", "source": "telegram_bot"},
+        ),
+    )
+
+
+async def free_info_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    message = update.effective_message
+    if not message:
+        return
+
+    track_user_action(update, "bot_free_clicked")
+    await message.reply_text(
+        "🎁 Бесплатные AI-разборы\n\n"
+        "В MatchLab можно бесплатно открыть базовые AI-разборы и посмотреть "
+        "матчи дня.\n\n"
+        "Бесплатно доступно:\n"
+        "• матчи дня\n"
+        "• базовый AI-разбор\n"
+        "• краткий сценарий матча\n"
+        "• основные аргументы\n"
+        "• главный риск\n\n"
+        "Для глубокого разбора есть Premium.",
+        reply_markup=build_single_miniapp_markup(
+            "🚀 Открыть MatchLab",
+            {
+                "screen": "matches",
+                "mode": "daily_focus",
+                "match_type": "top",
+                "source": "telegram_bot",
+            },
+        ),
+    )
+
+
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    message = update.effective_message
+    if not message:
+        return
+
+    await message.reply_text(
+        "Помощь MatchLab\n\n"
+        "Что можно сделать:\n"
+        "• /app — открыть Mini App\n"
+        "• /premium — узнать про Premium\n"
+        "• /free — что доступно бесплатно\n"
+        "• /start — главное меню\n\n"
+        "Mini App — главный экран MatchLab: матчи дня, AI-разборы, "
+        "избранное и напоминания.",
+        reply_markup=build_single_miniapp_markup("🚀 Открыть MatchLab"),
+    )
 
 
 async def open_miniapp_redirect(
@@ -9182,6 +9390,14 @@ async def open_miniapp_redirect(
     message = update.effective_message
     if not message:
         return
+
+    command = ""
+    if message.text:
+        command = message.text.split(maxsplit=1)[0].lstrip("/").split("@", 1)[0]
+    if command in {"today", "top"}:
+        track_user_action(update, "bot_daily_matches_clicked", {"command": command})
+    elif command in {"matches", "tomorrow", "testdb", "profile"}:
+        track_user_action(update, "bot_app_clicked", {"command": command})
 
     sent_message = await message.reply_text(
         "Открой MatchLab — теперь всё внутри Mini App 👇",
@@ -19588,6 +19804,12 @@ def main() -> None:
     #application.bot_data["football_api_key"] = football_api_key
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("app", app_command))
+    application.add_handler(CommandHandler("miniapp", app_command))
+    application.add_handler(CommandHandler("premium", premium_info_command))
+    application.add_handler(CommandHandler("free", free_info_command))
+    application.add_handler(CommandHandler("bonus", free_info_command))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(
         CommandHandler(
             [
@@ -19597,7 +19819,6 @@ def main() -> None:
                 "testdb",
                 "matches",
                 "profile",
-                "help",
             ],
             open_miniapp_redirect,
         )

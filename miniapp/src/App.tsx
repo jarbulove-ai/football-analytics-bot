@@ -6364,7 +6364,46 @@ function getInitialScreenFromUrl(): Screen {
     window.location.search,
   ).get("screen");
 
-  return requestedScreen === "profile" ? "profile" : "home";
+  if (
+    requestedScreen === "profile" ||
+    requestedScreen === "subscription" ||
+    requestedScreen === "matches"
+  ) {
+    return requestedScreen;
+  }
+  return "home";
+}
+
+function getInitialMatchTypeFromUrl(): MatchListType {
+  const requestedMatchType = new URLSearchParams(
+    window.location.search,
+  ).get("match_type");
+
+  if (
+    requestedMatchType === "today" ||
+    requestedMatchType === "tomorrow" ||
+    requestedMatchType === "live" ||
+    requestedMatchType === "top"
+  ) {
+    return requestedMatchType;
+  }
+  return "top";
+}
+
+function shouldOpenDailyFocusFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  return (
+    params.get("screen") === "matches" &&
+    params.get("mode") === "daily_focus"
+  );
+}
+
+function getInitialOpenSourceFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("source") === "telegram_bot") {
+    return "telegram_bot";
+  }
+  return "unknown";
 }
 
 function getInitialMatchIdFromUrl() {
@@ -6378,7 +6417,12 @@ function shouldShowInitialOnboarding() {
   const matchId = params.get("match_id")?.trim() || "";
   const requestedScreen = params.get("screen");
 
-  if (matchId || requestedScreen === "profile") {
+  if (
+    matchId ||
+    requestedScreen === "profile" ||
+    requestedScreen === "subscription" ||
+    requestedScreen === "matches"
+  ) {
     return false;
   }
 
@@ -6492,9 +6536,14 @@ export default function App() {
   const telegramIdentity = useMemo(getTelegramUserIdentity, []);
   const telegramStartParam = useMemo(getTelegramStartParam, []);
   const initialMatchId = useMemo(getInitialMatchIdFromUrl, []);
+  const initialOpenSource = useMemo(getInitialOpenSourceFromUrl, []);
   const [screen, setScreen] = useState<Screen>(getInitialScreenFromUrl);
-  const [matchType, setMatchType] = useState<MatchListType>("top");
-  const [dailyFocusMode, setDailyFocusMode] = useState(false);
+  const [matchType, setMatchType] = useState<MatchListType>(
+    getInitialMatchTypeFromUrl,
+  );
+  const [dailyFocusMode, setDailyFocusMode] = useState(
+    shouldOpenDailyFocusFromUrl,
+  );
   const [selectedMatch, setSelectedMatch] = useState<MatchItem | null>(null);
   const [selectedMatchInitialTab, setSelectedMatchInitialTab] =
     useState<MatchDetailTab>("details");
@@ -6527,6 +6576,7 @@ export default function App() {
   const [onboardingVisible, setOnboardingVisible] = useState(
     shouldShowInitialOnboarding,
   );
+  const initialDeepLinkTrackedRef = useRef(false);
   const reminderMatchIds = useMemo(
     () => new Set(matchReminders.map((reminder) => reminder.match_id)),
     [matchReminders],
@@ -6557,10 +6607,27 @@ export default function App() {
     void trackMiniappEvent(
       telegramIdentity.id,
       "miniapp_opened",
-      {},
+      initialOpenSource === "telegram_bot"
+        ? { source: "telegram_bot" }
+        : {},
       { startParam: telegramStartParam || undefined },
     );
-  }, [telegramIdentity.id, telegramStartParam]);
+  }, [initialOpenSource, telegramIdentity.id, telegramStartParam]);
+
+  useEffect(() => {
+    if (initialDeepLinkTrackedRef.current) return;
+    if (initialOpenSource !== "telegram_bot") return;
+
+    if (dailyFocusMode && screen === "matches") {
+      trackEvent("daily_focus_opened", { source: "telegram_bot" });
+      initialDeepLinkTrackedRef.current = true;
+      return;
+    }
+    if (screen === "subscription") {
+      trackEvent("subscription_opened", { source: "telegram_bot" });
+      initialDeepLinkTrackedRef.current = true;
+    }
+  }, [dailyFocusMode, initialOpenSource, screen]);
 
   useEffect(() => {
     if (!onboardingVisible) return;
