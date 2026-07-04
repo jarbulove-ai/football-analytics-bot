@@ -6048,12 +6048,8 @@ function SubscriptionScreen() {
           </div>
         </div>
         <p className="mt-4 text-sm leading-6 text-slate-300">
-          Полные AI-разборы матчей: форма, мотивация, риски, сценарии игры,
-          вероятности и расширенный контекст.
-        </p>
-        <p className="mt-2 text-sm leading-6 text-slate-400">
-          Для тех, кто следит за футболом каждый день и хочет быстро понимать,
-          что важно в матче.
+          Глубокие AI-разборы: вероятности, сценарии, форма команд, риски и
+          контекст матча.
         </p>
 
         <div className="mt-5 grid gap-2 border-t border-gold/15 pt-4">
@@ -6103,11 +6099,6 @@ function SubscriptionScreen() {
         </div>
       </section>
 
-      <ReferralPremiumCard
-        status={referralStatus}
-        loading={referralLoading}
-      />
-
       {loading && (
         <div className="mt-7 space-y-3">
           {Array.from({ length: 3 }, (_, index) => (
@@ -6126,62 +6117,6 @@ function SubscriptionScreen() {
             Тарифы временно недоступны
           </p>
         </div>
-      )}
-
-      {!loading && config && (
-        <section className="mt-7 rounded-lg border border-line bg-panel p-5 shadow-card">
-          <div className="flex items-center gap-2">
-            <Bot className="h-5 w-5 text-accent" />
-            <h2 className="text-base font-bold text-white">
-              Базовый и Premium AI-разбор
-            </h2>
-          </div>
-          <div className="mt-4 grid gap-3">
-            <div className="rounded-md border border-line/80 bg-white/[0.025] p-4">
-              <p className="text-xs font-bold uppercase text-slate-500">
-                Free
-              </p>
-              <div className="mt-3 space-y-2">
-                {[
-                  "5 базовых AI-разборов в месяц",
-                  "Краткий сценарий матча",
-                  "Основные аргументы",
-                  "Главный риск",
-                ].map((item) => (
-                  <p
-                    key={item}
-                    className="text-xs leading-5 text-slate-300 before:mr-2 before:text-accent before:content-['•']"
-                  >
-                    {item}
-                  </p>
-                ))}
-              </div>
-            </div>
-            <div className="rounded-md border border-gold/20 bg-gold/[0.055] p-4">
-              <p className="text-xs font-bold uppercase text-gold">
-                Premium
-              </p>
-              <div className="mt-3 space-y-2">
-                {[
-                  "Больше глубоких AI-разборов",
-                  "Вероятности",
-                  "Расширенные сигналы",
-                  "Сценарии матча",
-                  "Сценарии дня",
-                  "Форма команд",
-                  "Риски и контекст",
-                ].map((item) => (
-                  <p
-                    key={item}
-                    className="text-xs leading-5 text-slate-300 before:mr-2 before:text-gold before:content-['•']"
-                  >
-                    {item}
-                  </p>
-                ))}
-              </div>
-            </div>
-          </div>
-        </section>
       )}
 
       {!loading && config && (
@@ -6259,6 +6194,69 @@ function SubscriptionScreen() {
               </article>
             );
           })}
+          </div>
+        </section>
+      )}
+
+      {!loading && config && (
+        <ReferralPremiumCard
+          status={referralStatus}
+          loading={referralLoading}
+        />
+      )}
+
+      {!loading && config && (
+        <section className="mt-7 rounded-lg border border-line bg-panel p-5 shadow-card">
+          <div className="flex items-center gap-2">
+            <Bot className="h-5 w-5 text-accent" />
+            <h2 className="text-base font-bold text-white">
+              Базовый и Premium AI-разбор
+            </h2>
+          </div>
+          <div className="mt-4 grid gap-3">
+            <div className="rounded-md border border-line/80 bg-white/[0.025] p-4">
+              <p className="text-xs font-bold uppercase text-slate-500">
+                Free
+              </p>
+              <div className="mt-3 space-y-2">
+                {[
+                  "5 базовых AI-разборов в месяц",
+                  "Краткий сценарий матча",
+                  "Основные аргументы",
+                  "Главный риск",
+                ].map((item) => (
+                  <p
+                    key={item}
+                    className="text-xs leading-5 text-slate-300 before:mr-2 before:text-accent before:content-['•']"
+                  >
+                    {item}
+                  </p>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-md border border-gold/20 bg-gold/[0.055] p-4">
+              <p className="text-xs font-bold uppercase text-gold">
+                Premium
+              </p>
+              <div className="mt-3 space-y-2">
+                {[
+                  "Больше глубоких AI-разборов",
+                  "Вероятности",
+                  "Расширенные сигналы",
+                  "Сценарии матча",
+                  "Сценарии дня",
+                  "Форма команд",
+                  "Риски и контекст",
+                ].map((item) => (
+                  <p
+                    key={item}
+                    className="text-xs leading-5 text-slate-300 before:mr-2 before:text-gold before:content-['•']"
+                  >
+                    {item}
+                  </p>
+                ))}
+              </div>
+            </div>
           </div>
         </section>
       )}
